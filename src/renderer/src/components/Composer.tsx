@@ -517,7 +517,9 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
   }, [draftKey])
 
   useEffect(() => {
-    const focus = () => {
+    const focus = (event: Event) => {
+      const detail = (event as CustomEvent<{ target?: string } | undefined>).detail
+      if (detail?.target === 'side') return
       const node = textareaRef.current
       if (!node) return
       node.focus()
@@ -760,6 +762,7 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing || event.keyCode === 229) return
       if (document.querySelector('[aria-modal="true"]')) return
+      if (document.activeElement?.closest('[data-conversation-surface="side"]')) return
       if (event.key !== 'Escape' || !isStreaming) return
       // The palette uses Escape to close itself and handles the key before
       // it reaches the window, so the run is left alone.
@@ -1226,7 +1229,7 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
   const addFiles = async (files: FileList | null): Promise<void> => {
     if (!files) return
     const state = useAppStore.getState()
-    const targetKey = draftKeyOf(state)
+    const targetKey = draftKeyRef.current || draftKeyOf(state)
     const cwd = state.threads[targetKey]?.status.cwd ?? state.workspace?.path ?? ''
     bumpPendingAdds(targetKey, 1)
     try {

@@ -1,5 +1,5 @@
 import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ChevronUp, Database, Ellipsis, List, Search, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ChevronUp, Database, Ellipsis, List, MessagesSquare, Search, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import type { AssistantItem, ToolItem, UserItem } from '../lib/thread'
 import type { Turn } from '../lib/turns'
@@ -17,6 +17,7 @@ import { readSessionTiming, roundTimingDuration, userTimingDuration } from '../l
 import { readHistoryFirstVisibleTurn, readProcessOpen, writeHistoryFirstVisibleTurn, writeProcessOpen } from '../lib/view-state'
 import { matchesAnyShortcut } from '../lib/shortcuts'
 import { SearchContext, useSearchQuery } from '../lib/search-context'
+import { dispatchOpenSideChat, JUMP_MAIN_TURN_EVENT, readJumpMainTurnId } from '../lib/side-chat-context'
 import { NoticeMessage, UserMessage } from './MessageItem'
 import { ToolCard, BashCard } from './ToolCard'
 import { ProcessTrail } from './ProcessTrail'
@@ -27,6 +28,7 @@ import { isLiveRunSummary, RunSummary } from './conversation/RunSummary'
 import { ErrorNotice, ThreadErrorBanner } from './conversation/ErrorNotice'
 import { GoalCompleteRow } from './conversation/GoalCompleteRow'
 import { ThreadEnvStoreProvider, useThreadEnv } from './conversation/ThreadEnvContext'
+import { ThreadSelectionBar } from './side-chat/ThreadSelectionBar'
 import { SessionRail } from './SessionRail'
 import { Popover } from './Popover'
 import { ErrorBoundary } from './ErrorBoundary'
@@ -664,6 +666,7 @@ export const Thread = memo(function Thread() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (document.querySelector('[aria-modal="true"]')) return
+      if (document.activeElement?.closest('[data-conversation-surface="side"]')) return
       if (matchesAnyShortcut(event, 'search-conversation', shortcutBindings)) {
         event.preventDefault()
         setSearchOpen(true)
@@ -820,6 +823,7 @@ export const Thread = memo(function Thread() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (document.querySelector('[aria-modal="true"]')) return
+      if (document.activeElement?.closest('[data-conversation-surface="side"]')) return
       if (matchesAnyShortcut(event, 'previous-turn', shortcutBindings)) {
         event.preventDefault()
         jumpTurn(-1)
@@ -833,6 +837,17 @@ export const Thread = memo(function Thread() {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [jumpTurn, shortcutBindings])
+
+  // Side Chat reference chips jump back to the exact Main turn they quote.
+  useEffect(() => {
+    const onJumpMainTurn = (event: Event) => {
+      const turnId = readJumpMainTurnId(event)
+      if (!turnId) return
+      jumpToTurn(turnId, 'center')
+    }
+    window.addEventListener(JUMP_MAIN_TURN_EVENT, onJumpMainTurn)
+    return () => window.removeEventListener(JUMP_MAIN_TURN_EVENT, onJumpMainTurn)
+  }, [jumpToTurn])
 
   const scrollToBottom = () => {
     const node = scrollRef.current
@@ -1115,7 +1130,7 @@ export const Thread = memo(function Thread() {
             </button>
           </div>
         ) : null}
-        <ThreadEnvStoreProvider threadKey={sessionKey} workspacePath={workspacePath}>
+        <ThreadEnvStoreProvider threadKey={sessionKey} workspacePath={workspacePath} surface="main">
         <SearchContext.Provider value={deferredSearchQuery}>
           {visibleTurns.map((turn, index) => {
             const turnIndex = firstVisibleTurn + index
@@ -1127,6 +1142,7 @@ export const Thread = memo(function Thread() {
               <ErrorBoundary key={`${clientKey}:${turn.id}`} scope="turn">
                 <ThreadTurnView
                   turn={turn}
+                  turnOrdinal={userOrdinal !== undefined ? userOrdinal + 1 : turnIndex + 1}
                   threadKey={sessionKey}
                   models={models}
                   t={t}
@@ -1192,10 +1208,23 @@ export const Thread = memo(function Thread() {
             nothing unless the extension reports `complete`. */}
         <GoalCompleteRow />
 
-        {error ? <ThreadErrorBanner message={error} onDismiss={dismissError} /> : null}
+        {error ? (
+          <ThreadErrorBanner
+            message={error}
+            onDismiss={dismissError}
+            onAskSideChat={() =>
+              dispatchOpenSideChat({
+                mode: 'open',
+                focus: true,
+                reference: { kind: 'error', message: error }
+              })
+            }
+          />
+        ) : null}
       </div>
 
     </div>
+      <ThreadSelectionBar containerRef={scrollRef} />
       {jumpTarget ? (
         <div className="scroll-jumps">
           <button
@@ -1221,6 +1250,7 @@ export const Thread = memo(function Thread() {
 
 interface ThreadTurnViewProps {
   turn: Turn
+  turnOrdinal: number
   threadKey: string
   models: ModelInfo[]
   t: (text: string) => string
@@ -1300,6 +1330,7 @@ function equalThreadTurnViewProps(
 
   return (
     sameTurnContent(previous.turn, next.turn) &&
+    previous.turnOrdinal === next.turnOrdinal &&
     previous.threadKey === next.threadKey &&
     previous.models === next.models &&
     previous.t === next.t &&
@@ -1313,6 +1344,7 @@ function equalThreadTurnViewProps(
 
 const ThreadTurnView = memo(function ThreadTurnView({
   turn,
+  turnOrdinal,
   threadKey,
   models,
   t,
@@ -1375,7 +1407,7 @@ const ThreadTurnView = memo(function ThreadTurnView({
           : undefined
   const replySettled = lastAssistant && !lastAssistant.streaming && (!isLastTurn || run.settled)
   const liveTail = isLastTurn && !run.settled
-  const { autoFoldProcess } = useThreadEnv()
+  const { autoFoldProcess, askSideChat } = useThreadEnv()
   const processId = `turn-${turn.id}`
   const [manualProcessOpen, setManualProcessOpen] = useState(() => readProcessOpen(threadKey, processId))
   useEffect(() => {
@@ -1403,6 +1435,17 @@ const ThreadTurnView = memo(function ThreadTurnView({
     () => (liveTail ? [] : collectChanges(turn.tools)),
     [liveTail, turn.tools]
   )
+  const assistantPreview = useMemo(() => {
+    if (liveTail) return ''
+    const parts: string[] = []
+    for (const assistant of turn.assistants) {
+      for (const block of assistant.blocks) {
+        if (block.type === 'text' && block.text.trim()) parts.push(block.text.trim())
+      }
+    }
+    return parts.join('\n').replace(/\s+/g, ' ').trim().slice(0, 200)
+  }, [liveTail, turn.assistants])
+  const hasResponseMeta = Boolean(lastAssistant && (lastAssistant.model || turnUsage || incompleteTokenUsage))
   const assistantErrorText = lastAssistant?.stopReason === 'error' &&
     !(isLastTurn && (run.outcome === 'aborted' || (!run.settled && isRateLimitError(lastAssistant.error))))
     ? lastAssistant.error?.trim()
@@ -1439,19 +1482,46 @@ const ThreadTurnView = memo(function ThreadTurnView({
     turn.bash.length > 0 ||
     turn.tools.length > 0 ||
     turn.assistants.some((assistant) => assistant.blocks.length > 0)
+  const assistantErrorMessage = assistantErrorText
+    ? isRateLimitError(assistantErrorText)
+      ? t('Model rate limit reached. Try again later.')
+      : assistantErrorText
+    : ''
+  const genericFailureMessage = t(
+    hasProcess ? 'This run failed. See the execution record for details.' : 'This run failed.'
+  )
   const failureDetails = failureNotice ? (
     <NoticeMessage item={failureNotice} />
   ) : assistantErrorText ? (
     <ErrorNotice
       title={lastAssistant?.error}
-      message={
-        isRateLimitError(assistantErrorText)
-          ? t('Model rate limit reached. Try again later.')
-          : assistantErrorText
+      message={assistantErrorMessage}
+      onAskSideChat={
+        askSideChat
+          ? () =>
+              askSideChat({
+                kind: 'error',
+                turnId: turn.id,
+                title: lastAssistant?.error,
+                message: assistantErrorText
+              })
+          : undefined
       }
     />
   ) : failed ? (
-    <ErrorNotice message={t(hasProcess ? 'This run failed. See the execution record for details.' : 'This run failed.')} />
+    <ErrorNotice
+      message={genericFailureMessage}
+      onAskSideChat={
+        askSideChat
+          ? () =>
+              askSideChat({
+                kind: 'error',
+                turnId: turn.id,
+                message: genericFailureMessage
+              })
+          : undefined
+      }
+    />
   ) : null
 
   return (
@@ -1526,6 +1596,14 @@ const ThreadTurnView = memo(function ThreadTurnView({
                     })
                   )
                 }
+                onReviewInSideChat={() =>
+                  dispatchOpenSideChat({
+                    mode: 'open',
+                    focus: true,
+                    preset: 'review-session',
+                    autoSubmit: true
+                  })
+                }
               />
             ) : null}
 
@@ -1536,8 +1614,9 @@ const ThreadTurnView = memo(function ThreadTurnView({
             {replySettled &&
             lastAssistant &&
             lastAssistant.stopReason !== 'error' &&
-            (lastAssistant.model || turnUsage || incompleteTokenUsage) ? (
+            (hasResponseMeta || Boolean(assistantPreview)) ? (
               <div className="assistant__response-actions">
+                {hasResponseMeta ? (
                 <div className="assistant__footer">
                   {lastAssistant.model ? <span>{modelName(models, lastAssistant.model)}</span> : null}
                   {turnUsage ? (
@@ -1646,6 +1725,27 @@ const ThreadTurnView = memo(function ThreadTurnView({
                   ) : null}
                   <span>{formatClock(lastAssistant.timestamp)}</span>
                 </div>
+                ) : null}
+                {askSideChat ? (
+                  <button
+                    type="button"
+                    className="assistant__ask-side"
+                    title={t('Ask Side Chat about this reply')}
+                    aria-label={t('Ask Side Chat about this reply')}
+                    onClick={() =>
+                      askSideChat({
+                        kind: 'turn',
+                        turnId: turn.id,
+                        turnOrdinal,
+                        assistantMessageId: lastAssistant.id,
+                        preview: assistantPreview || turn.user?.text.slice(0, 160) || ''
+                      })
+                    }
+                  >
+                    <MessagesSquare size={13} aria-hidden="true" />
+                    <span>{t('Ask Side Chat')}</span>
+                  </button>
+                ) : null}
               </div>
             ) : null}
           </div>

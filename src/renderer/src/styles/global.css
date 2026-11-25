@@ -1532,7 +1532,26 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 .main {
-  container: conversation / inline-size;
+  container: conversation main-stage / inline-size;
+}
+
+@container main-stage (max-width: 760px) {
+  .task-rail {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    bottom: auto;
+    max-height: calc(100% - 20px);
+    z-index: var(--z-drawer);
+    max-width: min(var(--task-rail-w), calc(100% - 20px));
+    box-shadow: var(--shadow-md);
+    border-radius: var(--r-lg);
+    border: 1px solid var(--border-subtle);
+  }
+
+  .main__stage {
+    position: relative;
+  }
 }
 
 /* The header lives inside `.main`, not `.main__body`, so these resolve against
@@ -5300,9 +5319,10 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   }
 }
 
-/* The terminal and the browser stay mounted behind the other tabs so a shell
-   and a loaded page survive a tab switch and folding the panel. Only the
-   active one is laid out. */
+/* Side chat, the terminal and the browser stay mounted behind the other tabs so
+   a side thread, a shell, and a loaded page survive a tab switch and folding
+   the panel. Only the active one is laid out. */
+.tool-panel__side-chat,
 .tool-panel__terminal,
 .tool-panel__browser {
   display: none;
@@ -5311,6 +5331,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   flex-direction: column;
 }
 
+.tool-panel__side-chat[data-active],
 .tool-panel__terminal[data-active],
 .tool-panel__browser[data-active] {
   display: flex;

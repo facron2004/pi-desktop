@@ -10,6 +10,7 @@ import {
   Info,
   TriangleAlert
 } from 'lucide-react'
+import type { SideChatReference } from '@shared/side-chat'
 import type { NoticeItem, UserItem } from '../lib/thread'
 import { formatClock } from '../lib/format'
 import { Markdown } from './Markdown'
@@ -18,6 +19,7 @@ import { useT } from '../lib/i18n'
 import { stripImageAnnotations } from '../lib/message-text'
 import { readProcessOpen, writeProcessOpen } from '../lib/view-state'
 import { useThreadEnv } from './conversation/ThreadEnvContext'
+import { SideChatRefChip } from './side-chat/SideChatRefChip'
 
 export const UserMessage = memo(function UserMessage({
   item,
@@ -33,10 +35,18 @@ export const UserMessage = memo(function UserMessage({
   editing?: boolean
 }) {
   const t = useT()
+  const sideRefs = (item as UserItem & { sideRefs?: SideChatReference[] }).sideRefs
   return (
     <div className="user-msg" data-pending={item.pending ? 'true' : undefined}>
       <div className="user-msg__content">
         <div className="user-msg__bubble">
+          {sideRefs && sideRefs.length > 0 ? (
+            <div className="user-msg__refs">
+              {sideRefs.map((ref) => (
+                <SideChatRefChip key={ref.id} reference={ref} compact />
+              ))}
+            </div>
+          ) : null}
           {item.images.length > 0 ? (
             <div className="user-msg__images">
               {item.images.map((image, index) => (

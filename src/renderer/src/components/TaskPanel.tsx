@@ -1,5 +1,5 @@
 import { lazy, memo, Suspense, useCallback, useDeferredValue, useEffect, useId, useMemo, useState, type ReactNode } from 'react'
-import { ChevronRight, FileDiff, GitBranch, GitCommitHorizontal } from 'lucide-react'
+import { ChevronRight, FileDiff, GitBranch, GitCommitHorizontal, MessagesSquare } from 'lucide-react'
 import type { InspectorRequest } from '@shared/types'
 import { FileIcon } from './FileIcon'
 import { SubagentAvatar } from './SubagentAvatar'
@@ -8,6 +8,7 @@ import { changedFilePaths } from '../lib/changes'
 import { relativePath, resolveAgainst } from '../lib/path'
 import { isImageName } from '../lib/files'
 import { extractPlan } from '../lib/plan'
+import { dispatchOpenSideChat } from '../lib/side-chat-context'
 import type { SubagentTreeTask } from '../lib/subagents'
 import {
   listBackgroundCommands,
@@ -38,12 +39,14 @@ const TaskSection = memo(function TaskSection({
   title,
   subtitle,
   meta,
+  action,
   defaultOpen = true,
   children
 }: {
   title: string
   subtitle?: ReactNode
   meta?: ReactNode
+  action?: ReactNode
   defaultOpen?: boolean
   children: ReactNode
 }) {
@@ -71,6 +74,7 @@ const TaskSection = memo(function TaskSection({
             />
           </span>
         </button>
+        {action}
       </h2>
       <div
         id={contentId}
@@ -206,6 +210,27 @@ const TaskProgressSection = memo(function TaskProgressSection() {
       meta={
         plan ? <span className="task-panel__count">{plan.done}/{plan.total}</span> : undefined
       }
+      action={
+        plan ? (
+          <button
+            type="button"
+            className="icon-btn task-panel__side-btn"
+            title={t('Break down ongoing items in Side Chat')}
+            aria-label={t('Break down ongoing items in Side Chat')}
+            onClick={(event) => {
+              event.stopPropagation()
+              dispatchOpenSideChat({
+                mode: 'open',
+                focus: true,
+                preset: 'breakdown-plan',
+                autoSubmit: !event.shiftKey
+              })
+            }}
+          >
+            <MessagesSquare size={13} aria-hidden="true" />
+          </button>
+        ) : undefined
+      }
     >
       {!running && plan?.source === 'todo' && plan.done < plan.total ? (
         <p className="task-panel__empty">{t('Some steps are still unconfirmed')}</p>
@@ -223,6 +248,25 @@ const TaskProgressSection = memo(function TaskProgressSection() {
                 {index + 1}
               </span>
               <span className="task-panel__check-text">{entry.text}</span>
+              {!entry.done ? (
+                <button
+                  type="button"
+                  className="task-panel__check-side"
+                  title={t('Break down this step in Side Chat')}
+                  aria-label={t('Break down this step in Side Chat')}
+                  onClick={(event) =>
+                    dispatchOpenSideChat({
+                      mode: 'open',
+                      focus: true,
+                      preset: 'breakdown-plan',
+                      stepText: entry.text,
+                      autoSubmit: !event.shiftKey
+                    })
+                  }
+                >
+                  <MessagesSquare size={12} aria-hidden="true" />
+                </button>
+              ) : null}
             </li>
           ))}
         </ul>

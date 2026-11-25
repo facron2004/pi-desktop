@@ -258,6 +258,61 @@ test('Windows terminal shutdown joins a pending tab close and waits for the tree
   assert.equal(disposed, true)
 })
 
+test('Windows terminal shutdown still waits for native cleanup after the shell exit event', async () => {
+  const treeFinished = Promise.withResolvers<boolean>()
+  let nativeStops = 0
+  let emitExit!: (event: { exitCode: number }) => void
+  const process = disposablePty()
+  process.onExit = (listener) => {
+    emitExit = listener
+    return { dispose() {} }
+  }
+  process.kill = () => { nativeStops += 1 }
+  const manager = new TerminalManager(() => undefined, () => process, 'win32', () => treeFinished.promise)
+  const terminal = manager.create({ cols: 80, rows: 24 })
+  const closing = manager.kill(terminal.id)
+  await Promise.resolve()
+  emitExit({ exitCode: 0 })
+
+  let disposed = false
+  const shutdown = manager.disposeAll().then(() => { disposed = true })
+  try {
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(nativeStops, 0)
+    assert.equal(disposed, false)
+  } finally {
+    treeFinished.resolve(true)
+    await Promise.all([closing, shutdown])
+  }
+  assert.equal(nativeStops, 1)
+  assert.equal(disposed, true)
+})
+
+test('terminal creation waits for renderer disposal and rejects a superseded request', async () => {
+  const treeFinished = Promise.withResolvers<boolean>()
+  let starts = 0
+  const manager = new TerminalManager(() => undefined, () => {
+    starts += 1
+    return disposablePty()
+  }, 'win32', () => treeFinished.promise)
+  const first = manager.create({ cols: 80, rows: 24 })
+  const oldCleanup = manager.disposeAll()
+  const stale = assert.rejects(manager.waitForDisposal(), /terminal view was replaced/)
+  const newCleanup = manager.disposeAll()
+  const replacement = manager.waitForDisposal().then(() => manager.create({ cols: 80, rows: 24 }))
+
+  try {
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(starts, 1, 'the replacement must wait for the old native shell')
+  } finally {
+    treeFinished.resolve(true)
+    await Promise.all([oldCleanup, newCleanup, stale, replacement])
+    await manager.disposeAll()
+  }
+  assert.notEqual((await replacement).id, first.id)
+  assert.equal(starts, 2)
+})
+
 test('a failed terminal close retains its PTY for a later disposal pass', async () => {
   let attempts = 0
   const process = disposablePty()

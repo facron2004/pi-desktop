@@ -1,6 +1,6 @@
 import { memo, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowUpRight, ChevronDown, FileDiff, Undo2 } from 'lucide-react'
+import { ArrowUpRight, ChevronDown, FileDiff, MessagesSquare, Undo2 } from 'lucide-react'
 import type { FileChange } from '../lib/changes'
 import { useAppStore } from '../store/useAppStore'
 import { relativePath } from '../lib/path'
@@ -16,10 +16,12 @@ import { FileChangePreview, FileChangeRow, previewAnchor } from './conversation/
  */
 export const FileChangeSummary = memo(function FileChangeSummary({
   changes,
-  onReview
+  onReview,
+  onReviewInSideChat
 }: {
   changes: FileChange[]
   onReview: () => void
+  onReviewInSideChat?: () => void
 }) {
   const t = useT()
   const workspace = useAppStore((state) => state.workspace?.path)
@@ -107,6 +109,18 @@ export const FileChangeSummary = memo(function FileChangeSummary({
             {t('Undo')}
             <Undo2 size={13} />
           </button>
+          {onReviewInSideChat ? (
+            <button
+              type="button"
+              className="file-changes__side-review"
+              onClick={onReviewInSideChat}
+              title={t('Review in Side Chat')}
+              aria-label={t('Review in Side Chat')}
+            >
+              <MessagesSquare size={13} aria-hidden="true" />
+              <span>{t('Review in Side Chat')}</span>
+            </button>
+          ) : null}
           <button type="button" className="file-changes__review" onClick={onReview}>
             {t('View changes')}
           </button>

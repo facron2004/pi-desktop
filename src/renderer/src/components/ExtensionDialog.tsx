@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowUpRight, Check, ListChecks, MessageSquareText, TriangleAlert } from 'lucide-react'
-import { PLAN_REVIEW_TITLE } from '@shared/types'
+import { isSideSessionKey, PLAN_REVIEW_TITLE } from '@shared/types'
 import { draftKeyOf, useAppStore, type SessionThread } from '../store/useAppStore'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { useT } from '../lib/i18n'
 import { activeConversationTitle, listPendingUiSessions } from '../lib/live-sessions'
+import { dispatchOpenSideChat } from '../lib/side-chat-context'
 import { basename } from '../lib/path'
 import { Markdown } from './Markdown'
 import { findSessionMeta } from './RunStatusRow'
@@ -28,6 +29,14 @@ function pendingUiSignature(threads: Readonly<Record<string, SessionThread>>): s
 export function ExtensionDialog() {
   const activeUiRequest = useAppStore((state) => state.uiRequest)
   const activeKey = useAppStore((state) => draftKeyOf(state))
+  const sideChatOpen = useAppStore((state) => state.sideChatOpen)
+  const sideSessionKey = useAppStore((state) => state.sideSessionKey)
+  const sideParentByKey = useAppStore((state) => state.sideParentByKey)
+  const sideUiRequest = useAppStore((state) =>
+    state.sideChatOpen && state.sideSessionKey
+      ? state.threads[state.sideSessionKey]?.uiRequest
+      : undefined
+  )
   const pendingSig = useAppStore((state) => pendingUiSignature(state.threads))
   const respondUi = useAppStore((state) => state.respondUi)
   const dismissUi = useAppStore((state) => state.dismissUi)
@@ -40,12 +49,35 @@ export function ExtensionDialog() {
   const pendingSessions = useMemo(() => {
     if (!pendingSig) return []
     const state = useAppStore.getState()
-    return listPendingUiSessions(state.threads, state.sessions)
+    const list = listPendingUiSessions(state.threads, state.sessions)
+    const seen = new Set(list.map((entry) => entry.sessionKey))
+    for (const key in state.threads) {
+      if (seen.has(key)) continue
+      const thread = state.threads[key]
+      const req = thread.uiRequests?.[0] ?? thread.uiRequest
+      if (!req) continue
+      const count = thread.uiRequests?.length || 1
+      const parentKey = state.sideParentByKey[key]
+      const title = parentKey
+        ? activeConversationTitle(state.sessions, state.threads, parentKey)
+        : activeConversationTitle(state.sessions, state.threads, key)
+      list.push({
+        sessionKey: key,
+        request: req,
+        count,
+        title,
+        cwd: thread.status.cwd ?? req.approval?.cwd
+      })
+    }
+    return list
   }, [pendingSig])
 
+  const visibleUiRequest = activeUiRequest ?? sideUiRequest
+  const preferredSessionKey = activeUiRequest ? activeKey : sideSessionKey
+
   const [selectedSessionKey, setSelectedSessionKey] = useState<string | null>(null)
-  const activeSessionPending = activeKey
-    ? pendingSessions.find((entry) => entry.sessionKey === activeKey)
+  const activeSessionPending = preferredSessionKey
+    ? pendingSessions.find((entry) => entry.sessionKey === preferredSessionKey)
     : undefined
   const selectedPending =
     (selectedSessionKey
@@ -54,15 +86,18 @@ export function ExtensionDialog() {
     activeSessionPending ??
     pendingSessions[0]
 
-  // Only show the modal when the active conversation is blocked (or while
-  // cycling inside an already-open modal across pending sessions).
-  const request = activeUiRequest
-    ? (selectedPending?.request ?? activeUiRequest)
+  // Only show the modal when the active conversation (or its open Side Chat)
+  // is blocked, or while cycling inside an already-open modal across pending sessions.
+  const request = visibleUiRequest
+    ? (selectedPending?.request ?? visibleUiRequest)
     : undefined
-  const targetSessionKey = selectedPending?.sessionKey || activeKey
+  const targetSessionKey = selectedPending?.sessionKey || preferredSessionKey
   const targetPendingCount =
-    selectedPending?.count ?? (activeUiRequest ? 1 : 0)
+    selectedPending?.count ?? (visibleUiRequest ? 1 : 0)
   const totalPendingCount = pendingSessions.reduce((sum, entry) => sum + entry.count, 0)
+  const isSideTarget = Boolean(
+    targetSessionKey && (isSideSessionKey(targetSessionKey) || targetSessionKey in sideParentByKey)
+  )
 
   const [value, setValue] = useState('')
   const [selected, setSelected] = useState<string | null>(null)
@@ -84,6 +119,12 @@ export function ExtensionDialog() {
     await respondUi(cancelled ? { cancelled: true } : { confirmed: false }, uiTarget)
     requestAnimationFrame(() => {
       const current = useAppStore.getState()
+      if (isSideTarget) {
+        if (targetSessionKey && current.sideSessionKey === targetSessionKey && !current.threads[targetSessionKey]?.uiRequest) {
+          window.dispatchEvent(new CustomEvent('pi:focus-composer', { detail: { target: 'side' } }))
+        }
+        return
+      }
       if (targetSessionKey && draftKeyOf(current) === targetSessionKey && !current.uiRequest) {
         window.dispatchEvent(new CustomEvent('pi:focus-composer'))
       }
@@ -96,12 +137,12 @@ export function ExtensionDialog() {
   }, Boolean(request))
 
   useEffect(() => {
-    if (!activeUiRequest) {
+    if (!visibleUiRequest) {
       setSelectedSessionKey(null)
     } else if (selectedSessionKey && !pendingSessions.some((entry) => entry.sessionKey === selectedSessionKey)) {
       setSelectedSessionKey(null)
     }
-  }, [activeUiRequest, selectedSessionKey, pendingSessions])
+  }, [visibleUiRequest, selectedSessionKey, pendingSessions])
 
   useEffect(() => {
     if (!request) return
@@ -156,17 +197,53 @@ export function ExtensionDialog() {
 
   const title = t(request.title ?? 'Pi is asking for input')
   const selectedIndex = (request.options ?? []).indexOf(selected ?? '')
-  const originLabel =
-    selectedPending?.title ||
-    (targetSessionKey === activeKey ? activeTitle : undefined) ||
-    (selectedPending?.cwd ? basename(selectedPending.cwd) : undefined) ||
-    (request.approval?.cwd ? basename(request.approval.cwd) : undefined) ||
-    t('Untitled session')
-  const isOtherSession = Boolean(targetSessionKey && targetSessionKey !== activeKey)
+  const formatSessionLabel = (sessionKey: string | undefined, fallbackTitle?: string, cwd?: string): string => {
+    const isSide = Boolean(sessionKey && (isSideSessionKey(sessionKey) || sessionKey in sideParentByKey))
+    if (isSide && sessionKey) {
+      const state = useAppStore.getState()
+      const parentKey = state.sideParentByKey[sessionKey]
+      const parentTitle =
+        (parentKey ? activeConversationTitle(state.sessions, state.threads, parentKey) : undefined) ||
+        fallbackTitle ||
+        (cwd ? basename(cwd) : undefined) ||
+        activeTitle ||
+        t('Untitled session')
+      return `${t('Side chat')} · ${parentTitle}`
+    }
+    return (
+      fallbackTitle ||
+      (sessionKey === activeKey ? activeTitle : undefined) ||
+      (cwd ? basename(cwd) : undefined) ||
+      t('Untitled session')
+    )
+  }
+  const originLabel = formatSessionLabel(
+    targetSessionKey,
+    selectedPending?.title,
+    selectedPending?.cwd ?? request.approval?.cwd
+  )
+  const targetParentKey = targetSessionKey ? sideParentByKey[targetSessionKey] : undefined
+  const isOtherSession = isSideTarget
+    ? Boolean(!sideChatOpen || (targetParentKey && targetParentKey !== activeKey))
+    : Boolean(targetSessionKey && targetSessionKey !== activeKey)
 
   const jumpToSession = () => {
     if (!targetSessionKey) return
     const state = useAppStore.getState()
+    if (isSideTarget) {
+      const parentKey = state.sideParentByKey[targetSessionKey]
+      if (parentKey && parentKey !== activeKey) {
+        const meta = findSessionMeta(
+          parentKey,
+          state.sessions,
+          state.threads,
+          selectedPending?.cwd ?? request.approval?.cwd
+        )
+        if (meta) void selectSession(meta, 'extension-dialog-jump')
+      }
+      dispatchOpenSideChat({ mode: 'open', focus: true })
+      return
+    }
     const meta = findSessionMeta(
       targetSessionKey,
       state.sessions,
@@ -199,7 +276,10 @@ export function ExtensionDialog() {
         aria-describedby={planReview ? 'extension-dialog-plan-note' : undefined}
       >
         <div className="modal__context">
-          <span className="modal__context-session" title={selectedPending?.cwd || originLabel}>
+          <span
+            className={`modal__context-session${isSideTarget ? ' modal__context-session--side' : ''}`}
+            title={selectedPending?.cwd || originLabel}
+          >
             {originLabel}
           </span>
           {totalPendingCount > 1 || targetPendingCount > 1 ? (
@@ -216,7 +296,7 @@ export function ExtensionDialog() {
               onClick={jumpToSession}
             >
               <span>{t('Go to conversation')}</span>
-              <ArrowUpRight size={12} />
+              <ArrowUpRight size={12} aria-hidden="true" />
             </button>
           ) : null}
         </div>
@@ -226,10 +306,7 @@ export function ExtensionDialog() {
           // contract is "pressed" on the conversation whose dialog is showing.
           <div className="modal__switcher" role="group" aria-label={t('Conversations waiting for input')}>
             {pendingSessions.map((entry) => {
-              const label =
-                entry.title ||
-                (entry.cwd ? basename(entry.cwd) : '') ||
-                t('Untitled session')
+              const label = formatSessionLabel(entry.sessionKey, entry.title, entry.cwd)
               const active = entry.sessionKey === targetSessionKey
               return (
                 <button

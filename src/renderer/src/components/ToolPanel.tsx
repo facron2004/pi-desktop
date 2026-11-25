@@ -15,6 +15,7 @@ import {
   Images,
   List,
   Maximize2,
+  MessagesSquare,
   Minimize2,
   Network,
   Plus,
@@ -34,7 +35,7 @@ import { Popover } from './Popover'
  * The pages follow MCode's workspace panel: the header is a strip of
  * fixed-width page tabs, and `+` creates a new "start from here" tab.
  */
-export type ToolPanelView = 'files' | 'changes' | 'subagents' | 'swarm' | 'terminal' | 'browser' | 'images' | 'start'
+export type ToolPanelView = 'side-chat' | 'files' | 'changes' | 'subagents' | 'swarm' | 'terminal' | 'browser' | 'images' | 'start'
 
 interface ToolTab {
   id: string
@@ -48,6 +49,13 @@ const TABS: {
   icon: typeof Files
   shortcut?: string
 }[] = [
+  {
+    view: 'side-chat',
+    label: 'Side chat',
+    description: 'Ask, break down tasks, or review changes alongside this conversation',
+    icon: MessagesSquare,
+    shortcut: 'Ctrl+Shift+L'
+  },
   { view: 'files', label: 'Files', description: 'Browse the project files', icon: Files },
   { view: 'browser', label: 'Browser', description: 'Browse a page without leaving the app', icon: Globe },
   { view: 'terminal', label: 'Terminal', description: 'Run commands in a real shell', icon: SquareTerminal, shortcut: 'Ctrl+`' },
@@ -693,9 +701,13 @@ function ToolStart({ onOpen }: { onOpen: (view: Exclude<ToolPanelView, 'start'>)
   const t = useT()
   const platform = useAppStore((state) => state.info?.platform)
   const shortcutBindings = useAppStore((state) => state.settings.shortcutBindings)
-  // The terminal card wears the chord the user actually recorded.
+  // Live shortcut cards wear the chords the user actually recorded.
   const shortcutOf = (entry: (typeof TABS)[number]) =>
-    entry.view === 'terminal' ? keysFor('toggle-terminal', shortcutBindings).join('+') : entry.shortcut
+    entry.view === 'terminal'
+      ? keysFor('toggle-terminal', shortcutBindings).join('+')
+      : entry.view === 'side-chat'
+        ? keysFor('toggle-side-chat', shortcutBindings).join('+')
+        : entry.shortcut
   return (
     <div className="tool-start">
       <div className="tool-start__panel">

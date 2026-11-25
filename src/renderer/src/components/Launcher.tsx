@@ -16,6 +16,7 @@ import {
   Loader2,
   MessageSquare,
   MessageSquarePlus,
+  MessagesSquare,
   Minimize2,
   Moon,
   Network,
@@ -38,6 +39,7 @@ import {
 import type { LucideIcon } from 'lucide-react'
 import { selectableModels } from '@shared/provider-models'
 import { FONT_SCALE_PRESETS, nearestFontStepIndex } from '@shared/font-scale'
+import { isSideSessionKey } from '@shared/types'
 import { draftKeyOf, useAppStore } from '../store/useAppStore'
 import { collectProjects, sortProjects } from '../lib/projects'
 import { liveConversationRows } from '../lib/live-sessions'
@@ -338,6 +340,14 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
       run: () => shell.toggleSidebar()
     },
     {
+      id: 'side-chat',
+      title: 'Toggle side chat',
+      hint: chordOf('toggle-side-chat'),
+      group: 'View',
+      icon: MessagesSquare,
+      run: () => runAppCommand('side')
+    },
+    {
       id: 'changes',
       title: 'Review the files Pi changed',
       group: 'View',
@@ -439,6 +449,7 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
     idle: 0
   }
   const archived = new Set(archivedSessions ?? [])
+  const sideParentByKey = useAppStore.getState().sideParentByKey
   const liveRows = liveConversationRows(sessions, threads, workspace?.path)
   const seenSessions = new Set<string>()
   const sessionEntries: Array<{
@@ -450,7 +461,13 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
     ...liveRows,
     ...sessions.map((session) => ({ ...session, onDisk: true }))
   ]) {
-    if (!row.file || row.file === activeKey || seenSessions.has(row.file)) continue
+    if (
+      !row.file ||
+      row.file === activeKey ||
+      seenSessions.has(row.file) ||
+      isSideSessionKey(row.file) ||
+      row.file in sideParentByKey
+    ) continue
     seenSessions.add(row.file)
     const thread = threads[row.file]
     const indicator = sessionIndicator({

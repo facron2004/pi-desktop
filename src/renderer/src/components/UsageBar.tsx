@@ -1,6 +1,7 @@
 import { Database, Gauge } from 'lucide-react'
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
+import { useSessionViewSlice } from '../lib/conversation-scope'
 import { sessionMetrics } from '../lib/session-metrics'
 import { formatTokens } from '../lib/format'
 import { useT } from '../lib/i18n'
@@ -19,20 +20,34 @@ import '../styles/usage-bar.css'
  *
  * Every value is derived by `lib/session-metrics.ts`; nothing here is stored.
  */
-export const UsageBar = memo(function UsageBar() {
+export const UsageBar = memo(function UsageBar({
+  sessionKey: explicitSessionKey
+}: {
+  sessionKey?: string
+} = {}) {
   // Text deltas do not change usage. Recompute on new items, completed
   // answers or run/stat changes instead of walking the transcript each frame.
-  const itemCount = useAppStore((state) => state.items.length)
-  const historyTruncated = useAppStore((state) => state.historyTruncated === true)
-  const lastCompletedAssistant = useAppStore((state) =>
-    state.items.findLast((item) => item.kind === 'assistant' && !item.streaming)
+  const slice = useSessionViewSlice(explicitSessionKey)
+  const items = slice.items
+  const itemsRef = useRef(items)
+  itemsRef.current = items
+  const itemCount = items.length
+  const historyTruncated = useAppStore((state) =>
+    explicitSessionKey
+      ? state.threads[explicitSessionKey]?.historyTruncated === true
+      : state.historyTruncated === true
   )
-  const hasAssistant = useAppStore((state) =>
-    state.items.findLast((item) => item.kind === 'assistant') !== undefined
+  const lastCompletedAssistant = useMemo(
+    () => items.findLast((item) => item.kind === 'assistant' && !item.streaming),
+    [items]
   )
-  const stats = useAppStore((state) => state.stats)
-  const run = useAppStore((state) => state.run)
-  const sessionKey = useAppStore((state) => state.activeSessionFile ?? state.draftId)
+  const hasAssistant = useMemo(
+    () => items.findLast((item) => item.kind === 'assistant') !== undefined,
+    [items]
+  )
+  const stats = slice.stats
+  const run = slice.run
+  const sessionKey = explicitSessionKey ?? slice.sessionKey
   const t = useT()
   const [, setTimingTick] = useState(0)
 
@@ -48,7 +63,7 @@ export const UsageBar = memo(function UsageBar() {
 
   const metrics = useMemo(
     () => sessionMetrics(
-      useAppStore.getState().items,
+      itemsRef.current,
       stats,
       { ...run, modelTurnStartedAt: undefined },
       readSessionTiming(sessionKey),
@@ -140,7 +155,7 @@ export const UsageBar = memo(function UsageBar() {
       </Popover>
 
       {/* The ring owns the window reading, including its percentage label. */}
-      <ContextRing />
+      <ContextRing sessionKey={sessionKey} />
     </div>
   )
 })

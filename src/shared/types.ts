@@ -4,6 +4,13 @@
  */
 import type { ProviderConnection, ProviderModel, ProviderProbeResult, ProviderProfile, SaveProviderInput } from './providers'
 import type {
+  SessionRuntimeRole,
+  SideChatReference,
+  SideChatStagePromptInput,
+  SideChatStateSnapshot
+} from './side-chat'
+export * from './side-chat'
+import type {
   CreateResourceInput,
   ManagedPackage,
   MarketplaceActionResult,
@@ -186,6 +193,8 @@ export interface AgentMessage {
   timestamp: number
   /** ID of the enclosing session entry when supplied by replay. */
   entryId?: string
+  /** Structured main-conversation references attached to a Side Chat user message. */
+  sideRefs?: SideChatReference[]
   usage?: Usage
   stopReason?: string
   errorMessage?: string
@@ -241,7 +250,7 @@ export interface ForkTarget {
 
 /** What the app shell is asked to show in the inspector. */
 export interface InspectorRequest {
-  tab?: 'changes' | 'files' | 'browser' | 'images'
+  tab?: 'changes' | 'files' | 'browser' | 'images' | 'side-chat'
   /** A file to open, optionally at a line. */
   file?: string
   line?: number
@@ -444,6 +453,10 @@ export interface SessionHydrationResult {
   historyTruncated: boolean
   taskMode?: SessionTaskMode
 }
+
+export type SessionExportResult =
+  | { cancelled: true }
+  | { cancelled: false; path: string; openError?: string }
 
 /** A conversation the tray's right-click popup offers to open. */
 export interface TrayConversation {
@@ -1465,10 +1478,11 @@ export interface PiDesktopBridge {
   }
   sessions: {
     list(cwd?: string): Promise<SessionMeta[]>
+    exportHtml(sessionKey: string): Promise<SessionExportResult>
     /** Move a session file to the OS trash. Returns false when it fails. */
     remove(file: string): Promise<boolean>
     /** Active-branch messages and whether disk history was bounded. Does not start Pi. */
-    hydrate(file: string, scope?: 'branch'): Promise<SessionHydrationResult>
+    hydrate(file: string, scope?: 'branch' | 'side'): Promise<SessionHydrationResult>
     /** Name a conversation. A hot one is renamed in its own process. */
     rename(file: string, name: string): Promise<boolean>
     /** Search conversation text on disk within the sidebar's archive filter. */
@@ -1643,6 +1657,12 @@ export interface PiDesktopBridge {
   images: {
     generate(request: ImageGenerationRequest): Promise<GeneratedImage[]>
   }
+  sideChat: {
+    resolve(parentSessionKey: string, cwd: string): Promise<SideChatStateSnapshot>
+    stagePrompt(input: SideChatStagePromptInput): Promise<void>
+    clear(parentSessionKey: string, cwd: string): Promise<SideChatStateSnapshot>
+    stopForParent(parentSessionKey: string): Promise<void>
+  }
 }
 
 export interface FileEntry {
@@ -1670,7 +1690,7 @@ export interface FileSearchResult {
   truncated: boolean
 }
 
-export type FileSearchScope = 'composer-mention' | 'file-tree'
+export type FileSearchScope = 'composer-mention' | 'side-composer-mention' | 'file-tree'
 
 export interface FileContent {
   path: string
@@ -1727,6 +1747,10 @@ export interface RuntimeStartOptions {
   cwd: string
   /** Resume a specific session file instead of starting a new one. */
   sessionFile?: string
+  /** Process role (`'main'` default; `'side'` starts the read-only companion loadout). */
+  role?: SessionRuntimeRole
+  /** Bound parent Main conversation key (`draft:…` or `.jsonl`) when `role === 'side'`. */
+  parentSessionKey?: string
   model?: string
   thinkingLevel?: string
   /** App-level instructions appended to the system prompt for this process. */

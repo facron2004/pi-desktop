@@ -1,4 +1,13 @@
-import { GOAL_CONTINUE_CUSTOM_TYPE, type AgentMessage, type ContentBlock, type PiEvent, type Usage } from '@shared/types'
+import {
+  GOAL_CONTINUE_CUSTOM_TYPE,
+  SIDE_CHAT_TURN_META_ENTRY_TYPE,
+  type AgentMessage,
+  type ContentBlock,
+  type PiEvent,
+  type SideChatReference,
+  type SideChatTurnMetaPayload,
+  type Usage
+} from '@shared/types'
 import { goalResumeTime, normalizePiEvent, type StreamContext, type StreamEvent, type StreamEventStatus } from './stream-events'
 
 export type { StreamContext } from './stream-events'
@@ -58,6 +67,8 @@ export interface UserItem {
    * line until `message_start` returns it.
    */
   pending?: boolean
+  /** Referenced Main Chat selections, turns, tools, errors, or file diffs attached to a Side Chat prompt. */
+  sideRefs?: SideChatReference[]
 }
 
 export interface AssistantItem {
@@ -663,12 +674,15 @@ export function itemsFromMessages(messages: AgentMessage[]): ThreadItem[] {
     const message = messages[index]
     switch (message.role) {
       case 'user': {
+        const sideRefs =
+          Array.isArray(message.sideRefs) && message.sideRefs.length > 0 ? message.sideRefs : undefined
         items.push({
           id: nextId('user'),
           kind: 'user',
           text: textOf(message.content),
           images: imagesOf(message.content),
           ...(message.entryId ? { entryId: message.entryId } : {}),
+          ...(sideRefs ? { sideRefs } : {}),
           timestamp: message.timestamp ?? Date.now(),
           order: nextOrder()
         })
@@ -821,6 +835,18 @@ function replayKey(item: ThreadItem): string | undefined {
 }
 
 function mergeReplayedItem(saved: ThreadItem, live: ThreadItem): ThreadItem {
+  if (saved.kind === 'user' && live.kind === 'user') {
+    const entryId = live.entryId ?? saved.entryId
+    const sideRefs = live.sideRefs?.length ? live.sideRefs : saved.sideRefs
+    if (entryId !== live.entryId || sideRefs !== live.sideRefs) {
+      return {
+        ...live,
+        ...(entryId ? { entryId } : {}),
+        ...(sideRefs?.length ? { sideRefs } : {})
+      }
+    }
+    return live
+  }
   if (saved.kind === 'tool' && live.kind === 'tool') {
     const tool = isFinishedTool(saved) && !isFinishedTool(live)
       ? { ...live, ...saved, id: live.id, progress: undefined }
@@ -930,6 +956,73 @@ function noticeFor(
   }
 }
 
+const pendingSideTurnRefs = new Map<string, { refs: SideChatReference[]; userText?: string }[]>()
+
+/** Stage references for an outgoing Side Chat prompt so live `message_start` carries them immediately. */
+export function stageSideTurnRefs(
+  threadId: string,
+  refs: SideChatReference[],
+  userText?: string
+): void {
+  if (!threadId || refs.length === 0) return
+  const list = pendingSideTurnRefs.get(threadId) ?? []
+  list.push({ refs: refs.slice(), userText })
+  if (list.length > 16) list.splice(0, list.length - 16)
+  pendingSideTurnRefs.set(threadId, list)
+}
+
+export function migrateStagedSideTurnRefs(from: string, to: string): void {
+  if (from === to) return
+  const list = pendingSideTurnRefs.get(from)
+  if (!list) return
+  pendingSideTurnRefs.delete(from)
+  const existing = pendingSideTurnRefs.get(to)
+  pendingSideTurnRefs.set(to, existing ? [...existing, ...list] : list)
+}
+
+export function clearStagedSideTurnRefs(threadId?: string): void {
+  if (threadId === undefined) pendingSideTurnRefs.clear()
+  else pendingSideTurnRefs.delete(threadId)
+}
+
+function takeStagedSideTurnRefs(threadId: string | undefined, text: string): SideChatReference[] | undefined {
+  if (!threadId) return undefined
+  const list = pendingSideTurnRefs.get(threadId)
+  if (!list || list.length === 0) return undefined
+  const index = list.findIndex((entry) => !entry.userText || entry.userText === text)
+  if (index < 0) return undefined
+  const [picked] = list.splice(index, 1)
+  if (list.length === 0) pendingSideTurnRefs.delete(threadId)
+  return picked?.refs
+}
+
+function sameSideRefs(
+  left: readonly SideChatReference[] | undefined,
+  right: readonly SideChatReference[] | undefined
+): boolean {
+  if (left === right) return true
+  if (!left || !right || left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index]?.id !== right[index]?.id || left[index]?.kind !== right[index]?.kind) return false
+  }
+  return true
+}
+
+function attachSideRefsToRecentUser(
+  items: ThreadItem[],
+  refs: SideChatReference[],
+  userText?: string
+): ThreadItem[] {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]
+    if (!item || item.kind !== 'user') continue
+    if (userText !== undefined && userText !== '' && item.text !== userText) continue
+    if (sameSideRefs(item.sideRefs, refs)) return items
+    return replaceItem(items, item.id, { ...item, sideRefs: refs })
+  }
+  return items
+}
+
 /**
  * Project one normalized event onto the thread.
  *
@@ -951,27 +1044,34 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
       }
       if (message.role === 'user') {
         const text = textOf(message.content)
+        const messageSideRefs =
+          Array.isArray(message.sideRefs) && message.sideRefs.length > 0 ? message.sideRefs : undefined
+        const stagedRefs = takeStagedSideTurnRefs(event.threadId, text)
         // Pi has taken a prompt that was still waiting: the optimistic bubble
         // becomes the record instead of a second copy appearing beside it.
         const pending = findPendingUser(items, text)
         if (pending) {
+          const resolvedRefs = messageSideRefs ?? pending.sideRefs ?? stagedRefs
           return replaceItem(items, pending.id, {
             ...pending,
             text,
             images: imagesOf(message.content),
             timestamp: message.timestamp ?? pending.timestamp,
             pending: undefined,
+            ...(resolvedRefs?.length ? { sideRefs: resolvedRefs } : {}),
             messageId: event.messageId,
             runId: event.runId,
             turnId: event.turnId,
             ...identityOf(event)
           })
         }
+        const resolvedRefs = messageSideRefs ?? stagedRefs
         return appendThreadItem(items, {
           id: nextId('user'),
           kind: 'user',
           text,
           images: imagesOf(message.content),
+          ...(resolvedRefs?.length ? { sideRefs: resolvedRefs } : {}),
           timestamp: message.timestamp ?? Date.now(),
           order: nextOrder(),
           messageId: event.messageId,
@@ -1331,6 +1431,24 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
         turnId: event.turnId,
         ...identityOf(event)
       })
+    }
+
+    case 'unknown': {
+      if (event.sourceType === 'entry_appended') {
+        const entry = event.source.entry as
+          | { type?: string; customType?: string; data?: SideChatTurnMetaPayload }
+          | undefined
+        if (entry?.type === 'custom' && entry.customType === SIDE_CHAT_TURN_META_ENTRY_TYPE) {
+          const refs = Array.isArray(entry.data?.references) && entry.data.references.length > 0
+            ? entry.data.references
+            : undefined
+          if (!refs) return items
+          const updated = attachSideRefsToRecentUser(items, refs, entry.data?.userText)
+          if (updated !== items) return updated
+          if (event.threadId) stageSideTurnRefs(event.threadId, refs, entry.data?.userText)
+        }
+      }
+      return items
     }
 
     default:

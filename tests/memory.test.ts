@@ -2,6 +2,7 @@ import { test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { performance } from 'node:perf_hooks'
+import fs from 'node:fs'
 import {
   appendFileSync,
   existsSync,
@@ -15,6 +16,7 @@ import {
   utimesSync,
   writeFileSync
 } from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type {
@@ -54,6 +56,7 @@ import {
 } from '../src/main/memory/prompt'
 import { extractFromSession } from '../src/main/memory/extract'
 import { MemoryService } from '../src/main/memory/service'
+import { properLockfile } from '../src/main/proper-lockfile'
 
 const isWindows = process.platform === 'win32'
 const alphaCwd = isWindows ? 'C:\\Work\\Alpha' : '/work/alpha'
@@ -348,6 +351,70 @@ test('a corrupt memories.json is set aside instead of being overwritten', async 
     'reading again quarantined the file a second time')
 })
 
+test('a memory file read error leaves saved memories and learning records intact', async (t) => {
+  const dir = tempDir(t, 'store-read-error')
+  const store = new MemoryStore(dir)
+  const first = path.join(dir, 'first.jsonl')
+  const second = path.join(dir, 'second.jsonl')
+  writeSessionFile(first, alphaCwd, 'first')
+  writeSessionFile(second, alphaCwd, 'second')
+  await store.merge([{ scope: 'global', kind: 'knowledge', text: 'The project uses strict TypeScript checking.' }])
+  await store.markProcessed(first)
+  const entriesBefore = readFileSync(store.entriesFile, 'utf8')
+  const ledgerBefore = readFileSync(store.ledgerFile, 'utf8')
+  const writer = new MemoryStore(dir)
+  const payload: { candidates: MemoryCandidate[] } = {
+    candidates: [{ scope: 'global', kind: 'knowledge', text: 'Unit tests run in Node.' }]
+  }
+
+  const readFile = fs.readFileSync
+  let blockedFile = store.entriesFile
+  const read = t.mock.method(fs, 'readFileSync', (file, options) => {
+    if (file === blockedFile) {
+      throw Object.assign(new Error('Memory file temporarily unavailable'), { code: 'EBUSY' })
+    }
+    return readFile(file, options)
+  })
+  syncBuiltinESMExports()
+  try {
+    await assert.rejects(writer.commitExtraction(second, payload, store.generation()), { code: 'EBUSY' })
+    assert.deepEqual(readdirSync(store.rolloutDir), [])
+    blockedFile = store.ledgerFile
+    await assert.rejects(writer.markProcessed(second), { code: 'EBUSY' })
+  } finally {
+    read.mock.restore()
+    syncBuiltinESMExports()
+  }
+
+  assert.equal(readFileSync(store.entriesFile, 'utf8'), entriesBefore)
+  assert.equal(readFileSync(store.ledgerFile, 'utf8'), ledgerBefore)
+  assert.equal(readdirSync(dir).some(name => name.includes('.corrupt-')), false)
+  await writer.commitExtraction(second, payload, store.generation())
+  await writer.markProcessed(second)
+  assert.equal(store.readEntries().length, 2)
+  assert.ok(store.sessionRecord(first))
+  assert.ok(store.sessionRecord(second))
+})
+
+test('memory corruption recovery respects the lock held by a writer', async (t) => {
+  const dir = tempDir(t, 'corruption-lock')
+  const store = new MemoryStore(dir)
+  await store.merge([{ scope: 'global', kind: 'knowledge', text: 'Existing saved memory.' }])
+  const valid = readFileSync(store.entriesFile, 'utf8')
+  const corrupt = '{"entries":'
+  writeFileSync(store.entriesFile, corrupt, 'utf8')
+  const release = properLockfile.lockSync(store.entriesFile, { realpath: false })
+  try {
+    assert.equal(store.readEntries().length, 1, 'a reader can display the last verified entries')
+    assert.equal(readFileSync(store.entriesFile, 'utf8'), corrupt)
+    writeFileSync(store.entriesFile, valid, 'utf8')
+  } finally {
+    release()
+  }
+  assert.equal(store.readEntries().length, 1)
+  assert.equal(readdirSync(dir).some(name => name.includes('.corrupt-')), false)
+})
+
 test('a hand-edited entry with a non-string path cannot wedge the store', (t) => {
   const dir = tempDir(t, 'bad-entry')
   const store = new MemoryStore(dir)
@@ -390,6 +457,63 @@ test('removing a memory also removes the session note it left behind', async (t)
   // The injected prompt points the model at these notes, so a deleted fact must
   // not stay reachable through the note it was learned from.
   assert.equal(existsSync(note), false, 'the note survived the deletion it described')
+})
+
+test('removing one memory rewrites its shared session note without the deleted text', async (t) => {
+  const dir = tempDir(t, 'remove-shared-note')
+  const store = new MemoryStore(dir)
+  const source = path.join(dir, 'shared.jsonl')
+  const removedText = 'The release is staged on the old build server.'
+  const keptText = 'Unit tests use the Node test runner.'
+  const candidates: MemoryCandidate[] = [removedText, keptText].map(text => ({
+    scope: 'project', kind: 'knowledge', projectPath: alphaCwd, source, text
+  }))
+  await store.commitExtraction(source, { cwd: alphaCwd, candidates, raw: removedText }, store.generation())
+  const note = path.join(store.rolloutDir, 'shared.md')
+  assert.ok(readFileSync(note, 'utf8').includes(removedText))
+  const removed = store.readEntries().find(entry => entry.text === removedText)
+  assert.ok(removed)
+
+  await store.remove(removed.id)
+
+  assert.deepEqual(store.readEntries().map(entry => entry.text), [keptText])
+  const remainingNote = readFileSync(note, 'utf8')
+  assert.ok(remainingNote.includes(keptText))
+  assert.ok(!remainingNote.includes(removedText))
+  assert.ok(!readFileSync(store.summaryFile, 'utf8').includes(removedText))
+})
+
+test('a blocked summary write leaves the memory and its note available for a deletion retry', async (t) => {
+  const dir = tempDir(t, 'remove-blocked-summary')
+  const store = new MemoryStore(dir)
+  const source = path.join(dir, 'blocked.jsonl')
+  const text = 'An example memory to remove.'
+  const candidates: MemoryCandidate[] = [{ scope: 'global', kind: 'knowledge', text, source }]
+  await store.commitExtraction(source, { candidates }, store.generation())
+  const [entry] = store.readEntries()
+  assert.ok(entry)
+  const note = path.join(store.rolloutDir, 'blocked.md')
+  const generation = store.generation()
+  const renameFile = fs.renameSync
+  const rename = t.mock.method(fs, 'renameSync', (from, to) => {
+    if (to === store.summaryFile) throw Object.assign(new Error('Summary in use'), { code: 'EBUSY' })
+    renameFile(from, to)
+  })
+  syncBuiltinESMExports()
+  try {
+    await assert.rejects(store.remove(entry.id), { code: 'EBUSY' })
+    assert.equal(store.readEntries()[0]?.id, entry.id)
+    assert.equal(store.generation(), generation)
+    assert.ok(readFileSync(note, 'utf8').includes(text))
+  } finally {
+    rename.mock.restore()
+    syncBuiltinESMExports()
+  }
+
+  await store.remove(entry.id)
+  assert.deepEqual(store.readEntries(), [])
+  assert.equal(existsSync(note), false)
+  assert.ok(!readFileSync(store.summaryFile, 'utf8').includes(text))
 })
 
 test('merge reports only entries that survived the caps', async (t) => {
@@ -1494,6 +1618,72 @@ test('disabling automatic learning aborts extraction without blocking manual lea
   const manual = await service.generate({ sessionFile })
   assert.equal(manual.ok, true)
   assert.equal(extractionCalls, 2, 'manual learning remains an explicit action while automatic learning is off')
+})
+
+test('startup learning retries the same failed revision at most three times and resets on a new revision', async (t) => {
+  const dir = tempDir(t, 'startup-retry-revision')
+  const file = path.join(dir, 'session.jsonl')
+  writeSessionFile(file, alphaCwd, 'retry-revision')
+  const store = new MemoryStore(path.join(dir, 'memories'))
+  let calls = 0
+  let fail = true
+  const service = new MemoryService(store, () => ({ memoryGeneration: true } as AppSettings), {
+    list: async () => [metaFor(file, alphaCwd, 1, 4)],
+    extract: async () => {
+      calls += 1
+      return fail ? { added: 0, error: 'Temporary extraction failure' } : { added: 0 }
+    }
+  })
+  t.after(() => service.dispose())
+  const startup = () => (service as unknown as {
+    generateInternal: (options: { limit: number }, manual: boolean) => Promise<{ ok: boolean }>
+  }).generateInternal({ limit: 1 }, false)
+
+  for (let attempts = 1; attempts <= 3; attempts += 1) {
+    assert.equal((await startup()).ok, false)
+    assert.equal(calls, attempts)
+    assert.equal(store.sessionRecord(file)?.attempts, attempts)
+  }
+  await startup()
+  assert.equal(calls, 3)
+
+  appendFileSync(file, '{"type":"message","id":"new-revision","message":{"role":"user","content":"Additional context"}}\n')
+  assert.equal((await startup()).ok, false)
+  assert.equal(store.sessionRecord(file)?.attempts, 1)
+  fail = false
+  assert.equal((await startup()).ok, true)
+  assert.equal(store.sessionRecord(file)?.skipped, undefined)
+  await startup()
+  assert.equal(calls, 5)
+})
+
+test('queued startup learning rechecks whether another run already learned the revision', async (t) => {
+  const dir = tempDir(t, 'startup-recheck-queue')
+  const file = path.join(dir, 'session.jsonl')
+  writeSessionFile(file, alphaCwd, 'startup-recheck')
+  const store = new MemoryStore(path.join(dir, 'memories'))
+  const entered = Promise.withResolvers<void>()
+  const finish = Promise.withResolvers<void>()
+  let calls = 0
+  const service = new MemoryService(store, () => ({ memoryGeneration: true } as AppSettings), {
+    list: async () => [metaFor(file, alphaCwd, 1, 4)],
+    extract: async () => {
+      calls += 1
+      entered.resolve()
+      await finish.promise
+      return { added: 0 }
+    }
+  })
+  t.after(() => service.dispose())
+  const manual = service.generate({ sessionFile: file })
+  await entered.promise
+  const automatic = (service as unknown as {
+    generateInternal: (options: { limit: number }, manual: boolean) => Promise<{ ok: boolean }>
+  }).generateInternal({ limit: 1 }, false)
+  await new Promise<void>(resolve => setImmediate(resolve))
+  finish.resolve()
+  await Promise.all([manual, automatic])
+  assert.equal(calls, 1)
 })
 
 for (const interruptedAt of ['listing conversations', 'extracting a conversation'] as const) {

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useId, useState } from 'react'
-import { Clock3, Maximize2, Minimize2, Pause, Play, SquarePen, Trash2 } from 'lucide-react'
+import { Clock3, Maximize2, MessagesSquare, Minimize2, Pause, Play, SquarePen, Trash2 } from 'lucide-react'
 import { GOAL_STATUS_KEY, type AppLanguage } from '@shared/types'
 import { readGoalStatus } from '@shared/task-mode-state'
 import { goalBadge, goalBarVisible, goalCanToggleRun } from '@shared/goal-display'
 import { useAppStore } from '../store/useAppStore'
+import { dispatchOpenSideChat } from '../lib/side-chat-context'
 import { useT } from '../lib/i18n'
 import { formatElapsed } from './conversation/RunSummary'
 import { Popover } from './Popover'
@@ -138,6 +139,22 @@ export function GoalBar() {
                 {goal.text}
               </span>
               <div className="goal-bar__actions">
+                <button
+                  type="button"
+                  className="goal-bar__action goal-bar__action--icon"
+                  title={t('Break down goal in Side Chat')}
+                  aria-label={t('Break down goal in Side Chat')}
+                  onClick={(event) =>
+                    dispatchOpenSideChat({
+                      mode: 'open',
+                      focus: true,
+                      preset: 'breakdown-plan',
+                      autoSubmit: !event.shiftKey
+                    })
+                  }
+                >
+                  <MessagesSquare size={14} aria-hidden="true" />
+                </button>
                 <button
                   type="button"
                   className="goal-bar__action goal-bar__action--icon"

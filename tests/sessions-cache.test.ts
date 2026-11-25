@@ -1109,6 +1109,45 @@ test('an oversized session stays visible and opens on its newest window', async 
   }
 })
 
+test('a long session with a metadata-only tail recovers its selected branch', async (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-long-selected-branch-'))
+  const file = path.join(dir, 'session.jsonl')
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const message = (id: string, parentId: string | null, role: string, content: string) =>
+    ({ type: 'message', id, parentId, message: { role, content, timestamp: 1 } })
+  const records = [
+    { type: 'session', version: 3, id: 'long-selected', cwd: 'C:/proj' },
+    message('root', null, 'user', 'Opening question'),
+    message('unrelated', 'root', 'toolResult', 'y'.repeat(3 * 1024 * 1024)),
+    { type: 'session_info', id: 'selected-name', parentId: 'root', name: 'Selected branch' },
+    { type: 'model_change', id: 'selected-model', parentId: 'selected-name', provider: 'test', modelId: 'selected' },
+    message('selected', 'selected-model', 'assistant', 'Answer on the selected branch'),
+    message('abandoned-output', 'selected', 'toolResult', 'x'.repeat(25 * 1024 * 1024)),
+    message('abandoned-reply', 'abandoned-output', 'assistant', 'Answer on the abandoned branch'),
+    { type: 'model_change', id: 'abandoned-model', parentId: 'abandoned-reply', provider: 'test', modelId: 'abandoned' },
+    { type: 'session_info', id: 'abandoned-name', parentId: 'abandoned-model', name: 'Abandoned branch' },
+    { type: 'custom', id: 'tail', parentId: 'selected', customType: 'pi-desktop-rewind' }
+  ]
+  writeFileSync(file, records.map(record => JSON.stringify(record)).join('\n') + '\n', 'utf8')
+
+  const handle = await open(file, 'r')
+  try {
+    const conversation = await readSessionConversation(file, handle)
+    assert.equal(conversation.historyTruncated, true)
+    assert.deepEqual(conversation.messages.map(({ content }) => content), [
+      'Opening question', 'Answer on the selected branch'
+    ])
+    const meta = await parseLargeSessionMeta(file, statSync(file).size, 123, handle)
+    assert.ok(meta)
+    assert.equal(meta.preview, 'Opening question')
+    assert.equal(meta.messageCount, conversation.messages.length)
+    assert.equal(meta.model, 'test/selected')
+    assert.equal(meta.name, 'Selected branch')
+  } finally {
+    await handle.close()
+  }
+})
+
 test('an oversized trailing record does not make the conversation appear empty', async () => {
   clearSessionCache()
   const dir = mkdtempSync(path.join(tmpdir(), 'pi-oversize-trailing-record-'))

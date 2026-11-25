@@ -6,7 +6,17 @@ import { performance } from 'node:perf_hooks'
 import { StringDecoder } from 'node:string_decoder'
 import os from 'node:os'
 import path from 'node:path'
-import { GOAL_CONTINUE_CUSTOM_TYPE, MAX_SEARCH_QUERY_LENGTH, TASK_MODE_STATUS_KEY } from '@shared/types'
+import {
+  GOAL_CONTINUE_CUSTOM_TYPE,
+  MAX_SEARCH_QUERY_LENGTH,
+  MAX_SIDE_CHAT_REFERENCES,
+  MAX_SIDE_CHAT_SNIPPET_CHARS,
+  SIDE_CHAT_DIR_NAME,
+  SIDE_CHAT_META_ENTRY_TYPE,
+  SIDE_CHAT_TURN_META_ENTRY_TYPE,
+  TASK_MODE_STATUS_KEY,
+  isSideSessionKey
+} from '@shared/types'
 import { isAgentMode, readGoalState } from '@shared/task-mode-state'
 import type {
   AgentMessage,
@@ -17,6 +27,7 @@ import type {
   SessionMeta,
   SessionSearchHit,
   SessionTaskMode,
+  SideChatReference,
   TokenUsageMetrics
 } from '@shared/types'
 import { canonicalSessionFile } from './pi/session-file'
@@ -1147,21 +1158,28 @@ export async function getSessionMeta(
   }
 }
 
-/** Active-branch entries, leaf first in the walk and then reversed into order. */
-function activeBranch(lines: string[]): TreeEntry[] {
-  const entries: TreeEntry[] = []
-  for (const raw of lines) {
-    const line = raw.trim()
-    if (!line) continue
-    try {
-      const parsed = JSON.parse(line) as TreeEntry
-      if (parsed && typeof parsed === 'object' && parsed.type && parsed.type !== 'session') {
-        entries.push(parsed)
-      }
-    } catch {
-      /* a torn line is not a message */
-    }
+function parseSessionTreeEntry(raw: string): TreeEntry | undefined {
+  const line = raw.trim()
+  if (!line) return
+  try {
+    const parsed = JSON.parse(line) as TreeEntry
+    if (parsed && typeof parsed === 'object' && parsed.type) return parsed
+  } catch {
+    /* a torn line is not a message */
   }
+}
+
+function activeBranch(lines: string[], leafId?: string): TreeEntry[] {
+  const entries: TreeEntry[] = []
+  for (const line of lines) {
+    const entry = parseSessionTreeEntry(line)
+    if (entry && entry.type !== 'session') entries.push(entry)
+  }
+  return branchFromEntries(entries, leafId)
+}
+
+/** Active-branch entries, leaf first in the walk and then reversed into order. */
+function branchFromEntries(entries: TreeEntry[], leafId?: string): TreeEntry[] {
   const parentIds = new Set<string>()
   const byId = new Map<string, TreeEntry>()
   for (const entry of entries) {
@@ -1169,26 +1187,197 @@ function activeBranch(lines: string[]): TreeEntry[] {
     byId.set(entry.id, entry)
     if (entry.parentId) parentIds.add(entry.parentId)
   }
-  let leaf: TreeEntry | null = null
-  for (const entry of entries) {
-    if (entry.id && !parentIds.has(entry.id)) leaf = entry
+  let leaf = leafId ? byId.get(leafId) : undefined
+  if (!leafId) {
+    for (const entry of entries) {
+      if (entry.id && !parentIds.has(entry.id)) leaf = entry
+    }
+    leaf ??= entries.at(-1)
   }
-  if (!leaf) leaf = entries[entries.length - 1] ?? null
   const branch: TreeEntry[] = []
   const seen = new Set<string>()
-  let cursor: TreeEntry | null = leaf
+  let cursor = leaf
   while (cursor && cursor.id && !seen.has(cursor.id)) {
     seen.add(cursor.id)
     branch.push(cursor)
-    cursor = cursor.parentId ? byId.get(cursor.parentId) ?? null : null
+    cursor = cursor.parentId ? byId.get(cursor.parentId) : undefined
   }
   branch.reverse()
   return branch
 }
 
+async function readEarlierBranch(
+  file: string,
+  leafId: string,
+  beforeOffset: number,
+  handle: FileHandle | undefined,
+  shouldStop?: () => boolean
+): Promise<TreeEntry[]> {
+  // Follow the saved parent, even when a long abandoned branch separates it
+  // from the tail. Test one bounded window at a time.
+  while (beforeOffset > 0 && !shouldStop?.()) {
+    const start = Math.max(0, beforeOffset - MAX_SESSION_BYTES)
+    // Include the preceding byte so a record starting exactly at start is kept.
+    const readStart = Math.max(0, start - 1)
+    const lines: string[] = []
+    let firstRecordStart: number | undefined
+    for await (const record of readJsonlRecords(file, beforeOffset - readStart, readStart, start > 0, handle)) {
+      if (shouldStop?.()) return []
+      if (!record.terminated) continue
+      firstRecordStart ??= record.startOffset
+      lines.push(record.line)
+      if (lines.length % 256 === 0) await yieldToEventLoop()
+    }
+    const branch = activeBranch(lines, leafId)
+    if (branch.length) return branch
+    // The skipped partial record can be complete in the preceding window.
+    beforeOffset = firstRecordStart ?? start
+  }
+  return []
+}
+
+function parseSideChatReferences(raw: unknown): SideChatReference[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined
+  const valid: SideChatReference[] = []
+  for (const item of raw) {
+    if (valid.length >= MAX_SIDE_CHAT_REFERENCES) break
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+    const rec = item as Record<string, unknown>
+    if (typeof rec.id !== 'string' || !rec.id || typeof rec.sourceMainKey !== 'string' || !rec.sourceMainKey) {
+      continue
+    }
+    const kind = rec.kind
+    if (kind === 'selection') {
+      const source = rec.source
+      if (
+        (source === 'user' || source === 'assistant' || source === 'tool' || source === 'thinking') &&
+        typeof rec.snippet === 'string'
+      ) {
+        valid.push({
+          id: rec.id,
+          kind: 'selection',
+          sourceMainKey: rec.sourceMainKey,
+          ...(typeof rec.turnId === 'string' ? { turnId: rec.turnId } : {}),
+          ...(typeof rec.messageId === 'string' ? { messageId: rec.messageId } : {}),
+          source,
+          snippet: rec.snippet.slice(0, MAX_SIDE_CHAT_SNIPPET_CHARS)
+        })
+      }
+    } else if (kind === 'turn') {
+      if (typeof rec.turnId === 'string' && typeof rec.turnOrdinal === 'number' && typeof rec.preview === 'string') {
+        valid.push({
+          id: rec.id,
+          kind: 'turn',
+          sourceMainKey: rec.sourceMainKey,
+          turnId: rec.turnId,
+          turnOrdinal: rec.turnOrdinal,
+          ...(typeof rec.assistantMessageId === 'string' ? { assistantMessageId: rec.assistantMessageId } : {}),
+          preview: rec.preview.slice(0, MAX_SIDE_CHAT_SNIPPET_CHARS)
+        })
+      }
+    } else if (kind === 'tool') {
+      const status = rec.status
+      if (
+        typeof rec.toolCallId === 'string' &&
+        typeof rec.toolName === 'string' &&
+        typeof rec.summary === 'string' &&
+        (status === 'proposed' || status === 'running' || status === 'ok' || status === 'error' || status === 'aborted')
+      ) {
+        valid.push({
+          id: rec.id,
+          kind: 'tool',
+          sourceMainKey: rec.sourceMainKey,
+          ...(typeof rec.turnId === 'string' ? { turnId: rec.turnId } : {}),
+          toolCallId: rec.toolCallId,
+          toolName: rec.toolName,
+          summary: rec.summary.slice(0, MAX_SIDE_CHAT_SNIPPET_CHARS),
+          status
+        })
+      }
+    } else if (kind === 'error') {
+      if (typeof rec.message === 'string') {
+        valid.push({
+          id: rec.id,
+          kind: 'error',
+          sourceMainKey: rec.sourceMainKey,
+          ...(typeof rec.turnId === 'string' ? { turnId: rec.turnId } : {}),
+          ...(typeof rec.title === 'string' ? { title: rec.title } : {}),
+          message: rec.message.slice(0, MAX_SIDE_CHAT_SNIPPET_CHARS)
+        })
+      }
+    } else if (kind === 'file-diff') {
+      if (typeof rec.filePath === 'string') {
+        const range = rec.lineRange
+        const lineRange =
+          range &&
+          typeof range === 'object' &&
+          !Array.isArray(range) &&
+          typeof (range as Record<string, unknown>).start === 'number' &&
+          typeof (range as Record<string, unknown>).end === 'number'
+            ? {
+                start: (range as { start: number }).start,
+                end: (range as { end: number }).end
+              }
+            : undefined
+        valid.push({
+          id: rec.id,
+          kind: 'file-diff',
+          sourceMainKey: rec.sourceMainKey,
+          filePath: rec.filePath,
+          ...(lineRange ? { lineRange } : {}),
+          ...(typeof rec.snippet === 'string' ? { snippet: rec.snippet.slice(0, MAX_SIDE_CHAT_SNIPPET_CHARS) } : {})
+        })
+      }
+    }
+  }
+  return valid.length > 0 ? valid : undefined
+}
+
+function hasUpcomingUserMessageBeforeAssistant(entries: BaseEntry[], fromIndex: number): boolean {
+  for (let i = fromIndex + 1; i < entries.length; i += 1) {
+    const candidate = entries[i]!
+    if (
+      candidate.type === 'custom' &&
+      (candidate as BaseEntry & { customType?: unknown }).customType === SIDE_CHAT_TURN_META_ENTRY_TYPE
+    ) {
+      return false
+    }
+    if (candidate.type !== 'message') continue
+    const msg = (candidate as BaseEntry & { message?: AgentMessage }).message
+    if (!msg) continue
+    if (msg.role === 'user') return true
+    if (msg.role === 'assistant') return false
+  }
+  return false
+}
+
 function messagesFromBranch(entries: BaseEntry[]): AgentMessage[] {
   const messages: AgentMessage[] = []
-  for (const entry of entries) {
+  let pendingSideRefs: SideChatReference[] | undefined
+  let unansweredUserIndex = -1
+
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index]!
+    if (entry.type === 'custom') {
+      const custom = entry as BaseEntry & { customType?: unknown; data?: unknown }
+      if (
+        custom.customType === SIDE_CHAT_TURN_META_ENTRY_TYPE &&
+        custom.data &&
+        typeof custom.data === 'object'
+      ) {
+        const refs = parseSideChatReferences((custom.data as { references?: unknown }).references)
+        if (refs) {
+          if (hasUpcomingUserMessageBeforeAssistant(entries, index)) {
+            pendingSideRefs = refs
+          } else if (unansweredUserIndex >= 0 && !messages[unansweredUserIndex]?.sideRefs) {
+            messages[unansweredUserIndex] = { ...messages[unansweredUserIndex]!, sideRefs: refs }
+          } else {
+            pendingSideRefs = refs
+          }
+        }
+      }
+      continue
+    }
     if (entry.type === 'custom_message') {
       const custom = entry as BaseEntry & {
         customType?: unknown
@@ -1213,11 +1402,20 @@ function messagesFromBranch(entries: BaseEntry[]): AgentMessage[] {
     const message = (entry as BaseEntry & { message?: AgentMessage }).message
     if (!message) continue
     const timestamp = message.timestamp
+    const isUser = message.role === 'user'
+    const attachedSideRefs = isUser ? pendingSideRefs ?? message.sideRefs : undefined
+    if (isUser) pendingSideRefs = undefined
     messages.push({
       ...message,
-      ...(message.role === 'user' && typeof entry.id === 'string' ? { entryId: entry.id } : {}),
+      ...(isUser && typeof entry.id === 'string' ? { entryId: entry.id } : {}),
+      ...(attachedSideRefs ? { sideRefs: attachedSideRefs } : {}),
       timestamp: typeof timestamp === 'number' ? timestamp : Date.parse(String(timestamp ?? '')) || Date.now()
     })
+    if (isUser) {
+      unansweredUserIndex = messages.length - 1
+    } else if (message.role === 'assistant') {
+      unansweredUserIndex = -1
+    }
   }
   return messages
 }
@@ -1348,11 +1546,13 @@ export async function readSessionConversation(
   const windowStart = fileStats.size > MAX_SESSION_BYTES
     ? fileStats.size - MAX_SESSION_BYTES
     : 0
-  for await (const line of readJsonlLines(file, MAX_SESSION_BYTES, windowStart, windowStart > 0, handle)) {
+  let firstRecordStart = windowStart
+  for await (const record of readJsonlRecords(file, MAX_SESSION_BYTES, windowStart, windowStart > 0, handle)) {
     if (options?.shouldStop?.()) {
       return { messages: [], externalContext: false, contextChecked: false, historyTruncated: false }
     }
-    lines.push(line)
+    if (!lines.length) firstRecordStart = record.startOffset
+    lines.push(record.line)
     if (lines.length % 256 === 0) {
       await yieldToEventLoop()
       if (options?.shouldStop?.()) {
@@ -1398,8 +1598,15 @@ export async function readSessionConversation(
       historyTruncated: windowStart > 0
     }
   }
-  const branch = activeBranch(lines)
-  const messages = messagesFromBranch(branch)
+  let branch = activeBranch(lines)
+  let messages = messagesFromBranch(branch)
+  const missingParent = branch[0]?.parentId
+  if (!messages.length && windowStart > 0 && missingParent) {
+    lines.length = 0
+    const earlier = await readEarlierBranch(file, missingParent, firstRecordStart, handle, options?.shouldStop)
+    branch = [...earlier, ...branch]
+    messages = messagesFromBranch(branch)
+  }
   const externalContext = hasExternalContext(branch)
   const contextChecked = !hasExternalContextUnknown(branch) && (
     hasExternalContextChecked(branch) || (fileStats.size <= MAX_SESSION_BYTES && !hasLocalToolCall(branch))
@@ -1552,9 +1759,9 @@ export async function appendSessionName(
  *
  * The header and the opening prompt sit at the top; renames, the newest model
  * and the timestamp sit at the bottom. Reading both ends keeps a long
- * conversation visible in the sidebar and the archive list without parsing —
- * or holding — its middle. `messageCount` counts the messages in those two
- * windows; it only feeds the "nothing cached yet" check and the archive row.
+ * conversation visible in the sidebar and the archive list. If the visible
+ * branch was rewound, follow its saved parents before reporting its metadata.
+ * `messageCount` counts the messages in the windows we inspected.
  */
 export async function parseLargeSessionMeta(
   file: string,
@@ -1562,30 +1769,13 @@ export async function parseLargeSessionMeta(
   mtimeMs: number,
   handle?: FileHandle
 ): Promise<SessionMeta | null> {
-  let header: SessionHeader | null = null
   let name: string | undefined
   let preview = ''
   let model: string | undefined
   let messageCount = 0
   let lastTimestamp = ''
 
-  const scan = (raw: string): void => {
-    const line = raw.trim()
-    if (!line) return
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(line)
-    } catch {
-      return
-    }
-    if (!parsed || typeof parsed !== 'object') return
-    const record = parsed as BaseEntry & {
-      message?: { role?: string; content?: unknown; model?: string }
-    }
-    if (record.type === 'session') {
-      if (!header) header = record as unknown as SessionHeader
-      return
-    }
+  const scan = (record: TreeEntry): void => {
     if (record.type === 'session_info') {
       const value = (record as unknown as { name?: string }).name
       if (value) name = value
@@ -1611,17 +1801,44 @@ export async function parseLargeSessionMeta(
     if (typeof stamp === 'string') lastTimestamp = stamp
   }
 
-  for await (const line of readJsonlLines(file, MAX_META_HEAD_BYTES, 0, false, handle)) scan(line)
-  // `scan` assigns through a closure, so the flow analysis cannot see that the
-  // header may be set; read it back through a cast instead of a null check it
-  // would treat as impossible.
-  const sessionHeader = header as SessionHeader | null
+  const head: TreeEntry[] = []
+  let sessionHeader: SessionHeader | undefined
+  for await (const line of readJsonlLines(file, MAX_META_HEAD_BYTES, 0, false, handle)) {
+    const entry = parseSessionTreeEntry(line)
+    if (entry?.type === 'session') sessionHeader ??= entry as unknown as SessionHeader
+    else if (entry) head.push(entry)
+  }
   if (!sessionHeader) return null
   // Only read the tail when it does not overlap the head, so a small file
   // (tests, an unusually compact session) is not counted twice.
+  const tail: TreeEntry[] = []
   const tailStart = Math.max(0, size - MAX_META_TAIL_BYTES)
+  let firstTailOffset = tailStart
   if (tailStart > MAX_META_HEAD_BYTES) {
-    for await (const line of readJsonlLines(file, MAX_META_TAIL_BYTES, tailStart, true, handle)) scan(line)
+    for await (const record of readJsonlRecords(file, MAX_META_TAIL_BYTES + 1, tailStart - 1, true, handle)) {
+      const entry = parseSessionTreeEntry(record.line)
+      if (!entry || entry.type === 'session') continue
+      if (!tail.length) firstTailOffset = record.startOffset
+      tail.push(entry)
+    }
+  }
+
+  const isRewindMarker = (entry: TreeEntry): boolean => {
+    const customType = (entry as { customType?: unknown }).customType
+    return entry.type === 'custom' && (customType === 'pi-desktop-rewind' || customType === 'pi-desktop-undo-rewind')
+  }
+  const activeTail = tail.some(isRewindMarker) ? branchFromEntries(tail) : []
+  if (activeTail.some(isRewindMarker)) {
+    const parentId = activeTail[0]?.parentId
+    let prefix = parentId ? branchFromEntries(head, parentId) : []
+    if (parentId && !prefix.length) {
+      prefix = await readEarlierBranch(file, parentId, firstTailOffset, handle)
+    }
+    for (const entry of prefix) scan(entry)
+    for (const entry of activeTail) scan(entry)
+  } else {
+    for (const entry of head) scan(entry)
+    for (const entry of tail) scan(entry)
   }
 
   return {
@@ -1879,7 +2096,9 @@ async function listSessionsInRoot(cwd: string | undefined, root: string): Promis
     const workerCount = Math.min(MAX_CONCURRENT_SESSION_META_READS, files.length)
     await Promise.all(Array.from({ length: workerCount }, () => worker()))
     return metas.filter((meta): meta is SessionMeta =>
-      meta !== null && (!expectedCwd || pathsEqual(meta.cwd, expectedCwd))
+      meta !== null &&
+      !isSideSessionKey(meta.file) &&
+      (!expectedCwd || pathsEqual(meta.cwd, expectedCwd))
     )
   }
 
@@ -1930,7 +2149,9 @@ async function listSessionsInRoot(cwd: string | undefined, root: string): Promis
     let directFiles: string[]
     try {
       const entries = await readdir(root, { withFileTypes: true })
-      workspaceDirs = entries.filter((e) => e.isDirectory()).map((e) => e.name)
+      workspaceDirs = entries
+        .filter((e) => e.isDirectory() && e.name !== SIDE_CHAT_DIR_NAME)
+        .map((e) => e.name)
       directFiles = entries
         .filter((e) => (e.isFile() || e.isSymbolicLink()) && e.name.endsWith('.jsonl'))
         .map((e) => path.join(root, e.name))
@@ -2017,7 +2238,9 @@ export async function searchSessions(
     let directFiles: string[]
     try {
       const entries = await readdir(root, { withFileTypes: true })
-      workspaceDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name)
+      workspaceDirs = entries
+        .filter((entry) => entry.isDirectory() && entry.name !== SIDE_CHAT_DIR_NAME)
+        .map((entry) => entry.name)
       directFiles = entries
         .filter((entry) => (entry.isFile() || entry.isSymbolicLink()) && entry.name.endsWith('.jsonl'))
         .map((entry) => entry.name)
@@ -2033,6 +2256,7 @@ export async function searchSessions(
           if (name === undefined) return
           if (!name.endsWith('.jsonl')) continue
           const file = path.join(folder, name)
+          if (isSideSessionKey(file)) continue
           if (options.includeFile && !options.includeFile(file)) continue
           let metadata: { mtime: number; size: number } | undefined
           let target = path.join(realFolder, name)
@@ -3146,6 +3370,19 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
           continue
         }
         const dirVerified = isBelowDirectory(realRoot, dirReal)
+        if (dir === SIDE_CHAT_DIR_NAME) {
+          for (const subDir of names) {
+            const subPath = path.join(dirPath, subDir)
+            try {
+              const [subFiles, subReal] = await Promise.all([readdir(subPath), realpath(subPath)])
+              const subVerified = isBelowDirectory(realRoot, subReal)
+              for (const file of subFiles) pushUsageFile(subPath, file, subVerified)
+            } catch {
+              continue
+            }
+          }
+          continue
+        }
         for (const file of names) pushUsageFile(dirPath, file, dirVerified)
       }
     }
@@ -3361,4 +3598,111 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
     heatmapDays: toDailyStats(heatmapDaysMap),
     updatedAt: Date.now()
   }
+}
+
+/**
+ * Recover Side Chat `.jsonl` files bound to `parentSessionKey` by scanning
+ * `pi-desktop-side-chat` custom entries inside `_side-chats/<workspaceDir>/`.
+ * Used as a zero-token self-healing fallback if `<userData>/side-chats.json`
+ * was removed externally.
+ */
+export async function findSideChatFilesForParent(
+  parentSessionKey: string,
+  cwd: string,
+  sessionRoots: readonly string[] = resolveSessionRoots(),
+  parentSessionId?: string
+): Promise<string[]> {
+  if (!parentSessionKey || parentSessionKey.startsWith('draft:')) return []
+  const canonParent = canonicalSessionFile(parentSessionKey)
+  const matches: Array<{ file: string; mtimeMs: number }> = []
+  const seen = new Set<string>()
+  const encodedDir = cwd ? encodeWorkspaceDir(cwd) : ''
+
+  for (const root of sessionRoots) {
+    let realRoot: string
+    try {
+      const rootStat = await stat(root)
+      if (!rootStat.isDirectory()) continue
+      realRoot = await realpath(root)
+    } catch {
+      continue
+    }
+    const sideBase = path.join(root, SIDE_CHAT_DIR_NAME)
+    let candidateDirs: string[] = []
+    if (encodedDir) {
+      candidateDirs.push(path.join(sideBase, encodedDir))
+      const driveMatch = cwd.match(/^([a-zA-Z]):[\\/]/)
+      if (driveMatch) {
+        const drive = driveMatch[1]!
+        const flipped = (drive === drive.toUpperCase() ? drive.toLowerCase() : drive.toUpperCase()) + cwd.slice(1)
+        candidateDirs.push(path.join(sideBase, encodeWorkspaceDir(flipped)))
+      }
+    } else {
+      try {
+        const subEntries = await readdir(sideBase, { withFileTypes: true })
+        candidateDirs = subEntries.filter((e) => e.isDirectory()).map((e) => path.join(sideBase, e.name))
+      } catch {
+        continue
+      }
+    }
+
+    for (const dir of candidateDirs) {
+      let names: string[]
+      try {
+        names = await readdir(dir)
+      } catch {
+        continue
+      }
+      for (const name of names) {
+        if (!name.endsWith('.jsonl')) continue
+        const candidatePath = path.join(dir, name)
+        const opened = await openSessionFile(candidatePath, root, false, realRoot)
+        if (!opened) continue
+        try {
+          const canonSide = canonicalSessionFile(opened.target)
+          if (seen.has(canonSide)) continue
+          const fileStats = await opened.handle.stat()
+          let matched = false
+          let linesChecked = 0
+          for await (const rawLine of readJsonlLines(opened.target, MAX_META_HEAD_BYTES, 0, false, opened.handle)) {
+            linesChecked += 1
+            if (linesChecked > 64) break
+            if (!rawLine.includes(SIDE_CHAT_META_ENTRY_TYPE)) continue
+            try {
+              const parsed = JSON.parse(rawLine) as {
+                type?: unknown
+                customType?: unknown
+                data?: { parentSessionKey?: unknown; parentSessionId?: unknown }
+              }
+              if (parsed.type !== 'custom' || parsed.customType !== SIDE_CHAT_META_ENTRY_TYPE || !parsed.data) {
+                continue
+              }
+              const entryParentKey =
+                typeof parsed.data.parentSessionKey === 'string' ? parsed.data.parentSessionKey : ''
+              const entryParentId =
+                typeof parsed.data.parentSessionId === 'string' ? parsed.data.parentSessionId : ''
+              if (
+                (entryParentKey && canonicalSessionFile(entryParentKey) === canonParent) ||
+                (parentSessionId && entryParentId && entryParentId === parentSessionId)
+              ) {
+                matched = true
+                break
+              }
+            } catch {
+              /* ignore malformed line */
+            }
+          }
+          if (matched) {
+            seen.add(canonSide)
+            matches.push({ file: opened.target, mtimeMs: fileStats.mtimeMs })
+          }
+        } finally {
+          await opened.handle.close().catch(() => {})
+        }
+      }
+    }
+  }
+
+  matches.sort((a, b) => b.mtimeMs - a.mtimeMs)
+  return matches.map((m) => m.file)
 }

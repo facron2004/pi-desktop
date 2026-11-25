@@ -95,8 +95,8 @@ export function scrollTopForTurnTop(
  * ------------------------------------------------------------------ */
 
 /** The key the transcript uses for a conversation's scroll memory. */
-export function scrollKeyOf(sessionFile: string | undefined): string {
-  return sessionFile ?? 'draft'
+export function scrollKeyOf(sessionFile: string | undefined, fallback = 'draft'): string {
+  return sessionFile ?? fallback
 }
 
 export const MAX_SCROLL_MEMORIES = 200

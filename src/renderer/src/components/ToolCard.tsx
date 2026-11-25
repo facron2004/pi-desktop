@@ -10,6 +10,7 @@ import {
   FolderOpen,
   ImagePlus,
   ListChecks,
+  MessagesSquare,
   Monitor,
   Pencil,
   Play,
@@ -80,7 +81,7 @@ export const ToolCard = memo(function ToolCard({
   /** The reply already quotes the image prompt, so the fold must not repeat it. */
   hidePrompt?: boolean
 }) {
-  const { threadKey, insertIntoComposer, workspacePath, language } = useThreadEnv()
+  const { threadKey, insertIntoComposer, workspacePath, language, askSideChat } = useThreadEnv()
   const [manualOpen, setManualOpen] = useState<boolean | undefined>(() =>
     readToolOpen(threadKey, item.id)
   )
@@ -366,6 +367,27 @@ export const ToolCard = memo(function ToolCard({
             {item.durationMs !== undefined && item.status !== 'running' ? (
               <span className="tool-link__time">{formatDuration(item.durationMs)}</span>
             ) : null}
+            {askSideChat ? (
+              <button
+                type="button"
+                className="tool-link__ask-side"
+                title={t('Ask Side Chat about this tool call')}
+                aria-label={t('Ask Side Chat about this tool call')}
+                onClick={(event) => {
+                  const turnId = event.currentTarget.closest<HTMLElement>('[data-turn]')?.dataset.turn
+                  askSideChat({
+                    kind: 'tool',
+                    ...(turnId ? { turnId } : {}),
+                    toolCallId: item.toolCallId,
+                    toolName: item.toolName,
+                    summary: linkText || summary.detail || item.toolName,
+                    status: state
+                  })
+                }}
+              >
+                <MessagesSquare size={12} aria-hidden="true" />
+              </button>
+            ) : null}
           </div>
           {details}
           {item.toolName === 'generate_image' ? <GeneratedImageStrip item={item} /> : null}
@@ -438,6 +460,28 @@ export const ToolCard = memo(function ToolCard({
               onClick={() => runInTerminal(terminalCommand)}
             >
               <Play size={12} />
+            </button>
+          ) : null}
+
+          {askSideChat ? (
+            <button
+              type="button"
+              className="tool__reuse-icon"
+              title={t('Ask Side Chat about this tool call')}
+              aria-label={t('Ask Side Chat about this tool call')}
+              onClick={(event) => {
+                const turnId = event.currentTarget.closest<HTMLElement>('[data-turn]')?.dataset.turn
+                askSideChat({
+                  kind: 'tool',
+                  ...(turnId ? { turnId } : {}),
+                  toolCallId: item.toolCallId,
+                  toolName: item.toolName,
+                  summary: summary.detail || linkText || item.toolName,
+                  status: state
+                })
+              }}
+            >
+              <MessagesSquare size={12} aria-hidden="true" />
             </button>
           ) : null}
 

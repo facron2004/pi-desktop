@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { ExtensionUiResponse, PiEvent, RuntimeQueueEvent, RuntimeStartOptions, RuntimeStatus } from '@shared/types'
 import { SessionSupervisor, MAX_IDLE_RUNTIMES, type ManagedSessionRuntime } from '../src/main/pi/supervisor'
-import { PiRpcCommandError, PiRpcPreSendError } from '../src/main/pi/rpc-client'
+import { PiRpcClient, PiRpcCommandError } from '../src/main/pi/rpc-client'
 import { InterprocessCwdGate } from '../src/main/pi/cwd-gate'
 import { properLockfile } from '../src/main/proper-lockfile'
 
@@ -849,12 +849,15 @@ test('clear_queue cancels prompts still waiting at the directory gate', async ()
   const waiting = supervisor.request<{ cancelled?: boolean }>('B', 'prompt', { message: 'later' })
   const imageSetup = supervisor.request<{ cancelled?: boolean }>('B', 'prompt',
     { message: '/desktop-image {"prompt":"a sketch"}' }, undefined, { sourceAction: 'image-params' })
+  const undo = supervisor.request<{ cancelled?: boolean }>('B', 'prompt',
+    { message: '/desktop-undo-rewind' }, undefined, { sourceAction: 'message-undo' })
   const cleared = await supervisor.request<{ steering: string[] }>('B', 'clear_queue')
   releaseLock()
   await locking
   const result = await waiting
   assert.equal(result.cancelled, true)
   assert.equal((await imageSetup).cancelled, true)
+  assert.equal((await undo).cancelled, true)
   assert.deepEqual(cleared.steering, ['later'])
   assert.equal(b.commands.some(({ command }) => command === 'prompt'), false)
 })
@@ -1068,6 +1071,29 @@ test('shutdown waits for a session lock request and prevents its runtime from st
     properLockfile.lock = originalLock
     await supervisor.stop()
     rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('app shutdown continues to reject new sessions after the existing sessions have stopped', async () => {
+  const first = new FakeRuntime()
+  const reopened = new FakeRuntime()
+  const late = new FakeRuntime()
+  const supervisor = supervisorOf([first, reopened, late])
+  const session = { sessionKey: 'A', cwd: 'C:/shutdown-test' }
+  try {
+    assert.deepEqual(await supervisor.ensure(session), { ok: true })
+    await supervisor.stop('A')
+    assert.deepEqual(await supervisor.ensure(session), { ok: true })
+    assert.equal(reopened.starts, 1)
+
+    await supervisor.stop()
+    assert.equal(reopened.stops, 1)
+    assert.deepEqual(await supervisor.ensure({ ...session, sessionKey: 'late' }), {
+      ok: false, error: 'Pi is shutting down.'
+    })
+    assert.equal(late.starts, 0)
+  } finally {
+    await supervisor.stop()
   }
 })
 
@@ -1663,28 +1689,54 @@ test('prewarm-only idle runtimes are evicted before user-activated idle runtimes
   await supervisor.stop()
 })
 
-test('PiRpcPreSendError does not stick activity.running to true', async () => {
+test('a prompt that expires in the RPC write queue releases the directory before Pi reads stdin', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-rpc-queue-timeout-'))
+  const releaseInput = path.join(dir, 'read-stdin')
+  const fixture = String.raw`
+    const fs = require('node:fs');
+    const received = [];
+    const timer = setInterval(() => {
+      if (!fs.existsSync('read-stdin')) return;
+      clearInterval(timer);
+      let buffer = '';
+      process.stdin.setEncoding('utf8');
+      process.stdin.on('data', chunk => {
+        buffer += chunk;
+        let newline;
+        while ((newline = buffer.indexOf('\n')) !== -1) {
+          const request = JSON.parse(buffer.slice(0, newline));
+          buffer = buffer.slice(newline + 1);
+          received.push(request.type);
+          if (request.type === 'probe') {
+            process.stdout.write(JSON.stringify({ type: 'response', id: request.id, success: true, data: received }) + '\n');
+          }
+        }
+      });
+    }, 10);`
+  const client = new PiRpcClient({ command: process.execPath, args: ['-e', fixture], cwd: dir })
   const runtime = new FakeRuntime()
+  runtime.settleOnAbort = true
   const originalRequest = runtime.request.bind(runtime)
-  runtime.request = async <T = unknown>(command: string, payload?: Record<string, unknown>): Promise<T> => {
-    if (command === 'prompt') {
-      throw new PiRpcPreSendError('Command queue limit exceeded')
-    }
-    return originalRequest<T>(command, payload)
-  }
-  const supervisor = supervisorOf([runtime])
-  await supervisor.ensure({ sessionKey: 'presend-err', cwd: 'C:/presend' })
+  runtime.request = <T = unknown>(command: string, payload?: Record<string, unknown>, timeoutMs?: number): Promise<T> =>
+    command === 'prompt' ? client.request<T>({ ...payload, type: command }, timeoutMs) : originalRequest<T>(command, payload)
+  const supervisor = supervisorOf([runtime], path.join(dir, 'locks'))
+  const sessionKey = 'draft:queue-timeout'
+  try {
+    client.start()
+    assert.deepEqual(await supervisor.ensure({ sessionKey, cwd: dir }), { ok: true })
+    client.notify({ type: 'pressure', value: 'x'.repeat(4 * 1024 * 1024) })
+    await assert.rejects(() => supervisor.request(sessionKey, 'prompt', { message: 'expire' }, 100), /Timed out/)
+    assert.equal(await supervisor.withCwdLock(dir, async () => 'released'), 'released')
+    assert.equal(supervisor.sessionInfo(sessionKey)?.running, false)
 
-  await assert.rejects(
-    () => supervisor.request('presend-err', 'prompt', { message: 'hello' }),
-    /Command queue limit exceeded/
-  )
-  assert.equal(
-    supervisor.sessionInfo('presend-err')?.running,
-    false,
-    'pre-send prompt failure must not mark session as running'
-  )
-  await supervisor.stop()
+    writeFileSync(releaseInput, '')
+    assert.deepEqual(await client.request({ type: 'probe' }, 5000), ['pressure', 'probe'])
+  } finally {
+    writeFileSync(releaseInput, '')
+    await client.stop()
+    await supervisor.stop()
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('queued runtime requests wait cleanly past 300ms external contention, emit queue metadata, and dispatch concurrently in FIFO order', async (t) => {

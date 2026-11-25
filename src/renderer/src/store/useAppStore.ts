@@ -4,6 +4,11 @@ import {
   GENERATION_TIMING_STATUS_KEY,
   GOAL_CONTINUE_CUSTOM_TYPE,
   GOAL_STATUS_KEY,
+  isSideSessionKey,
+  MAX_SIDE_CHAT_REFERENCES,
+  mintSideDraftKey,
+  SIDE_CHAT_TURN_META_ENTRY_TYPE,
+  SIDE_DRAFT_PREFIX,
   SUBAGENT_EDITOR_CANCEL_STATUS_KEY,
   TASK_MODE_STATUS_KEY
 } from '@shared/types'
@@ -31,6 +36,8 @@ import type {
   SessionSearchHit,
   SessionStats,
   SettingsPatchBaseline,
+  SideChatPresetKind,
+  SideChatReference,
   Workspace
 } from '@shared/types'
 import type { ProviderProfile, SaveProviderInput } from '@shared/providers'
@@ -42,17 +49,27 @@ import {
   applyEvent,
   changedThreadItemsFrom,
   clearPendingPrompts,
+  clearStagedSideTurnRefs,
   itemsFromMessages,
   lastAssistantText,
   markAborted,
   mergeHydratedItems,
+  migrateStagedSideTurnRefs,
   nextId,
   nextOrder,
+  stageSideTurnRefs,
   textOf,
   type ThreadItem,
   type UserItem
 } from '../lib/thread'
-import { basename, resolveAgainst, samePath } from '../lib/path'
+import {
+  buildPresetPrompt,
+  dispatchOpenSideChat,
+  normalizeSideReference,
+  sameSideReferenceTarget,
+  type SideChatReferenceInput
+} from '../lib/side-chat-context'
+import { basename, samePath } from '../lib/path'
 import {
   activeConversationTitle,
   conversationRows,
@@ -243,6 +260,8 @@ export interface SessionThread {
   error?: string
   status: RuntimeStatus
   forkTargets: ForkTarget[]
+  /** This conversation can still return to the branch hidden by its last edit. */
+  rewindUndo?: true
   agentMode: AgentMode
   /** Live mode and goal status outrank a read of the same conversation from disk. */
   hasLiveTaskMode?: boolean
@@ -282,6 +301,7 @@ const THREAD_KEYS = [
   'error',
   'status',
   'forkTargets',
+  'rewindUndo',
   'agentMode',
   'hasLiveTaskMode',
   'models',
@@ -336,24 +356,152 @@ export function draftKeyOf(state: { activeSessionFile?: string; draftId?: string
   return state.activeSessionFile || state.draftId || ''
 }
 
-/**
- * The edit-rewind the reader can still take back, for the conversation on
- * screen. A rewind belongs to the conversation it happened in, so the notice
- * must not follow the reader into another one.
- */
-export function rewindUndoFor(state: {
-  activeSessionFile?: string
-  draftId?: string
-  rewindUndo?: { key: string; prompt: string }
-}): string | undefined {
-  const undo = state.rewindUndo
-  const key = draftKeyOf(state)
-  if (!undo || !key) return undefined
-  return threadKey(undo.key) === threadKey(key) ? undo.prompt : undefined
-}
-
 function viewKeyOf(state: { activeSessionFile?: string; draftId?: string }): string {
   return draftKeyOf(state)
+}
+
+export interface SideModelOverride {
+  provider: string
+  id: string
+  spec: string
+}
+
+export type SideToMainHandoffMode = 'draft-append' | 'draft-replace' | 'queue-followup'
+export type SideToMainHandoffResult = 'inserted' | 'queued' | 'noop'
+
+export interface SendSidePromptOptions {
+  sideSessionKey?: string
+  references?: SideChatReference[]
+  preset?: SideChatPresetKind
+  stepText?: string
+  images?: { data: string; mimeType: string }[]
+}
+
+export interface SendSidePromptObjectInput extends SendSidePromptOptions {
+  text: string
+}
+
+/** Resolve any thread alias (e.g. a promoted draft key) to its canonical key. */
+export function resolveThreadKey(key: string): string {
+  return threadKey(key)
+}
+
+function isSideKeyInState(
+  key: string | undefined,
+  state?: Pick<AppStore, 'sideParentByKey'>
+): boolean {
+  if (!key) return false
+  const canonical = threadKey(key)
+  if (isSideSessionKey(key) || isSideSessionKey(canonical)) return true
+  if (!state) return false
+  return key in state.sideParentByKey || canonical in state.sideParentByKey
+}
+
+/**
+ * The model a conversation runs on, supporting both Main and Side Chat sessions.
+ *
+ * A live process's choice wins. For a cold Side Chat, an explicit Side override
+ * wins next, followed by the parent Main conversation's effective model, and
+ * finally the app default. A cold Main session reads its own persisted model.
+ */
+export function resolveEffectiveSessionModel(
+  state: Pick<
+    AppStore,
+    | 'activeSessionFile'
+    | 'draftId'
+    | 'threads'
+    | 'sessions'
+    | 'piState'
+    | 'settings'
+    | 'sideParentByKey'
+    | 'sideModelOverrides'
+  >,
+  sessionKey: string | undefined,
+  models: ModelInfo[]
+): ModelInfo | undefined {
+  const rawKey = sessionKey?.trim() || viewKeyOf(state)
+  const key = rawKey ? threadKey(rawKey) : ''
+  const isSide = isSideKeyInState(key, state)
+  if (isSide) {
+    const sideLive = key ? state.threads[key]?.piState?.model : undefined
+    if (sideLive?.id && sideLive.provider) return sideLive
+    const override = state.sideModelOverrides[key] ?? (rawKey ? state.sideModelOverrides[rawKey] : undefined)
+    if (override) {
+      return (
+        resolveSavedModel(override.spec, override.provider, models) ?? {
+          id: override.id,
+          name: override.id,
+          api: '',
+          provider: override.provider,
+          reasoning: false,
+          input: ['text'],
+          contextWindow: 0,
+          maxTokens: 0
+        }
+      )
+    }
+    const parentRaw =
+      state.sideParentByKey[key] ??
+      (rawKey ? state.sideParentByKey[rawKey] : undefined) ??
+      viewKeyOf(state)
+    const parentKey = parentRaw ? threadKey(parentRaw) : ''
+    if (parentKey && !isSideKeyInState(parentKey, state)) {
+      return resolveEffectiveSessionModel(state, parentKey, models)
+    }
+    return resolveSavedModel(state.settings.model, state.settings.provider, models)
+  }
+
+  const viewCanonical = viewKeyOf(state) ? threadKey(viewKeyOf(state)) : ''
+  const threadLive = key ? state.threads[key]?.piState?.model : undefined
+  const live = threadLive ?? (!key || key === viewCanonical ? state.piState?.model : undefined)
+  if (live?.id && live.provider) return live
+  const persistedFile = key && !key.startsWith('draft:') ? key : state.activeSessionFile
+  const spec = persistedFile
+    ? state.sessions.find((entry) => entry.file === persistedFile)?.model
+    : undefined
+  return resolveSavedModel(spec ?? state.settings.model, state.settings.provider, models)
+}
+
+/**
+ * The reasoning effort a conversation runs on, supporting both Main and Side Chat.
+ */
+export function resolveEffectiveThinkingLevel(
+  state: Pick<
+    AppStore,
+    | 'activeSessionFile'
+    | 'draftId'
+    | 'threads'
+    | 'piState'
+    | 'settings'
+    | 'sideParentByKey'
+    | 'sideThinkingOverrides'
+  >,
+  sessionKey: string | undefined
+): string | undefined {
+  const rawKey = sessionKey?.trim() || viewKeyOf(state)
+  const key = rawKey ? threadKey(rawKey) : ''
+  const isSide = isSideKeyInState(key, state)
+  if (isSide) {
+    const sideLive = key ? state.threads[key]?.piState?.thinkingLevel : undefined
+    if (sideLive) return sideLive
+    const override =
+      state.sideThinkingOverrides[key] ?? (rawKey ? state.sideThinkingOverrides[rawKey] : undefined)
+    if (override) return override
+    const parentRaw =
+      state.sideParentByKey[key] ??
+      (rawKey ? state.sideParentByKey[rawKey] : undefined) ??
+      viewKeyOf(state)
+    const parentKey = parentRaw ? threadKey(parentRaw) : ''
+    if (parentKey && !isSideKeyInState(parentKey, state)) {
+      return resolveEffectiveThinkingLevel(state, parentKey)
+    }
+    return state.settings.thinkingLevel
+  }
+
+  const viewCanonical = viewKeyOf(state) ? threadKey(viewKeyOf(state)) : ''
+  const threadLive = key ? state.threads[key]?.piState?.thinkingLevel : undefined
+  const live = threadLive ?? (!key || key === viewCanonical ? state.piState?.thinkingLevel : undefined)
+  return live || state.settings.thinkingLevel
 }
 
 /**
@@ -503,8 +651,8 @@ function writeDraftSnapshot(
   const zh = state.settings.language === 'zh-CN'
   const message = result === 'partial'
     ? zh
-      ? '草稿图片超出存储配额，重启后可能不完整。文字和文件引用已保存。'
-      : 'Draft images exceeded the storage limit and may be incomplete after restart. Text and file references were saved.'
+      ? '草稿存储空间不足。文字和文件引用已保存，部分图片或已发送提示词的历史可能无法恢复。'
+      : 'Draft storage is full. Text and file references were saved. Some images or sent prompt history may not be restored.'
     : zh
       ? '草稿无法保存，重启后可能无法恢复。'
       : 'This draft could not be saved for restart recovery.'
@@ -536,7 +684,7 @@ function persistDraftSnapshot(
   const lastDraftKeys = readCachedLastDraftKeys()
   const workspaceKey = draftWorkspaceKey(state.workspace)
   if (lastDraftKey === null) delete lastDraftKeys[workspaceKey]
-  else if (lastDraftKey) lastDraftKeys[workspaceKey] = lastDraftKey
+  else if (lastDraftKey && !isSideSessionKey(lastDraftKey)) lastDraftKeys[workspaceKey] = lastDraftKey
   rememberCachedLastDraftKeys(lastDraftKeys)
 
   if (options?.debounce) {
@@ -637,6 +785,29 @@ export interface AppStore {
    */
   threadsToolsRevision: number
   /**
+   * Monotonic counter bumped only when `sideSessionKey` changes, hydrates, or a
+   * tool item inside the active Side Chat thread changes — never on Main deltas
+   * or Side Chat text/thinking deltas.
+   */
+  sideToolsRevision: number
+  /** Side Chat panel open state. */
+  sideChatOpen: boolean
+  setSideChatOpen: (open: boolean) => void
+  /** Currently bound Side Chat thread key (`draft:side:...` or persisted `.jsonl`). */
+  sideSessionKey?: string
+  /** Attention marks for closed Side Chat sessions, isolated from Main's `sessionNotices`. */
+  sideNotices: Record<string, SessionNotice>
+  /** Maps canonical Main session key -> bound Side Chat session key. */
+  sideByMainKey: Record<string, string>
+  /** Reverse map: canonical Side Chat session key -> canonical parent Main session key. */
+  sideParentByKey: Record<string, string>
+  /** Per-Side-Chat model overrides (never persisted to global `settings.model`). */
+  sideModelOverrides: Record<string, SideModelOverride>
+  /** Per-Side-Chat reasoning overrides (never persisted to global `settings.thinkingLevel`). */
+  sideThinkingOverrides: Record<string, string>
+  /** Pending quoted Main-conversation references attached to each Side Chat composer. */
+  sideQuotes: Record<string, SideChatReference[]>
+  /**
    * Unread/failed marks that outlive the in-memory thread, keyed by session
    * file. A background run's notice must survive a restart so the sidebar can
    * keep pointing at the conversation the reader has not opened yet.
@@ -664,19 +835,14 @@ export interface AppStore {
   setDeskPage: (page: 'marketplace' | 'scheduled' | null) => void
   /** Session file whose historical messages are being hydrated into the view. */
   hydratingSessionFile?: string
+  /** All session keys currently hydrating from disk (supports simultaneous Main + Side hydration). */
+  hydratingSessions: Record<string, true>
   /** User messages the active branch can be forked from. */
   forkTargets: ForkTarget[]
   /** True while a fork or an edit rewind is in flight, so the button cannot be pressed twice. */
   forking: boolean
-  /**
-   * The edit-rewind the reader can still take back.
-   *
-   * Editing a message moves the branch behind it, so the messages that
-   * followed leave the transcript. The branch they came from still exists in
-   * the session file; this remembers that one rewind has not been followed by
-   * anything yet, which is the window in which undo is possible.
-   */
-  rewindUndo?: { key: string; prompt: string }
+  /** The current conversation's undo availability. */
+  rewindUndo?: true
   /** Take back the last message edit: restore the branch it moved away from. */
   undoRewind: () => Promise<void>
   /**
@@ -730,8 +896,12 @@ export interface AppStore {
   uiTitle?: string
   /** Text pushed into the composer through `set_editor_text`. */
   composerText?: string
+  /** Per-session text pushed into a composer through `set_editor_text`. */
+  composerTexts: Record<string, string>
   /** Text to append to the composer, e.g. a command the user wants to reuse. */
   composerInsert?: { text: string; seq: number; mode?: 'append' | 'replace' }
+  /** Per-session queued composer inserts (isolates Main and Side Chat composers). */
+  composerInserts: Record<string, { text: string; seq: number; mode?: 'append' | 'replace' }>
 
   /** Project edit / create dialog state */
   projectDialog: { open: boolean; mode: 'create' | 'edit'; project?: Project } | null
@@ -765,7 +935,7 @@ export interface AppStore {
   refreshSessions: () => Promise<void>
   selectSession: (session: SessionMeta, sourceAction?: string) => Promise<void>
   /** Read a cold conversation from disk into its own thread. Does not start Pi. */
-  hydrateSession: (file: string, scope?: 'branch') => Promise<void>
+  hydrateSession: (file: string, scope?: 'branch' | 'side') => Promise<void>
   renameSession: (name: string) => Promise<boolean>
   /** Name a conversation from the list, active or not. */
   renameSessionFile: (file: string, name: string) => Promise<boolean>
@@ -780,6 +950,45 @@ export interface AppStore {
   newChat: () => Promise<void>
   ensureRuntime: (sessionKey?: string, sourceAction?: string) => Promise<string>
   prewarmRuntime: (sessionKey?: string) => void
+  /** Resolve (or lazily bind) the Side Chat thread for the active Main conversation. */
+  ensureSideChatForActiveMain: () => Promise<string | undefined>
+  /** Start a fresh Side Chat for the active Main conversation without touching Main. */
+  clearActiveSideChat: () => Promise<string | undefined>
+  /** Abort only the currently open Side Chat conversation. */
+  stopSideChat: () => Promise<void>
+  /** Dismiss the error banner of a specific conversation (defaults to active Main). */
+  dismissSessionError: (sessionKey?: string) => void
+  /** Attach a Main-conversation quote/reference chip to a Side Chat composer. */
+  attachSideReference: (
+    input: SideChatReferenceInput,
+    sideKey?: string
+  ) => SideChatReference | undefined
+  /** Remove one attached reference chip from a Side Chat composer. */
+  removeSideReference: (idOrSideKey: string, sideKeyOrId?: string) => void
+  /** Clear all pending reference chips for a Side Chat composer. */
+  clearSideReferences: (sideKey?: string) => void
+  /** Run one of the built-in Side Chat preset actions. */
+  runSidePreset: (
+    preset: SideChatPresetKind,
+    options?: {
+      stepText?: string
+      sideSessionKey?: string
+      autoSubmit?: boolean
+      autoSend?: boolean
+    }
+  ) => Promise<boolean>
+  /** Send a prompt inside Side Chat, staging live Main context + references beforehand. */
+  sendSidePrompt: (
+    textOrInput: string | SendSidePromptObjectInput,
+    imagesOrOptions?: { data: string; mimeType: string }[] | SendSidePromptOptions,
+    options?: SendSidePromptOptions
+  ) => Promise<boolean>
+  /** Hand off a Side Chat answer or prompt to Main Chat (strictly non-steering). */
+  handoffSideToMain: (input: {
+    sideSessionKey?: string
+    text: string
+    mode: SideToMainHandoffMode
+  }) => Promise<SideToMainHandoffResult>
   submittingDrafts: Record<string, ComposerSubmission>
   submitComposerDraft: (sessionKey: string, submission: ComposerSubmission) => Promise<boolean>
   send: (
@@ -802,14 +1011,20 @@ export interface AppStore {
   stopSession: (sessionKey: string) => Promise<void>
   /** Clear queued steering / follow-up messages, optionally restoring them to the editor. */
   clearQueue: (restoreToEditor?: boolean) => Promise<void>
-  setModel: (model: ModelInfo) => Promise<boolean>
+  setModel: (
+    model: ModelInfo,
+    options?: { sessionKey?: string; rememberDefaults?: boolean }
+  ) => Promise<boolean>
   /** Reload the saved provider list used when Pi has not reported models yet. */
   refreshModelCatalog: () => Promise<void>
-  setThinkingLevel: (level: string) => Promise<void>
+  setThinkingLevel: (
+    level: string,
+    options?: { sessionKey?: string; rememberDefaults?: boolean }
+  ) => Promise<void>
   /** Switch to the next model of Pi's list, or to the previous one. */
-  cycleModel: (direction?: 1 | -1) => Promise<void>
+  cycleModel: (direction?: 1 | -1, sessionKey?: string) => Promise<void>
   /** Move to the next reasoning effort, or to the previous one. */
-  cycleThinkingLevel: (direction?: 1 | -1) => Promise<void>
+  cycleThinkingLevel: (direction?: 1 | -1, sessionKey?: string) => Promise<void>
   /** Compact the context, optionally with instructions for the summary. */
   compact: (instructions?: string) => Promise<boolean>
   setAutoCompaction: (enabled: boolean) => Promise<void>
@@ -857,7 +1072,7 @@ export interface AppStore {
     target?: { sessionKey?: string; requestId?: string }
   ) => Promise<void>
   dismissUi: (target?: { sessionKey?: string; requestId?: string }) => Promise<void>
-  clearComposerText: () => void
+  clearComposerText: (sessionKey?: string) => void
   /** Append text to the composer and focus it. */
   insertIntoComposer: (text: string, mode?: 'append' | 'replace', sessionKey?: string) => void
   refreshForkTargets: (sessionKey?: string) => Promise<void>
@@ -998,11 +1213,14 @@ function addBoundedSet<T>(set: Set<T>, value: T, limit = MAX_SESSION_TRACKER_ENT
   }
 }
 let modelCatalogRequestSequence = 0
-let agentSettingSelectionInFlight = false
+/** Per-session lock so Main and Side Chat model/effort changes never block each other. */
+const agentSettingSelectionsInFlight = new Set<string>()
 /** Owners whose compact RPC is still running. Pi aborts the previous compaction
  *  when a second `compact` command lands, so a double click used to cancel the
  *  first run and report it as a failure. */
 const compactionInFlight = new Set<string>()
+/** Deduplicates concurrent `ensureSideChatForActiveMain` calls per Main key. */
+const sideResolveInFlight = new Map<string, Promise<string | undefined>>()
 let modelPreferenceSequence = 0
 let modelPreferenceValue: string | null | undefined
 let thinkingPreferenceSequence = 0
@@ -1047,6 +1265,8 @@ const prewarmOnlyRuntimes = new Set<string>()
 const PREWARM_DELAY_MS = 1000
 let scheduledPrewarmTimer: ReturnType<typeof setTimeout> | null = null
 let scheduledPrewarmKey: string | null = null
+let scheduledSidePrewarmTimer: ReturnType<typeof setTimeout> | null = null
+let scheduledSidePrewarmKey: string | null = null
 /**
  * A model chosen while the conversation was cold.
  *
@@ -1055,6 +1275,8 @@ let scheduledPrewarmKey: string | null = null
  * and this map applies it to a resumed session before its first prompt.
  */
 const pendingModelSelections = new Map<string, { provider: string; id: string }>()
+/** A reasoning effort chosen for a cold resumed Side Chat session. */
+const pendingThinkingSelections = new Map<string, string>()
 
 export const MAX_CACHED_INACTIVE_THREADS = 10
 
@@ -1138,16 +1360,56 @@ function hasThreadWork(thread: SessionThread): boolean {
   return thread.run.phase !== 'idle' && !thread.run.settled
 }
 
+function normalizeProtectedKeys(keys?: string | Iterable<string>): Set<string> {
+  const protectedSet = new Set<string>()
+  if (!keys) return protectedSet
+  if (typeof keys === 'string') {
+    if (keys) {
+      protectedSet.add(keys)
+      protectedSet.add(threadKey(keys))
+    }
+    return protectedSet
+  }
+  for (const key of keys) {
+    if (!key) continue
+    protectedSet.add(key)
+    protectedSet.add(threadKey(key))
+  }
+  return protectedSet
+}
+
+function protectedSessionKeys(
+  state: Pick<AppStore, 'activeSessionFile' | 'draftId' | 'sideSessionKey'>,
+  ...extra: (string | undefined)[]
+): Set<string> {
+  const set = new Set<string>()
+  const mainKey = viewKeyOf(state)
+  if (mainKey) {
+    set.add(mainKey)
+    set.add(threadKey(mainKey))
+  }
+  if (state.sideSessionKey) {
+    set.add(state.sideSessionKey)
+    set.add(threadKey(state.sideSessionKey))
+  }
+  for (const key of extra) {
+    if (!key) continue
+    set.add(key)
+    set.add(threadKey(key))
+  }
+  return set
+}
+
 /** Remove abandoned empty `draft:` threads when switching views so they never accumulate in `threads`. */
 function pruneIdleDraftThreads(
   threads: Record<string, SessionThread>,
-  keepKey?: string
+  keepKeys?: string | Iterable<string>
 ): Record<string, SessionThread> {
-  const canonicalKeep = keepKey ? threadKey(keepKey) : undefined
+  const protectedSet = normalizeProtectedKeys(keepKeys)
   let next: Record<string, SessionThread> | undefined
   for (const [key, thread] of Object.entries(threads)) {
     if (!key.startsWith('draft:')) continue
-    if (key === keepKey || key === canonicalKeep) continue
+    if (protectedSet.has(key) || protectedSet.has(threadKey(key))) continue
     if (hasThreadWork(thread)) continue
     next ??= { ...threads }
     delete next[key]
@@ -1157,16 +1419,16 @@ function pruneIdleDraftThreads(
 
 export function enforceSessionLru(
   threads: Record<string, SessionThread>,
-  activeKey?: string,
+  activeKeys?: string | Iterable<string>,
   maxInactive = MAX_CACHED_INACTIVE_THREADS
 ): Record<string, SessionThread> {
-  const activeNormalized = activeKey ? threadKey(activeKey) : undefined
+  const protectedSet = normalizeProtectedKeys(activeKeys)
 
   // Identify loaded inactive threads safe for memory eviction
   const inactiveLoadedKeys: string[] = []
   for (const [key, thread] of Object.entries(threads)) {
     if (key.startsWith('draft:')) continue
-    if (key === activeNormalized) continue
+    if (protectedSet.has(key) || protectedSet.has(threadKey(key))) continue
     if (thread.version === 0 || thread.items.length === 0) continue
     if (thread.isStreaming) continue
     if (thread.run.phase !== 'idle' && !thread.run.settled) continue
@@ -1279,6 +1541,12 @@ function cancelScheduledPrewarm(): void {
   scheduledPrewarmKey = null
 }
 
+function cancelScheduledSidePrewarm(): void {
+  if (scheduledSidePrewarmTimer !== null) globalThis.clearTimeout(scheduledSidePrewarmTimer)
+  scheduledSidePrewarmTimer = null
+  scheduledSidePrewarmKey = null
+}
+
 /**
  * Start Pi for the conversation that is already on screen, once it has stayed
  * there long enough to be the one the reader is about to type into.
@@ -1313,6 +1581,31 @@ function schedulePrewarm(sessionKey: string | undefined, messageCount: number): 
   // run the store in Node, and a pending speculative start must not hold that
   // process open after the last assertion.
   ;(scheduledPrewarmTimer as unknown as { unref?: () => void }).unref?.()
+}
+
+/**
+ * Speculatively warm a persisted Side Chat session while the Side Chat drawer
+ * stays open on screen. Draft Side Chats (`draft:side:...`) are never prewarmed
+ * so opening an unused Side Chat never writes an empty file on disk.
+ */
+function scheduleSidePrewarm(sessionKey: string | undefined, messageCount: number): void {
+  cancelScheduledSidePrewarm()
+  if (!sessionKey || sessionKey.startsWith('draft:')) return
+  if (messageCount <= 0) return
+  scheduledSidePrewarmKey = sessionKey
+  scheduledSidePrewarmTimer = globalThis.setTimeout(() => {
+    scheduledSidePrewarmTimer = null
+    const key = scheduledSidePrewarmKey
+    scheduledSidePrewarmKey = null
+    if (!key) return
+    const state = useAppStore.getState()
+    if (!state.sideChatOpen || state.deskPage !== null) return
+    const activeSide = state.sideSessionKey ? threadKey(state.sideSessionKey) : ''
+    if (activeSide !== threadKey(key)) return
+    if (state.threads[key]?.isStreaming || state.threads[key]?.run.settled === false) return
+    state.prewarmRuntime(key)
+  }, PREWARM_DELAY_MS)
+  ;(scheduledSidePrewarmTimer as unknown as { unref?: () => void }).unref?.()
 }
 
 /** The name a project is shown with, for a folder the user has not opened yet. */
@@ -1460,14 +1753,23 @@ function hasThreadsMetaChange(
   nextThreads: Readonly<Record<string, SessionThread>>
 ): boolean {
   if (prevThreads === nextThreads) return false
-  const prevKeys = Object.keys(prevThreads)
-  const nextKeys = Object.keys(nextThreads)
-  if (prevKeys.length !== nextKeys.length) return true
-  for (let index = 0; index < nextKeys.length; index += 1) {
-    const key = nextKeys[index]
+  let prevMainCount = 0
+  for (const key in prevThreads) {
+    if (!isSideSessionKey(key)) prevMainCount += 1
+  }
+  let nextMainCount = 0
+  for (const key in nextThreads) {
+    const nextThread = nextThreads[key]
+    if (isSideSessionKey(key)) {
+      const prevThread = prevThreads[key]
+      const prevUi = prevThread ? digestOfThread(prevThread).pendingUiCount : 0
+      const nextUi = digestOfThread(nextThread, prevThread).pendingUiCount
+      if (prevUi !== nextUi) return true
+      continue
+    }
+    nextMainCount += 1
     if (!(key in prevThreads)) return true
     const prevThread = prevThreads[key]
-    const nextThread = nextThreads[key]
     if (prevThread === nextThread) continue
     const prevDigest = digestOfThread(prevThread)
     const nextDigest = digestOfThread(nextThread, prevThread)
@@ -1480,6 +1782,12 @@ function hasThreadsMetaChange(
     ) {
       return true
     }
+  }
+  if (prevMainCount !== nextMainCount) return true
+  for (const key in prevThreads) {
+    if (!isSideSessionKey(key)) continue
+    if (key in nextThreads) continue
+    if (digestOfThread(prevThreads[key]).pendingUiCount > 0) return true
   }
   return false
 }
@@ -1525,23 +1833,28 @@ function hasThreadsToolsChange(
   nextThreads: Readonly<Record<string, SessionThread>>
 ): boolean {
   if (prevThreads === nextThreads) return false
-  const prevKeys = Object.keys(prevThreads)
-  const nextKeys = Object.keys(nextThreads)
-  if (prevKeys.length !== nextKeys.length) return true
-  for (let index = 0; index < nextKeys.length; index += 1) {
-    const key = nextKeys[index]
+  let prevMainCount = 0
+  for (const key in prevThreads) {
+    if (!isSideSessionKey(key)) prevMainCount += 1
+  }
+  let nextMainCount = 0
+  for (const key in nextThreads) {
+    if (isSideSessionKey(key)) continue
+    nextMainCount += 1
     if (!(key in prevThreads)) return true
     const prevThread = prevThreads[key]
     const nextThread = nextThreads[key]
     if (prevThread === nextThread || prevThread.items === nextThread.items) continue
     if (hasToolItemChange(prevThread.items, nextThread.items)) return true
   }
-  return false
+  return prevMainCount !== nextMainCount
 }
 
 interface RevisionOptions {
   activeThreadHydrated?: boolean
   toolChangedHint?: boolean
+  sideThreadHydrated?: boolean
+  sideToolChangedHint?: boolean
 }
 
 function withRevisions(
@@ -1555,7 +1868,7 @@ function withRevisions(
     hasKey = true
     break
   }
-  if (!hasKey && !options?.activeThreadHydrated) return patch
+  if (!hasKey && !options?.activeThreadHydrated && !options?.sideThreadHydrated) return patch
   const bumpMeta =
     'threads' in patch && patch.threads !== undefined && hasThreadsMetaChange(prev.threads, patch.threads)
 
@@ -1579,12 +1892,29 @@ function withRevisions(
       patch.threads !== undefined &&
       hasThreadsToolsChange(prev.threads, patch.threads))
 
-  if (!bumpMeta && !bumpTools && !bumpThreadsTools) return patch
+  const prevSideRaw = prev.sideSessionKey
+  const nextSideRaw = 'sideSessionKey' in patch ? patch.sideSessionKey : prev.sideSessionKey
+  const prevSideKey = prevSideRaw ? threadKey(prevSideRaw) : ''
+  const nextSideKey = nextSideRaw ? threadKey(nextSideRaw) : ''
+  let bumpSideTools = prevSideKey !== nextSideKey || Boolean(options?.sideThreadHydrated)
+  if (!bumpSideTools && nextSideKey && 'threads' in patch && patch.threads !== undefined) {
+    const prevSideItems = prev.threads[nextSideKey]?.items
+    const nextSideItems = patch.threads[nextSideKey]?.items
+    if (nextSideItems !== prevSideItems) {
+      bumpSideTools =
+        options?.sideToolChangedHint !== undefined
+          ? options.sideToolChangedHint
+          : hasToolItemChange(prevSideItems ?? [], nextSideItems ?? [])
+    }
+  }
+
+  if (!bumpMeta && !bumpTools && !bumpThreadsTools && !bumpSideTools) return patch
   return {
     ...patch,
     ...(bumpMeta ? { threadsMetaVersion: prev.threadsMetaVersion + 1 } : {}),
     ...(bumpTools ? { activeToolsRevision: prev.activeToolsRevision + 1 } : {}),
-    ...(bumpThreadsTools ? { threadsToolsRevision: prev.threadsToolsRevision + 1 } : {})
+    ...(bumpThreadsTools ? { threadsToolsRevision: prev.threadsToolsRevision + 1 } : {}),
+    ...(bumpSideTools ? { sideToolsRevision: prev.sideToolsRevision + 1 } : {})
   }
 }
 
@@ -1614,10 +1944,65 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
   threadsMetaVersion: 0,
   activeToolsRevision: 0,
   threadsToolsRevision: 0,
+  sideToolsRevision: 0,
+  sideChatOpen: false,
+  sideNotices: {},
+  sideByMainKey: {},
+  sideParentByKey: {},
+  sideModelOverrides: {},
+  sideThinkingOverrides: {},
+  sideQuotes: {},
+  hydratingSessions: {},
+  composerTexts: {},
+  composerInserts: {},
+  setSideChatOpen: (open) => {
+    const current = get()
+    if (!open) {
+      cancelScheduledSidePrewarm()
+      stopPrewarmOnlyRuntime(current.sideSessionKey)
+      if (!current.sideChatOpen) return
+      set({ sideChatOpen: false })
+      return
+    }
+    const mainRaw = viewKeyOf(current)
+    const mainKey = mainRaw ? threadKey(mainRaw) : ''
+    const knownRaw = (mainKey ? current.sideByMainKey[mainKey] : undefined) ?? current.sideSessionKey
+    const canonicalSide = knownRaw ? threadKey(knownRaw) : undefined
+    const hasSideNotice = Boolean(canonicalSide && canonicalSide in current.sideNotices)
+    const sideThread = canonicalSide ? current.threads[canonicalSide] : undefined
+    set((state) => {
+      let nextSideNotices = state.sideNotices
+      if (canonicalSide && canonicalSide in state.sideNotices && state.deskPage === null) {
+        nextSideNotices = { ...state.sideNotices }
+        delete nextSideNotices[canonicalSide]
+      }
+      let nextThreads = state.threads
+      if (canonicalSide && state.threads[canonicalSide]?.notice && state.deskPage === null) {
+        nextThreads = {
+          ...state.threads,
+          [canonicalSide]: { ...state.threads[canonicalSide], notice: undefined }
+        }
+      }
+      return {
+        sideChatOpen: true,
+        ...(canonicalSide ? { sideSessionKey: canonicalSide } : {}),
+        ...(nextSideNotices !== state.sideNotices ? { sideNotices: nextSideNotices } : {}),
+        ...(nextThreads !== state.threads ? { threads: nextThreads } : {})
+      }
+    })
+    if (canonicalSide && !canonicalSide.startsWith('draft:') && sideThread?.items.length) {
+      scheduleSidePrewarm(canonicalSide, sideThread.items.length)
+    }
+    if (!hasSideNotice || !canonicalSide || !sideThread) {
+      void get().ensureSideChatForActiveMain()
+    } else if (!canonicalSide.startsWith('draft:') && needsSessionHydration(canonicalSide, sideThread)) {
+      void get().hydrateSession(canonicalSide, 'side')
+    }
+  },
   sessionNotices: loadSessionNotices(),
   rememberSessionNotice: (file, notice) => {
     const key = threadKey(file)
-    if (!key || key.startsWith('draft:')) return
+    if (!key || key.startsWith('draft:') || isSideKeyInState(key, get())) return
     if (get().sessionNotices[key] === notice) return
     const sessionNotices = { ...get().sessionNotices, [key]: notice }
     saveSessionNotices(sessionNotices)
@@ -1684,31 +2069,52 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
   uiRequests: [],
   deskPage: null,
   setDeskPage: (deskPage) => {
+    if (deskPage !== null) {
+      cancelScheduledSidePrewarm()
+      stopPrewarmOnlyRuntime(get().sideSessionKey)
+    }
     set((state) => {
       if (deskPage !== null) return { deskPage }
       const key = viewKeyOf(state)
       const current = key ? state.threads[key] : undefined
       const canonical = key ? threadKey(key) : ''
       const hasPersistedNotice = Boolean(canonical && canonical in state.sessionNotices)
-      if (!current?.notice && !state.notice && !hasPersistedNotice) return { deskPage: null }
+      const sideCanonical = state.sideChatOpen && state.sideSessionKey ? threadKey(state.sideSessionKey) : ''
+      const sideThread = sideCanonical ? state.threads[sideCanonical] : undefined
+      const hasSideNotice = Boolean(sideCanonical && sideCanonical in state.sideNotices)
+      if (
+        !current?.notice &&
+        !state.notice &&
+        !hasPersistedNotice &&
+        !sideThread?.notice &&
+        !hasSideNotice
+      ) {
+        return { deskPage: null }
+      }
       let nextNotices = state.sessionNotices
       if (hasPersistedNotice && canonical) {
         nextNotices = { ...state.sessionNotices }
         delete nextNotices[canonical]
         saveSessionNotices(nextNotices)
       }
+      let nextSideNotices = state.sideNotices
+      if (hasSideNotice && sideCanonical) {
+        nextSideNotices = { ...state.sideNotices }
+        delete nextSideNotices[sideCanonical]
+      }
+      let nextThreads = state.threads
+      if (current?.notice && key) {
+        nextThreads = { ...nextThreads, [key]: { ...current, notice: undefined } }
+      }
+      if (sideThread?.notice && sideCanonical) {
+        nextThreads = { ...nextThreads, [sideCanonical]: { ...sideThread, notice: undefined } }
+      }
       return {
         deskPage: null,
         notice: undefined,
         ...(hasPersistedNotice ? { sessionNotices: nextNotices } : {}),
-        ...(current?.notice && key
-          ? {
-              threads: {
-                ...state.threads,
-                [key]: { ...current, notice: undefined }
-              }
-            }
-          : {})
+        ...(hasSideNotice ? { sideNotices: nextSideNotices } : {}),
+        ...(nextThreads !== state.threads ? { threads: nextThreads } : {})
       }
     })
   },
@@ -2059,6 +2465,10 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
 
   async closeWorkspace() {
     flushPendingDraftWrite()
+    cancelScheduledPrewarm()
+    cancelScheduledSidePrewarm()
+    stopPrewarmOnlyRuntime(viewKeyOf(get()))
+    stopPrewarmOnlyRuntime(get().sideSessionKey)
     const epoch = beginProjectChange(null)
     drainPending()
     pendingProjectPath = undefined
@@ -2140,9 +2550,13 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     if (sessionFile) sessionFile = threadKey(sessionFile)
     flushPendingDraftWrite()
     const currentKey = viewKeyOf(get())
+    const currentSideKey = get().sideSessionKey
     if (currentKey) touchSessionLru(currentKey)
+    if (currentSideKey) touchSessionLru(currentSideKey)
     stopPrewarmOnlyRuntime(currentKey)
+    stopPrewarmOnlyRuntime(currentSideKey)
     cancelScheduledPrewarm()
+    cancelScheduledSidePrewarm()
     const epoch = beginProjectChange(workspace?.path ?? null)
     drainPending()
     pendingProjectPath = undefined
@@ -2171,18 +2585,28 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       touchSessionLru(sessionFile)
     }
     const activeKey = sessionFile ?? draftId!
-    const prunedThreads = pruneIdleDraftThreads(get().threads, activeKey)
+    const nextSideRaw = get().sideByMainKey[threadKey(activeKey)]
+    const nextSideKey = nextSideRaw ? threadKey(nextSideRaw) : undefined
+    if (nextSideKey) touchSessionLru(nextSideKey)
+    const protectedKeys = new Set<string>([activeKey, threadKey(activeKey)])
+    if (nextSideKey) protectedKeys.add(nextSideKey)
+    const prunedThreads = pruneIdleDraftThreads(get().threads, protectedKeys)
     const threads = enforceSessionLru(
       { ...prunedThreads, [activeKey]: thread },
-      activeKey
+      protectedKeys
     )
+    const nextHydratingSessions = shouldHydrate && sessionFile
+      ? { ...get().hydratingSessions, [sessionFile]: true as const }
+      : get().hydratingSessions
     set({
       workspace,
       threads,
       drafts,
       draftId,
       activeSessionFile: sessionFile,
+      sideSessionKey: nextSideKey,
       hydratingSessionFile,
+      ...(nextHydratingSessions !== get().hydratingSessions ? { hydratingSessions: nextHydratingSessions } : {}),
       ...(nextSessionNotices !== get().sessionNotices ? { sessionNotices: nextSessionNotices } : {}),
       deskPage: null,
       error: undefined,
@@ -2197,6 +2621,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     })
     if (!sessionFile && draftId) persistDraftSnapshot(get(), drafts, draftId)
     if (shouldHydrate && sessionFile) void get().hydrateSession(sessionFile)
+    if (get().sideChatOpen) void get().ensureSideChatForActiveMain()
     if (epoch !== workspaceEpoch) return
     const sessionsTask = get().refreshSessions()
     // Start the folder's Git read alongside the session index instead of serializing
@@ -2274,9 +2699,15 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     flushPendingDraftWrite()
     const targetFile = threadKey(session.file)
     const currentKey = viewKeyOf(get())
+    const currentSideKey = get().sideSessionKey
     if (currentKey && currentKey !== targetFile) touchSessionLru(currentKey)
+    if (currentSideKey && currentKey !== targetFile) touchSessionLru(currentSideKey)
     cancelScheduledPrewarm()
-    if (currentKey !== targetFile) stopPrewarmOnlyRuntime(currentKey)
+    if (currentKey !== targetFile) {
+      cancelScheduledSidePrewarm()
+      stopPrewarmOnlyRuntime(currentKey)
+      stopPrewarmOnlyRuntime(currentSideKey)
+    }
     const workspace = get().workspace
     const changesProject = session.cwd
       ? !workspace || !samePath(session.cwd, workspace.path)
@@ -2304,17 +2735,36 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     deletedSessionKeys.delete(targetFile)
     touchSessionLru(targetFile)
     if (changesProject) pendingProjectPath = undefined
-    const prunedThreads = pruneIdleDraftThreads(get().threads, targetFile)
-    const threads = enforceSessionLru(
-      { ...prunedThreads, [targetFile]: thread },
-      targetFile
-    )
+    const nextSideRaw = get().sideByMainKey[targetFile]
+    const nextSideKey = nextSideRaw ? threadKey(nextSideRaw) : undefined
+    if (nextSideKey) touchSessionLru(nextSideKey)
+    const protectedKeys = new Set<string>([targetFile])
+    if (nextSideKey) protectedKeys.add(nextSideKey)
+    const prunedThreads = pruneIdleDraftThreads(get().threads, protectedKeys)
+    let nextSideNotices = get().sideNotices
+    const baseThreads: Record<string, SessionThread> = { ...prunedThreads, [targetFile]: thread }
+    if (get().sideChatOpen && nextSideKey) {
+      if (nextSideKey in nextSideNotices) {
+        nextSideNotices = { ...nextSideNotices }
+        delete nextSideNotices[nextSideKey]
+      }
+      if (baseThreads[nextSideKey]?.notice) {
+        baseThreads[nextSideKey] = { ...baseThreads[nextSideKey], notice: undefined }
+      }
+    }
+    const threads = enforceSessionLru(baseThreads, protectedKeys)
+    const nextHydratingSessions = shouldHydrate
+      ? { ...get().hydratingSessions, [targetFile]: true as const }
+      : get().hydratingSessions
     set({
       threads,
       draftId: live ? targetFile : undefined,
       activeSessionFile: live ? undefined : targetFile,
+      sideSessionKey: nextSideKey,
       hydratingSessionFile: shouldHydrate ? targetFile : undefined,
+      ...(nextHydratingSessions !== get().hydratingSessions ? { hydratingSessions: nextHydratingSessions } : {}),
       ...(nextSessionNotices !== get().sessionNotices ? { sessionNotices: nextSessionNotices } : {}),
+      ...(nextSideNotices !== get().sideNotices ? { sideNotices: nextSideNotices } : {}),
       deskPage: null,
       error: undefined,
       composerText: undefined,
@@ -2323,6 +2773,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       ...projectThread(thread)
     })
     schedulePrewarm(targetFile, session.messageCount)
+    if (get().sideChatOpen) void get().ensureSideChatForActiveMain()
     try {
       const settingsPromise = !session.cwd && (workspace || get().settings.activeWorkspaceId !== null)
         ? window.pi.settings.patch({ activeWorkspaceId: null }).then((settings) => {
@@ -2355,8 +2806,11 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       await Promise.all([settingsPromise, hydratePromise])
     } catch (error) {
       if ((get().activeSessionFile ?? get().draftId) === targetFile) {
+        const nextHydrating = { ...get().hydratingSessions }
+        delete nextHydrating[targetFile]
         set({
           error: messageOf(error),
+          hydratingSessions: nextHydrating,
           ...(get().hydratingSessionFile === targetFile ? { hydratingSessionFile: undefined } : {})
         })
       }
@@ -2370,9 +2824,29 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
 
     const hydrate = window.pi.sessions.hydrate
     const thread = get().threads[file]
+    const isSide = scope === 'side' || isSideKeyInState(file, get())
+    const effectiveScope = scope ?? (isSide ? 'side' : undefined)
+    const clearHydratingPatch = (): Partial<AppStore> => {
+      const current = get()
+      const hasEntry = file in current.hydratingSessions
+      const matchesActive = current.hydratingSessionFile === file
+      if (!hasEntry && !matchesActive) return {}
+      const nextHydrating = hasEntry ? { ...current.hydratingSessions } : current.hydratingSessions
+      if (hasEntry) delete nextHydrating[file]
+      return {
+        ...(hasEntry ? { hydratingSessions: nextHydrating } : {}),
+        ...(matchesActive ? { hydratingSessionFile: undefined } : {})
+      }
+    }
     if (typeof hydrate !== 'function' || !thread || !needsSessionHydration(file, thread)) {
-      if (get().hydratingSessionFile === file) set({ hydratingSessionFile: undefined })
+      const patch = clearHydratingPatch()
+      if (Object.keys(patch).length > 0) set(patch)
       return
+    }
+    if (!(file in get().hydratingSessions)) {
+      set((state) => ({
+        hydratingSessions: { ...state.hydratingSessions, [file]: true }
+      }))
     }
     const clientKey = thread.clientKey
     const historyWasLoaded = thread.historyLoaded
@@ -2380,17 +2854,18 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     const work = (async () => {
       try {
         let viewEpoch = workspaceEpoch
-        let result = await hydrate(file, scope)
+        let result = await hydrate(file, effectiveScope)
         // The main process can cancel A's read when B opens. If the reader
         // already came back to A, restart the read shared by both A selections.
         while (
+          !isSide &&
           !result.messages.length && !result.taskMode &&
           get().hydratingSessionFile === file && viewEpoch !== workspaceEpoch
         ) {
           viewEpoch = workspaceEpoch
-          result = await hydrate(file, scope)
+          result = await hydrate(file, effectiveScope)
         }
-        if (scope === 'branch' && !result.messages.length && !result.taskMode && !result.historyTruncated) {
+        if (effectiveScope === 'branch' && !result.messages.length && !result.taskMode && !result.historyTruncated) {
           // Pi delays writing a branch with no user or assistant message.
           // Its live snapshot can still contain earlier shell output.
           const data = await tracedRpc<{ messages?: AgentMessage[] }>(
@@ -2424,11 +2899,14 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
           version: current.version + 1
         }
         const rawThreads = { ...get().threads, [file]: next }
-        const threads = enforceSessionLru(rawThreads, viewKeyOf(get()))
+        const threads = enforceSessionLru(rawThreads, protectedSessionKeys(get(), file))
         const isActive = get().activeSessionFile === file
-        const clearHydrating = get().hydratingSessionFile === file ? { hydratingSessionFile: undefined } : {}
+        const isActiveSide = Boolean(get().sideSessionKey && threadKey(get().sideSessionKey!) === file)
+        const clearHydrating = clearHydratingPatch()
         if (isActive) {
           commit({ threads, ...projectThread(next), ...clearHydrating }, { activeThreadHydrated: true })
+        } else if (isActiveSide) {
+          commit({ threads, ...clearHydrating }, { sideThreadHydrated: true })
         } else {
           commit({ threads, ...clearHydrating })
         }
@@ -2437,9 +2915,11 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         // must surface on the conversation instead of becoming an unhandled
         // rejection in the renderer.
         if (get().activeSessionFile === file) set({ error: messageOf(error) })
+        else if (isSide) bindSet(set, get, file)({ error: messageOf(error) })
       } finally {
         hydrationInFlight.delete(file)
-        if (get().hydratingSessionFile === file) set({ hydratingSessionFile: undefined })
+        const patch = clearHydratingPatch()
+        if (Object.keys(patch).length > 0) set(patch)
       }
     })()
 
@@ -2506,19 +2986,12 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
 
   async exportSession() {
     const owner = viewKeyOf(get())
-    const cwd = get().workspace?.path ?? get().status.cwd
     try {
       const key = await get().ensureRuntime(owner, 'session-export')
-      const result = await tracedRpc<{ path?: string }>(key, 'export_html', undefined, undefined, 'session-export')
-      const raw = result?.path
-      if (!raw) {
-        get().showToast('Pi did not report an export file')
-        return
-      }
-      // Pi reports a bare file name relative to the session's working directory.
-      const target = resolveAgainst(cwd, raw)
-      await window.pi.shell.openPath(target)
-      get().showToast(`Exported ${basename(target)}`)
+      const result = await window.pi.sessions.exportHtml(key)
+      if (result.cancelled) return
+      const saved = `Exported ${basename(result.path)}`
+      get().showToast(result.openError ? `${saved}. ${result.openError}` : saved, result.openError ? 'warning' : 'info')
     } catch (error) {
       bindSet(set, get, owner)({ error: messageOf(error) })
     }
@@ -2526,6 +2999,9 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
 
   async deleteSession(file: string) {
     const session = get().sessions.find((entry) => entry.file === file)
+    const canonicalFile = threadKey(file)
+    const boundSideRaw = get().sideByMainKey[file] ?? get().sideByMainKey[canonicalFile]
+    const boundSideKey = boundSideRaw ? threadKey(boundSideRaw) : undefined
     try {
       if (typeof window.pi.runtime.stop === 'function') {
         try {
@@ -2533,6 +3009,16 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         } catch {
           /* a cold conversation has no process */
         }
+        if (boundSideKey) {
+          try {
+            await window.pi.runtime.stop(boundSideKey)
+          } catch {
+            /* side chat may be cold */
+          }
+        }
+      }
+      if (typeof window.pi.sideChat?.stopForParent === 'function') {
+        await window.pi.sideChat.stopForParent(file).catch(() => {})
       }
       sessionMutationSeq += 1
       const removed = await window.pi.sessions.remove(file)
@@ -2541,23 +3027,71 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         set({ error: `Could not delete ${session?.name ?? 'the conversation'}` })
         return
       }
-      const threads = { ...get().threads }
+      const currentState = get()
+      const threads = { ...currentState.threads }
       delete threads[file]
-      const drafts = { ...get().drafts }
+      delete threads[canonicalFile]
+      if (boundSideKey) delete threads[boundSideKey]
+      const drafts = { ...currentState.drafts }
       delete drafts[file]
-      delete drafts[threadKey(file)]
+      delete drafts[canonicalFile]
+      if (boundSideKey) delete drafts[boundSideKey]
+      const sideByMainKey = { ...currentState.sideByMainKey }
+      delete sideByMainKey[file]
+      delete sideByMainKey[canonicalFile]
+      const sideParentByKey = { ...currentState.sideParentByKey }
+      const sideQuotes = { ...currentState.sideQuotes }
+      const sideNotices = { ...currentState.sideNotices }
+      const sideModelOverrides = { ...currentState.sideModelOverrides }
+      const sideThinkingOverrides = { ...currentState.sideThinkingOverrides }
+      const hydratingSessions = { ...currentState.hydratingSessions }
+      const composerTexts = { ...currentState.composerTexts }
+      const composerInserts = { ...currentState.composerInserts }
+      delete hydratingSessions[file]
+      delete hydratingSessions[canonicalFile]
+      delete composerTexts[file]
+      delete composerTexts[canonicalFile]
+      delete composerInserts[file]
+      delete composerInserts[canonicalFile]
+      if (boundSideKey) {
+        delete sideParentByKey[boundSideKey]
+        delete sideQuotes[boundSideKey]
+        delete sideNotices[boundSideKey]
+        delete sideModelOverrides[boundSideKey]
+        delete sideThinkingOverrides[boundSideKey]
+        delete hydratingSessions[boundSideKey]
+        delete composerTexts[boundSideKey]
+        delete composerInserts[boundSideKey]
+        forgetDeletedThread(boundSideKey)
+      }
       forgetDeletedThread(file)
       get().forgetSessionNotice(file)
-      const sessions = get().sessions.filter((entry) => entry.file !== file)
-      if (get().activeSessionFile === file) {
+      const sessions = currentState.sessions.filter((entry) => entry.file !== file)
+      const clearingActiveSide = Boolean(
+        boundSideKey &&
+          currentState.sideSessionKey &&
+          threadKey(currentState.sideSessionKey) === boundSideKey
+      )
+      if (currentState.activeSessionFile === file) {
+        cancelScheduledSidePrewarm()
         const draftId = mintDraft()
-        const thread = emptyThread(get().workspace?.path, draftMode(get().settings), true)
+        const thread = emptyThread(currentState.workspace?.path, draftMode(currentState.settings), true)
         threads[draftId] = thread
-        persistDraftSnapshot(get(), drafts, draftId)
+        persistDraftSnapshot(currentState, drafts, draftId)
         set({
           sessions,
           threads,
           drafts,
+          sideByMainKey,
+          sideParentByKey,
+          sideQuotes,
+          sideNotices,
+          sideModelOverrides,
+          sideThinkingOverrides,
+          hydratingSessions,
+          composerTexts,
+          composerInserts,
+          sideSessionKey: undefined,
           draftId,
           activeSessionFile: undefined,
           hydratingSessionFile: undefined,
@@ -2566,9 +3100,24 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
           pendingJump: undefined,
           ...projectThread(thread)
         })
+        if (get().sideChatOpen) void get().ensureSideChatForActiveMain()
       } else {
-        persistDraftSnapshot(get(), drafts)
-        set({ sessions, threads, drafts })
+        persistDraftSnapshot(currentState, drafts)
+        set({
+          sessions,
+          threads,
+          drafts,
+          sideByMainKey,
+          sideParentByKey,
+          sideQuotes,
+          sideNotices,
+          sideModelOverrides,
+          sideThinkingOverrides,
+          hydratingSessions,
+          composerTexts,
+          composerInserts,
+          ...(clearingActiveSide ? { sideSessionKey: undefined } : {})
+        })
       }
       let preferenceCleanupError: string | undefined
       try {
@@ -2605,7 +3154,14 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         // Keep restore/pin operations behind this transition while the runtime
         // stops; otherwise a fast restore can observe the old settings and be
         // overwritten by this delayed archive.
-        if (typeof window.pi.runtime.stop === 'function') await window.pi.runtime.stop(file)
+        if (typeof window.pi.runtime.stop === 'function') {
+          await window.pi.runtime.stop(file)
+          const boundSide = get().sideByMainKey[file] ?? get().sideByMainKey[threadKey(file)]
+          if (boundSide) await window.pi.runtime.stop(threadKey(boundSide)).catch(() => {})
+        }
+        if (typeof window.pi.sideChat?.stopForParent === 'function') {
+          await window.pi.sideChat.stopForParent(file).catch(() => {})
+        }
         const pinned = get().settings.pinnedSessions ?? []
         const settings = await window.pi.settings.patch({
           archivedSessions: [...archived, file],
@@ -2645,9 +3201,13 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
 
   async newChat() {
     const currentKey = viewKeyOf(get())
+    const currentSideKey = get().sideSessionKey
     if (currentKey) touchSessionLru(currentKey)
+    if (currentSideKey) touchSessionLru(currentSideKey)
     stopPrewarmOnlyRuntime(currentKey)
+    stopPrewarmOnlyRuntime(currentSideKey)
     cancelScheduledPrewarm()
+    cancelScheduledSidePrewarm()
     beginViewChange()
     drainPending()
     const draftId = mintDraft()
@@ -2661,6 +3221,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     set({
       draftId,
       activeSessionFile: undefined,
+      sideSessionKey: undefined,
       hydratingSessionFile: undefined,
       deskPage: null,
       error: undefined,
@@ -2671,6 +3232,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       ...projectThread(thread),
       status: { phase: 'ready', cwd: get().workspace?.path }
     })
+    if (get().sideChatOpen) void get().ensureSideChatForActiveMain()
   },
 
   async ensureRuntime(sessionKey = viewKeyOf(get()), sourceAction = 'ensure') {
@@ -2680,42 +3242,98 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     if (!isPrewarm) {
       prewarmOnlyRuntimes.delete(key)
       if (scheduledPrewarmKey === key) cancelScheduledPrewarm()
+      if (scheduledSidePrewarmKey === key) cancelScheduledSidePrewarm()
     }
     if (typeof window.pi.runtime.ensure !== 'function') return key
     const state = get()
     const thread = state.threads[key]
     const session = state.sessions.find(entry => entry.file === key)
     const fresh = key.startsWith('draft:')
+    const isSide = isSideKeyInState(key, state)
+    const parentRaw = isSide
+      ? (state.sideParentByKey[key] ?? state.sideParentByKey[sessionKey] ?? viewKeyOf(state))
+      : undefined
+    const parentCanonical = parentRaw ? threadKey(parentRaw) : undefined
+    const parentThread = parentCanonical ? state.threads[parentCanonical] : undefined
+    const parentSession = parentCanonical
+      ? state.sessions.find((entry) => entry.file === parentCanonical)
+      : undefined
+    let launchModel: string | undefined = fresh ? state.settings.model : undefined
+    let launchThinking: string | undefined = fresh ? state.settings.thinkingLevel : undefined
+    if (isSide && fresh) {
+      const override = state.sideModelOverrides[key] ?? state.sideModelOverrides[sessionKey]
+      if (override) {
+        launchModel = override.spec
+      } else {
+        const models = selectableModels(
+          parentThread?.models ?? state.models,
+          state.catalogModels,
+          state.disabledModelSpecs
+        )
+        const parentModel = resolveEffectiveSessionModel(state, parentCanonical, models)
+        launchModel = parentModel
+          ? `${parentModel.provider}/${parentModel.id}`
+          : (parentSession?.model ?? state.settings.model)
+      }
+      launchThinking =
+        state.sideThinkingOverrides[key] ??
+        state.sideThinkingOverrides[sessionKey] ??
+        resolveEffectiveThinkingLevel(state, parentCanonical)
+    }
+    const cwd = isSide
+      ? (thread?.status.cwd ?? parentThread?.status.cwd ?? parentSession?.cwd ?? state.workspace?.path ?? '')
+      : (thread?.status.cwd ?? session?.cwd ?? (viewKeyOf(state) === key ? state.workspace?.path : '') ?? '')
     const ensured = await window.pi.runtime.ensure({
       sessionKey: key,
-      cwd: thread?.status.cwd ?? session?.cwd ?? (viewKeyOf(state) === key ? state.workspace?.path : '') ?? '',
+      cwd,
       sessionFile: fresh ? undefined : key,
+      ...(isSide
+        ? {
+            role: 'side' as const,
+            parentSessionKey: parentCanonical || undefined,
+            rememberDefaults: false
+          }
+        : {}),
       // A resumed conversation restores its own model and reasoning from Pi.
-      model: fresh ? state.settings.model : undefined,
-      thinkingLevel: fresh ? state.settings.thinkingLevel : undefined,
+      model: launchModel,
+      thinkingLevel: launchThinking,
       ...(isPrewarm ? { prewarm: true } : {}),
       trace: { sourceAction, uiSessionId: key }
     })
     if (!ensured.ok) throw new Error(ensured.error ?? 'Pi did not start')
+    const liveKey = threadKey(key)
     // A model picked while this conversation was cold had no process to hear
     // `set_model`. Apply it before the first prompt runs on the old model.
-    const pending = pendingModelSelections.get(key)
-    if (pending) {
+    const pendingModel = pendingModelSelections.get(liveKey) ?? pendingModelSelections.get(key)
+    if (pendingModel) {
       pendingModelSelections.delete(key)
+      pendingModelSelections.delete(liveKey)
       await tracedRpc(
-        key,
+        liveKey,
         'set_model',
-        { provider: pending.provider, modelId: pending.id },
+        { provider: pendingModel.provider, modelId: pendingModel.id },
         undefined,
         'restore-model'
       )
     }
-    return threadKey(key)
+    const pendingThinking = pendingThinkingSelections.get(liveKey) ?? pendingThinkingSelections.get(key)
+    if (pendingThinking) {
+      pendingThinkingSelections.delete(key)
+      pendingThinkingSelections.delete(liveKey)
+      await tracedRpc(
+        liveKey,
+        'set_thinking_level',
+        { level: pendingThinking },
+        undefined,
+        'restore-thinking'
+      )
+    }
+    return liveKey
   },
 
   prewarmRuntime(sessionKey = viewKeyOf(get())) {
     const key = threadKey(sessionKey)
-    if (!key || typeof window.pi.runtime.ensure !== 'function') return
+    if (!key || key.startsWith(SIDE_DRAFT_PREFIX) || typeof window.pi.runtime.ensure !== 'function') return
     // A run already owns the process; marking it speculative would let a view
     // change stop work that is still going.
     if (get().threads[key]?.isStreaming || get().threads[key]?.run.settled === false) return
@@ -2725,18 +3343,669 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     })
   },
 
+  async ensureSideChatForActiveMain() {
+    const mainRaw = viewKeyOf(get())
+    if (!mainRaw) return undefined
+    const canonicalMain = threadKey(mainRaw)
+    const inFlight = sideResolveInFlight.get(canonicalMain)
+    if (inFlight) return inFlight
+
+    const work = (async (): Promise<string | undefined> => {
+      const state = get()
+      const mainThread = state.threads[canonicalMain]
+      const mainSession = state.sessions.find((entry) => entry.file === canonicalMain)
+      const cwd = mainThread?.status.cwd ?? mainSession?.cwd ?? state.workspace?.path ?? ''
+      let resolvedRaw: string | undefined
+      let resolvedHasHistory = false
+      if (typeof window.pi?.sideChat?.resolve === 'function') {
+        try {
+          const snapshot = await window.pi.sideChat.resolve(canonicalMain, cwd)
+          resolvedRaw = snapshot?.activeSideKey
+          resolvedHasHistory = Boolean(snapshot?.hasPersistedHistory)
+        } catch {
+          // Fall back to a local side draft when main-process resolution is unavailable.
+        }
+      }
+      const currentMain = threadKey(canonicalMain)
+      const latest = get()
+      const existingBound = latest.sideByMainKey[currentMain] ?? latest.sideByMainKey[canonicalMain]
+      const resolvedKey = threadKey(resolvedRaw || existingBound || mintSideDraftKey())
+      deletedSessionKeys.delete(resolvedKey)
+      if (!resolvedKey.startsWith('draft:')) touchSessionLru(resolvedKey)
+
+      const isStillActiveMain = threadKey(viewKeyOf(latest)) === currentMain
+      const prevBound = existingBound ? threadKey(existingBound) : undefined
+      const migratingProvisional = Boolean(prevBound && prevBound !== resolvedKey)
+
+      const existingThread = latest.threads[resolvedKey]
+      const materialized: SessionThread = existingThread
+        ? {
+            ...existingThread,
+            clientKey: existingThread.clientKey || mintClientKey(),
+            ...(isStillActiveMain && latest.sideChatOpen && latest.deskPage === null
+              ? { notice: undefined }
+              : {})
+          }
+        : emptyThread(cwd || latest.workspace?.path, 'default', resolvedKey.startsWith('draft:'))
+
+      const shouldHydrate =
+        !resolvedKey.startsWith('draft:') && needsSessionHydration(resolvedKey, materialized)
+
+      const nextSideByMainKey = { ...latest.sideByMainKey, [currentMain]: resolvedKey }
+      const nextSideParentByKey = { ...latest.sideParentByKey, [resolvedKey]: currentMain }
+      let nextSideQuotes = latest.sideQuotes
+      let nextDrafts = latest.drafts
+      let nextSideModelOverrides = latest.sideModelOverrides
+      let nextSideThinkingOverrides = latest.sideThinkingOverrides
+      let nextSideNotices = latest.sideNotices
+
+      if (migratingProvisional && prevBound) {
+        delete nextSideParentByKey[prevBound]
+        if (prevBound in latest.sideQuotes) {
+          nextSideQuotes = { ...latest.sideQuotes }
+          const prevQuotes = nextSideQuotes[prevBound] ?? []
+          delete nextSideQuotes[prevBound]
+          const existingQuotes = nextSideQuotes[resolvedKey] ?? []
+          const mergedQuotes = [...existingQuotes]
+          for (const ref of prevQuotes) {
+            if (!mergedQuotes.some((item) => sameSideReferenceTarget(item, ref))) {
+              mergedQuotes.push(ref)
+            }
+          }
+          if (mergedQuotes.length > 0) {
+            nextSideQuotes[resolvedKey] = mergedQuotes.slice(0, MAX_SIDE_CHAT_REFERENCES)
+          }
+        }
+        if (prevBound in latest.drafts && !(resolvedKey in latest.drafts)) {
+          nextDrafts = { ...latest.drafts, [resolvedKey]: latest.drafts[prevBound] }
+          delete nextDrafts[prevBound]
+        }
+        if (prevBound in latest.sideModelOverrides && !(resolvedKey in latest.sideModelOverrides)) {
+          nextSideModelOverrides = {
+            ...latest.sideModelOverrides,
+            [resolvedKey]: latest.sideModelOverrides[prevBound]
+          }
+          delete nextSideModelOverrides[prevBound]
+        }
+        if (prevBound in latest.sideThinkingOverrides && !(resolvedKey in latest.sideThinkingOverrides)) {
+          nextSideThinkingOverrides = {
+            ...latest.sideThinkingOverrides,
+            [resolvedKey]: latest.sideThinkingOverrides[prevBound]
+          }
+          delete nextSideThinkingOverrides[prevBound]
+        }
+      }
+
+      if (isStillActiveMain && latest.sideChatOpen && latest.deskPage === null && resolvedKey in nextSideNotices) {
+        nextSideNotices = { ...nextSideNotices }
+        delete nextSideNotices[resolvedKey]
+      }
+
+      const rawThreads: Record<string, SessionThread> = {
+        ...latest.threads,
+        [resolvedKey]: materialized
+      }
+      if (migratingProvisional && prevBound && prevBound.startsWith(SIDE_DRAFT_PREFIX) && !hasThreadWork(rawThreads[prevBound] ?? emptyThread())) {
+        delete rawThreads[prevBound]
+      }
+      const threads = enforceSessionLru(
+        rawThreads,
+        protectedSessionKeys(latest, currentMain, resolvedKey)
+      )
+      const nextHydratingSessions = shouldHydrate
+        ? { ...latest.hydratingSessions, [resolvedKey]: true as const }
+        : latest.hydratingSessions
+
+      set({
+        threads,
+        sideByMainKey: nextSideByMainKey,
+        sideParentByKey: nextSideParentByKey,
+        ...(isStillActiveMain ? { sideSessionKey: resolvedKey } : {}),
+        ...(nextSideQuotes !== latest.sideQuotes ? { sideQuotes: nextSideQuotes } : {}),
+        ...(nextDrafts !== latest.drafts ? { drafts: nextDrafts } : {}),
+        ...(nextSideModelOverrides !== latest.sideModelOverrides
+          ? { sideModelOverrides: nextSideModelOverrides }
+          : {}),
+        ...(nextSideThinkingOverrides !== latest.sideThinkingOverrides
+          ? { sideThinkingOverrides: nextSideThinkingOverrides }
+          : {}),
+        ...(nextSideNotices !== latest.sideNotices ? { sideNotices: nextSideNotices } : {}),
+        ...(nextHydratingSessions !== latest.hydratingSessions
+          ? { hydratingSessions: nextHydratingSessions }
+          : {})
+      })
+
+      if (shouldHydrate) {
+        void get().hydrateSession(resolvedKey, 'side')
+      }
+      if (isStillActiveMain && get().sideChatOpen && get().deskPage === null && !resolvedKey.startsWith('draft:')) {
+        scheduleSidePrewarm(resolvedKey, resolvedHasHistory ? 1 : materialized.items.length)
+      }
+      return resolvedKey
+    })().finally(() => {
+      if (sideResolveInFlight.get(canonicalMain) === work) {
+        sideResolveInFlight.delete(canonicalMain)
+      }
+    })
+
+    sideResolveInFlight.set(canonicalMain, work)
+    return work
+  },
+
+  async clearActiveSideChat() {
+    const mainRaw = viewKeyOf(get())
+    if (!mainRaw) return undefined
+    const mainKey = threadKey(mainRaw)
+    const prevRaw = get().sideSessionKey ?? get().sideByMainKey[mainKey]
+    const prevKey = prevRaw ? threadKey(prevRaw) : undefined
+    cancelScheduledSidePrewarm()
+    if (prevKey) {
+      stopPrewarmOnlyRuntime(prevKey)
+      if (typeof window.pi.runtime.stop === 'function') {
+        await window.pi.runtime.stop(prevKey).catch(() => {})
+      }
+    }
+    const beforeClear = get()
+    const clearCwd =
+      beforeClear.threads[mainKey]?.status.cwd ??
+      beforeClear.sessions.find((entry) => entry.file === mainKey)?.cwd ??
+      beforeClear.workspace?.path ??
+      ''
+    let nextRaw: string | undefined
+    if (typeof window.pi?.sideChat?.clear === 'function') {
+      try {
+        const snapshot = await window.pi.sideChat.clear(mainKey, clearCwd)
+        nextRaw = snapshot?.activeSideKey
+      } catch {
+        // Fallback to a fresh local draft key if backend clear is unavailable.
+      }
+    }
+    const nextKey = threadKey(nextRaw || mintSideDraftKey())
+    const state = get()
+    const mainThread = state.threads[mainKey]
+    const cwd = mainThread?.status.cwd ?? state.workspace?.path
+    const freshThread = emptyThread(cwd, 'default', nextKey.startsWith('draft:'))
+
+    const threads = { ...state.threads }
+    const drafts = { ...state.drafts }
+    const sideParentByKey = { ...state.sideParentByKey }
+    const sideQuotes = { ...state.sideQuotes }
+    const sideNotices = { ...state.sideNotices }
+    const sideModelOverrides = { ...state.sideModelOverrides }
+    const sideThinkingOverrides = { ...state.sideThinkingOverrides }
+    const hydratingSessions = { ...state.hydratingSessions }
+    const composerTexts = { ...state.composerTexts }
+    const composerInserts = { ...state.composerInserts }
+    let removedDraft = false
+
+    if (prevKey && prevKey !== nextKey) {
+      delete threads[prevKey]
+      if (prevKey in drafts) {
+        delete drafts[prevKey]
+        removedDraft = true
+      }
+      delete sideParentByKey[prevKey]
+      delete sideQuotes[prevKey]
+      delete sideNotices[prevKey]
+      delete sideModelOverrides[prevKey]
+      delete sideThinkingOverrides[prevKey]
+      delete hydratingSessions[prevKey]
+      delete composerTexts[prevKey]
+      delete composerInserts[prevKey]
+      forgetDeletedThread(prevKey)
+    }
+
+    deletedSessionKeys.delete(nextKey)
+    threads[nextKey] = freshThread
+    sideParentByKey[nextKey] = mainKey
+    const sideByMainKey = { ...state.sideByMainKey, [mainKey]: nextKey }
+
+    if (removedDraft) persistDraftSnapshot(state, drafts)
+    set({
+      threads,
+      drafts,
+      sideSessionKey: nextKey,
+      sideByMainKey,
+      sideParentByKey,
+      sideQuotes,
+      sideNotices,
+      sideModelOverrides,
+      sideThinkingOverrides,
+      hydratingSessions,
+      composerTexts,
+      composerInserts
+    })
+    return nextKey
+  },
+
+  async stopSideChat() {
+    const sideKey = get().sideSessionKey
+    if (!sideKey) return
+    await get().stopSession(sideKey)
+  },
+
+  dismissSessionError(sessionKey) {
+    const raw = sessionKey ?? viewKeyOf(get())
+    const key = raw ? threadKey(raw) : ''
+    if (!key) {
+      set({ error: undefined })
+      return
+    }
+    bindSet(set, get, key)({ error: undefined })
+  },
+
+  attachSideReference(input, sideKey) {
+    const state = get()
+    const mainRaw = viewKeyOf(state)
+    const mainKey = mainRaw ? threadKey(mainRaw) : ''
+    let targetSide = sideKey
+      ? threadKey(sideKey)
+      : state.sideSessionKey
+        ? threadKey(state.sideSessionKey)
+        : mainKey && state.sideByMainKey[mainKey]
+          ? threadKey(state.sideByMainKey[mainKey])
+          : ''
+    let provisioned = false
+    if (!targetSide) {
+      targetSide = mintSideDraftKey()
+      provisioned = true
+    }
+    const normalized = normalizeSideReference(input, mainKey)
+    const currentList = state.sideQuotes[targetSide] ?? []
+    const existingIndex = currentList.findIndex((item) => sameSideReferenceTarget(item, normalized))
+    if (existingIndex === -1 && currentList.length >= MAX_SIDE_CHAT_REFERENCES) {
+      get().showToast('Up to 6 references can be attached', 'warning')
+      return undefined
+    }
+    const nextList =
+      existingIndex >= 0
+        ? currentList.map((item, idx) =>
+            idx === existingIndex ? { ...normalized, id: item.id } : item
+          )
+        : [...currentList, normalized]
+    const storedRef = existingIndex >= 0 ? nextList[existingIndex] : normalized
+
+    set((latest) => {
+      const patch: Partial<AppStore> = {
+        sideQuotes: {
+          ...latest.sideQuotes,
+          [targetSide]: nextList
+        }
+      }
+      if (provisioned && mainKey) {
+        patch.sideByMainKey = { ...latest.sideByMainKey, [mainKey]: targetSide }
+        patch.sideParentByKey = { ...latest.sideParentByKey, [targetSide]: mainKey }
+        if (!latest.sideSessionKey) patch.sideSessionKey = targetSide
+        if (!latest.threads[targetSide]) {
+          patch.threads = {
+            ...latest.threads,
+            [targetSide]: emptyThread(latest.workspace?.path, 'default', true)
+          }
+        }
+      }
+      return patch
+    })
+    return storedRef
+  },
+
+  removeSideReference(idOrSideKey, sideKeyOrId) {
+    const state = get()
+    let id: string
+    let rawSide: string | undefined
+    if (sideKeyOrId === undefined) {
+      id = idOrSideKey
+      rawSide = state.sideSessionKey
+    } else if (
+      isSideKeyInState(sideKeyOrId, state) ||
+      sideKeyOrId in state.sideQuotes ||
+      threadKey(sideKeyOrId) in state.sideQuotes
+    ) {
+      id = idOrSideKey
+      rawSide = sideKeyOrId
+    } else if (
+      isSideKeyInState(idOrSideKey, state) ||
+      idOrSideKey in state.sideQuotes ||
+      threadKey(idOrSideKey) in state.sideQuotes
+    ) {
+      rawSide = idOrSideKey
+      id = sideKeyOrId
+    } else {
+      id = idOrSideKey
+      rawSide = sideKeyOrId
+    }
+    const targetSide = rawSide ? threadKey(rawSide) : ''
+    if (!targetSide) return
+    const list = state.sideQuotes[targetSide]
+    if (!list || list.length === 0) return
+    const filtered = list.filter((ref) => ref.id !== id)
+    if (filtered.length === list.length) return
+    set((latest) => {
+      const nextQuotes = { ...latest.sideQuotes }
+      if (filtered.length === 0) delete nextQuotes[targetSide]
+      else nextQuotes[targetSide] = filtered
+      return { sideQuotes: nextQuotes }
+    })
+  },
+
+  clearSideReferences(sideKey) {
+    const raw = sideKey ?? get().sideSessionKey
+    const targetSide = raw ? threadKey(raw) : ''
+    if (!targetSide || !(targetSide in get().sideQuotes)) return
+    set((latest) => {
+      if (!(targetSide in latest.sideQuotes)) return latest
+      const nextQuotes = { ...latest.sideQuotes }
+      delete nextQuotes[targetSide]
+      return { sideQuotes: nextQuotes }
+    })
+  },
+
+  async runSidePreset(preset, options) {
+    const sideKey = options?.sideSessionKey
+      ? threadKey(options.sideSessionKey)
+      : await get().ensureSideChatForActiveMain()
+    if (!sideKey) return false
+    const prompt = buildPresetPrompt(preset, {
+      stepText: options?.stepText,
+      language: get().settings.language
+    })
+    const shouldSend = options?.autoSend ?? options?.autoSubmit ?? true
+    if (!shouldSend) {
+      get().insertIntoComposer(prompt, 'replace', sideKey)
+      return true
+    }
+    return get().sendSidePrompt(prompt, {
+      sideSessionKey: sideKey,
+      preset,
+      stepText: options?.stepText
+    })
+  },
+
+  async sendSidePrompt(textOrInput, imagesOrOptions, extraOptions) {
+    flushPendingDraftWrite()
+    let rawText: string
+    let images: { data: string; mimeType: string }[]
+    let options: SendSidePromptOptions | undefined
+    if (typeof textOrInput === 'string') {
+      rawText = textOrInput
+      if (Array.isArray(imagesOrOptions)) {
+        images = imagesOrOptions
+        options = extraOptions
+      } else {
+        options = imagesOrOptions
+        images = options?.images ?? []
+      }
+    } else {
+      rawText = textOrInput.text
+      options = textOrInput
+      images = textOrInput.images ?? []
+    }
+
+    const inputTrimmed = normalizeAppCommandInput(rawText.trim())
+    const explicitKey = options?.sideSessionKey ? threadKey(options.sideSessionKey) : undefined
+    let sideKey = explicitKey ?? (get().sideSessionKey ? threadKey(get().sideSessionKey!) : undefined)
+    if (!sideKey) {
+      sideKey = await get().ensureSideChatForActiveMain()
+    }
+    if (!sideKey) return false
+
+    const attachedQuotes = options?.references ?? get().sideQuotes[sideKey] ?? []
+    const trimmed =
+      inputTrimmed ||
+      (!images.length && attachedQuotes.length > 0
+        ? 'Explain this referenced context from the main conversation.'
+        : '')
+    if (!trimmed && !images.length) return false
+
+    // Side Chat is strictly read-only and never runs shell or Main-only commands.
+    if (!images.length && trimmed.startsWith('!')) {
+      get().showToast('This command is only available in the main conversation', 'warning')
+      return false
+    }
+    if (
+      !images.length &&
+      /^\/(?:image|swarm|plugin|branch|duplicate|plan|goal|commit|new|side)(?:\s|$)/i.test(trimmed)
+    ) {
+      get().showToast('This command is only available in the main conversation', 'warning')
+      return false
+    }
+
+    const sentRefIds = new Set(attachedQuotes.map((ref) => ref.id))
+    const stateSnapshot = get()
+    const parentRaw = stateSnapshot.sideParentByKey[sideKey] ?? viewKeyOf(stateSnapshot)
+    const canonicalParent = parentRaw ? threadKey(parentRaw) : ''
+    const cwd =
+      stateSnapshot.threads[sideKey]?.status.cwd ??
+      (canonicalParent ? stateSnapshot.threads[canonicalParent]?.status.cwd : undefined) ??
+      stateSnapshot.workspace?.path
+
+    const update = bindSet(set, get, sideKey)
+    const ownGet = bindGet(get, sideKey)
+    const payload: Record<string, unknown> = { message: trimmed, streamingBehavior: 'followUp' }
+    if (images.length) payload.images = images
+    pinScrollToBottom(sideKey)
+
+    const pendingPrompt: UserItem = {
+      id: nextId('user'),
+      kind: 'user',
+      text: trimmed,
+      images: images ?? [],
+      timestamp: Date.now(),
+      order: nextOrder(),
+      pending: true,
+      ...(attachedQuotes.length > 0 ? { sideRefs: attachedQuotes } : {})
+    }
+    rememberQueuedPrompt(sideKey, pendingPrompt)
+    update((state) => ({
+      error: undefined,
+      isStreaming: true,
+      submitSeq: (state.submitSeq ?? 0) + 1,
+      run: state.run.settled ? { phase: 'queued', turns: 0, settled: false } : state.run,
+      status: { ...state.status, cwd: state.status.cwd ?? cwd }
+    }))
+
+    const settleIfCancelledBeforeSend = (cancelled = false): boolean => {
+      const { run } = ownGet()
+      if (!cancelled && run.phase !== 'aborting' && run.outcome !== 'aborted') return false
+      forgetQueuedPrompt(sideKey!, pendingPrompt.id)
+      if (!run.settled && !run.runId) {
+        update((state) => ({
+          cwdWait: undefined,
+          isStreaming: false,
+          run: { ...state.run, phase: 'idle', settled: true, outcome: 'aborted' },
+          items: clearPendingPrompts(state.items, pendingPrompt.id)
+        }))
+      }
+      return true
+    }
+
+    let liveSideKey = sideKey
+    try {
+      liveSideKey = await get().ensureRuntime(sideKey, 'side-prompt-send')
+      if (settleIfCancelledBeforeSend()) return false
+      const liveParentKey =
+        get().sideParentByKey[liveSideKey] ??
+        (canonicalParent ? threadKey(canonicalParent) : viewKeyOf(get()))
+      if (typeof window.pi?.sideChat?.stagePrompt === 'function') {
+        await window.pi.sideChat.stagePrompt({
+          sideSessionKey: liveSideKey,
+          parentSessionKey: liveParentKey,
+          references: attachedQuotes,
+          preset: options?.preset,
+          stepText: options?.stepText
+        })
+      }
+      if (attachedQuotes.length > 0) {
+        stageSideTurnRefs(liveSideKey, attachedQuotes, trimmed)
+      }
+      const result = await tracedRpc<{ disposition?: string; cancelled?: boolean }>(
+        liveSideKey,
+        'prompt',
+        payload,
+        900_000,
+        'side-prompt-send'
+      )
+      const canSettlePreRun = (run: RunState) =>
+        run.phase === 'queued' || (run.phase === 'aborting' && !run.runId)
+      const settlePreRun = (run: RunState): RunState => ({
+        ...run,
+        phase: 'idle',
+        settled: true,
+        ...(run.phase === 'aborting' ? { outcome: 'aborted' as const } : {})
+      })
+      if (result?.disposition === 'handled') {
+        forgetQueuedPrompt(liveSideKey, pendingPrompt.id)
+        update((state) => {
+          const shouldSettle =
+            canSettlePreRun(state.run) || (result.cancelled && state.run.phase === 'aborting')
+          const items = clearPendingPrompts(state.items, pendingPrompt.id)
+          return {
+            cwdWait: undefined,
+            isStreaming: shouldSettle ? false : state.isStreaming,
+            run: shouldSettle ? settlePreRun(state.run) : state.run,
+            items: result.cancelled
+              ? items
+              : applyEvent(items, {
+                  type: 'client_notice',
+                  level: 'info',
+                  text: translate('Pi accepted {input}', state.settings.language).replace('{input}', () => trimmed)
+                })
+          }
+        })
+      } else if (result?.disposition === 'started') {
+        forgetQueuedPrompt(liveSideKey, pendingPrompt.id)
+        const startedAt = Date.now()
+        const startedMonotonicAt = monotonicNow()
+        update((state) => ({
+          cwdWait: undefined,
+          run:
+            state.run.phase === 'queued'
+              ? {
+                  ...state.run,
+                  phase: 'working',
+                  startedAt: state.run.startedAt ?? startedAt,
+                  startedMonotonicAt: state.run.startedMonotonicAt ?? startedMonotonicAt
+                }
+              : state.run
+        }))
+      } else if (result?.disposition === 'queued') {
+        forgetQueuedPrompt(liveSideKey, pendingPrompt.id)
+      } else {
+        forgetQueuedPrompt(liveSideKey, pendingPrompt.id)
+        update((state) => {
+          const shouldSettle = canSettlePreRun(state.run)
+          return {
+            cwdWait: undefined,
+            isStreaming: shouldSettle ? false : state.isStreaming,
+            run: shouldSettle ? settlePreRun(state.run) : state.run,
+            items: clearPendingPrompts(state.items, pendingPrompt.id)
+          }
+        })
+      }
+      const accepted =
+        result?.disposition === 'started' ||
+        result?.disposition === 'queued' ||
+        (result?.disposition === 'handled' && result.cancelled !== true)
+      if (accepted) {
+        if (sentRefIds.size > 0) {
+          const currentSide = threadKey(liveSideKey)
+          set((latest) => {
+            const nextQuotes = { ...latest.sideQuotes }
+            let changed = false
+            for (const candidate of new Set([sideKey!, liveSideKey, currentSide])) {
+              const existing = nextQuotes[candidate]
+              if (!existing) continue
+              const remaining = existing.filter((ref) => !sentRefIds.has(ref.id))
+              if (remaining.length === existing.length) continue
+              changed = true
+              if (remaining.length === 0) delete nextQuotes[candidate]
+              else nextQuotes[candidate] = remaining
+            }
+            return changed ? { sideQuotes: nextQuotes } : latest
+          })
+        }
+      } else {
+        clearStagedSideTurnRefs(liveSideKey)
+      }
+      return accepted
+    } catch (error) {
+      clearStagedSideTurnRefs(liveSideKey)
+      forgetQueuedPrompt(liveSideKey, pendingPrompt.id)
+      update((state) => {
+        const shouldSettle =
+          state.run.phase === 'queued' || (state.run.phase === 'aborting' && !state.run.runId)
+        return {
+          cwdWait: undefined,
+          error: state.run.phase === 'aborting' || state.run.outcome === 'aborted' ? state.error : messageOf(error),
+          isStreaming: shouldSettle ? false : state.isStreaming,
+          run: shouldSettle
+            ? {
+                ...state.run,
+                phase: 'idle',
+                settled: true,
+                ...(state.run.phase === 'aborting' ? { outcome: 'aborted' as const } : {})
+              }
+            : state.run,
+          items: clearPendingPrompts(state.items, pendingPrompt.id)
+        }
+      })
+      return false
+    }
+  },
+
+  async handoffSideToMain({ sideSessionKey: inputSideKey, text, mode }) {
+    const cleaned = text.trim()
+    if (!cleaned) return 'noop'
+    const state = get()
+    const sourceSide = inputSideKey
+      ? threadKey(inputSideKey)
+      : state.sideSessionKey
+        ? threadKey(state.sideSessionKey)
+        : ''
+    const targetMainRaw = (sourceSide ? state.sideParentByKey[sourceSide] : undefined) || viewKeyOf(state)
+    const mainKey = targetMainRaw ? threadKey(targetMainRaw) : ''
+    if (!mainKey) return 'noop'
+
+    if (mode === 'draft-append' || mode === 'draft-replace') {
+      get().insertIntoComposer(cleaned, mode === 'draft-replace' ? 'replace' : 'append', mainKey)
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+        window.dispatchEvent(new CustomEvent('pi:focus-composer', { detail: { target: 'main' } }))
+      }
+      return 'inserted'
+    }
+
+    // Strict non-steering guarantee: queue-followup only submits with explicit
+    // `streamingBehavior: 'followUp'` while Main is actively streaming, and
+    // NEVER consults `settings.followUpMode` or interrupts an active turn.
+    const latest = get()
+    const mainThread = latest.threads[mainKey]
+    const isMainView = threadKey(viewKeyOf(latest)) === mainKey
+    const mainStreaming = mainThread
+      ? mainThread.isStreaming || !mainThread.run.settled
+      : isMainView && (latest.isStreaming || !latest.run.settled)
+    if (!mainStreaming) return 'noop'
+
+    const accepted = await get().sendPrompt(mainKey, cleaned, [], 'followUp')
+    if (!accepted) return 'noop'
+    get().showToast('Queued for the next turn in main chat')
+    return 'queued'
+  },
+
   submittingDrafts: {},
   async submitComposerDraft(sessionKey, submission) {
     const { draft, text, kind, imageOptions, sendImage } = submission
     const key = threadKey(sessionKey)
     const state = get()
-    if (key && key !== threadKey(viewKeyOf(state))) return false
+    const isActiveMain = !key || key === threadKey(viewKeyOf(state))
+    const isActiveSide = Boolean(key && state.sideSessionKey && key === threadKey(state.sideSessionKey))
+    if (!isActiveMain && !isActiveSide) return false
     const client = composerClientKey(state, key)
     if (state.submittingDrafts[client]) return false
     set({ submittingDrafts: { ...state.submittingDrafts, [client]: submission } })
     try {
       const images = draft.images.map(({ data, mimeType }) => ({ data, mimeType }))
-      const accepted = await get().send(text, images, kind, sendImage)
+      const accepted = isActiveSide
+        ? await get().sendSidePrompt(text, images, { sideSessionKey: key })
+        : await get().send(text, images, kind, sendImage)
       if (accepted && key && get().drafts[threadKey(key)] === draft) {
         get().updateDraft(key, () => composerDraftAfterSend(draft, text, imageOptions))
         flushPendingDraftWrite()
@@ -2779,6 +4048,19 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     }
     const rename = /^\/name\s+([\s\S]+)$/.exec(trimmed)
     if (rename && !images.length) return get().renameSession(rename[1].trim())
+    // `/side [question]` opens Side Chat (and asks the question when provided)
+    // without touching or booting the main conversation's runtime.
+    const sideCommand = /^\/side(?:\s+([\s\S]*))?$/i.exec(trimmed)
+    if (sideCommand && !images.length) {
+      const arg = (sideCommand[1] ?? '').trim()
+      if (get().deskPage !== null) get().setDeskPage(null)
+      dispatchOpenSideChat(
+        arg
+          ? { mode: 'open', focus: true, prompt: arg, autoSubmit: true }
+          : { mode: 'open', focus: true }
+      )
+      return true
+    }
     // `/image [prompt]` is the composer's shortcut into its image mode: the
     // controls and the prompt belong to the chat box, not to a side panel.
     const imageCommand = /^\/image(?:\s+([\s\S]*))?$/i.exec(trimmed)
@@ -2835,8 +4117,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     const view = get()
     // A prompt sent after an edit moves the branch on: the rewind can no
     // longer be taken back without dropping this message.
-    const undo = get().rewindUndo
-    if (undo && threadKey(undo.key) === threadKey(key)) set({ rewindUndo: undefined })
+    if (ownGet().rewindUndo) update({ rewindUndo: undefined })
     const cwd = threadKey(viewKeyOf(view)) === threadKey(key) ? view.workspace?.path : undefined
     const payload: Record<string, unknown> = { message: trimmed, streamingBehavior: kind }
     if (images.length) payload.images = images
@@ -3297,36 +4578,54 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     }
   },
 
-  async setModel(model) {
-    if (agentSettingSelectionInFlight) {
+  async setModel(model, options) {
+    const owner = options?.sessionKey?.trim() || viewKeyOf(get())
+    const key = owner ? threadKey(owner) : ''
+    const lockKey = key || '__main__'
+    if (agentSettingSelectionsInFlight.has(lockKey)) {
       get().showToast('A model or reasoning change is already in progress', 'warning')
       return false
     }
-    agentSettingSelectionInFlight = true
-    const owner = viewKeyOf(get())
-    const key = threadKey(owner)
-    const selection = ++modelPreferenceSequence
-    modelPreferenceValue = `${model.provider}/${model.id}`
+    agentSettingSelectionsInFlight.add(lockKey)
+    const isSide = isSideKeyInState(key, get())
+    const rememberDefaults = !isSide && options?.rememberDefaults !== false
+    const spec = `${model.provider}/${model.id}`
+    const selection = rememberDefaults ? ++modelPreferenceSequence : modelPreferenceSequence
+    if (rememberDefaults) modelPreferenceValue = spec
     try {
       // Pi starts when a message is sent, not when a picker changes. A cold
       // conversation has no process to hear `set_model`, so store the choice
       // and let the next launch read it (draft) or `ensureRuntime` apply it
       // (a resumed session). Booting Pi here made every first switch after a
       // start feel like a cold start, because it was one.
-      const running =
-        owner && typeof window.pi.runtime.has === 'function' ? await window.pi.runtime.has(owner) : true
+      const running = isSide
+        ? Boolean(key && typeof window.pi.runtime.has === 'function' ? await window.pi.runtime.has(key) : false)
+        : owner && typeof window.pi.runtime.has === 'function'
+          ? await window.pi.runtime.has(owner)
+          : true
       // A process that is already booting will not read a settings change it
       // missed. Treat it as live so `ensureRuntime` waits for it and sends
       // `set_model` instead of leaving the first prompt on the old model.
-      const starting = get().threads[key]?.status.phase === 'starting'
-      // A conversation keeps its own model: only a draft — a conversation that
-      // does not exist yet — writes the app default. A session records the
-      // choice in Pi's own session file, so switching models here cannot move
-      // the default any other conversation reads.
+      const starting = Boolean(key && get().threads[key]?.status.phase === 'starting')
+      // A conversation keeps its own model: only a Main draft — a conversation
+      // that does not exist yet — writes the app default. Side Chat never
+      // mutates the app default (`rememberDefaults: false`).
       const fresh = !key || key.startsWith('draft:')
       if (!running && !starting) {
-        const spec = `${model.provider}/${model.id}`
-        if (selection === modelPreferenceSequence) {
+        if (isSide && key) {
+          set((state) => ({
+            sideModelOverrides: {
+              ...state.sideModelOverrides,
+              [key]: { provider: model.provider, id: model.id, spec }
+            }
+          }))
+          if (!fresh) {
+            pendingModelSelections.set(key, { provider: model.provider, id: model.id })
+          }
+          recordModelUse(model)
+          return true
+        }
+        if (rememberDefaults && selection === modelPreferenceSequence) {
           modelPreferenceValue = spec
           if (fresh) {
             const shouldWrite = get().settings.model !== spec ||
@@ -3343,7 +4642,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         // `ensureRuntime`; only a resumed session needs the extra command.
         if (key && !fresh) {
           pendingModelSelections.set(key, { provider: model.provider, id: model.id })
-          rememberSessionModel(set, key, spec)
+          if (!isSide) rememberSessionModel(set, key, spec)
         }
         recordModelUse(model)
         return true
@@ -3366,9 +4665,15 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         undefined,
         'set-model'
       )
-      await get().refreshState(threadKey(owner))
-      const spec = `${model.provider}/${model.id}`
-      if (selection === modelPreferenceSequence) {
+      await get().refreshState(liveKey)
+      if (isSide) {
+        set((current) => ({
+          sideModelOverrides: {
+            ...current.sideModelOverrides,
+            [liveKey]: { provider: model.provider, id: model.id, spec }
+          }
+        }))
+      } else if (rememberDefaults && selection === modelPreferenceSequence) {
         modelPreferenceValue = spec
         if (fresh) {
           const shouldWrite = get().settings.model !== spec ||
@@ -3380,8 +4685,10 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
             }
           }
         } else {
-          rememberSessionModel(set, key, spec)
+          rememberSessionModel(set, liveKey, spec)
         }
+      } else if (!fresh && !isSide) {
+        rememberSessionModel(set, liveKey, spec)
       }
       recordModelUse(model)
       return true
@@ -3389,7 +4696,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       bindSet(set, get, owner)({ error: messageOf(error) })
       return false
     } finally {
-      agentSettingSelectionInFlight = false
+      agentSettingSelectionsInFlight.delete(lockKey)
     }
   },
 
@@ -3411,26 +4718,59 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     }
   },
 
-  async setThinkingLevel(level) {
-    if (agentSettingSelectionInFlight) {
+  async setThinkingLevel(level, options) {
+    const owner = options?.sessionKey?.trim() || viewKeyOf(get())
+    const key = owner ? threadKey(owner) : ''
+    const lockKey = key || '__main__'
+    if (agentSettingSelectionsInFlight.has(lockKey)) {
       get().showToast('A model or reasoning change is already in progress', 'warning')
       return
     }
-    agentSettingSelectionInFlight = true
-    const owner = viewKeyOf(get())
-    const selection = ++thinkingPreferenceSequence
-    thinkingPreferenceValue = level
+    agentSettingSelectionsInFlight.add(lockKey)
+    const isSide = isSideKeyInState(key, get())
+    const rememberDefaults = !isSide && options?.rememberDefaults !== false
+    const selection = rememberDefaults ? ++thinkingPreferenceSequence : thinkingPreferenceSequence
+    if (rememberDefaults) thinkingPreferenceValue = level
     try {
       // A cold chat has no process yet. Starting one just to store the effort
       // is what the empty card was avoiding; the next launch already reads
       // the saved level. An existing process still hears the change now.
-      const running = owner ? await window.pi.runtime.has(owner) : false
-      if (running) {
-        const key = await get().ensureRuntime(owner, 'set-thinking')
-        await tracedRpc(key, 'set_thinking_level', { level }, undefined, 'set-thinking')
-        await get().refreshState(threadKey(owner))
+      const running = key && typeof window.pi.runtime.has === 'function' ? await window.pi.runtime.has(key) : false
+      const starting = Boolean(key && get().threads[key]?.status.phase === 'starting')
+      const fresh = !key || key.startsWith('draft:')
+      if (isSide) {
+        if (key) {
+          set((state) => ({
+            sideThinkingOverrides: {
+              ...state.sideThinkingOverrides,
+              [key]: level
+            }
+          }))
+        }
+        if (running || starting) {
+          pendingThinkingSelections.delete(key)
+          const liveKey = await get().ensureRuntime(owner, 'set-thinking')
+          await tracedRpc(liveKey, 'set_thinking_level', { level }, undefined, 'set-thinking')
+          await get().refreshState(liveKey)
+          if (liveKey !== key) {
+            set((state) => ({
+              sideThinkingOverrides: {
+                ...state.sideThinkingOverrides,
+                [liveKey]: level
+              }
+            }))
+          }
+        } else if (key && !fresh) {
+          pendingThinkingSelections.set(key, level)
+        }
+        return
       }
-      if (selection === thinkingPreferenceSequence) {
+      if (running) {
+        const liveKey = await get().ensureRuntime(owner, 'set-thinking')
+        await tracedRpc(liveKey, 'set_thinking_level', { level }, undefined, 'set-thinking')
+        await get().refreshState(liveKey)
+      }
+      if (rememberDefaults && selection === thinkingPreferenceSequence) {
         const shouldWrite = get().settings.thinkingLevel !== level ||
           (thinkingPreferenceValue !== undefined && thinkingPreferenceValue !== level)
         thinkingPreferenceValue = level
@@ -3444,7 +4784,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     } catch (error) {
       bindSet(set, get, owner)({ error: messageOf(error) })
     } finally {
-      agentSettingSelectionInFlight = false
+      agentSettingSelectionsInFlight.delete(lockKey)
     }
   },
 
@@ -3454,13 +4794,18 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
    * The same merged list feeds the picker and the shortcut, preserving Pi's
    * order while making providers saved since this process started available.
    */
-  async cycleModel(direction = 1) {
-    if (agentSettingSelectionInFlight) {
+  async cycleModel(direction = 1, sessionKey) {
+    const state = get()
+    const owner = sessionKey?.trim() || viewKeyOf(state)
+    const key = owner ? threadKey(owner) : ''
+    const lockKey = key || '__main__'
+    if (agentSettingSelectionsInFlight.has(lockKey)) {
       get().showToast('A model or reasoning change is already in progress', 'warning')
       return
     }
-    const state = get()
-    const models = selectableModels(state.models, state.catalogModels, state.disabledModelSpecs)
+    const isSide = isSideKeyInState(key, state)
+    const runtimeModels = isSide ? (state.threads[key]?.models ?? []) : state.models
+    const models = selectableModels(runtimeModels, state.catalogModels, state.disabledModelSpecs)
     if (models.length === 0) {
       get().showToast('Pi did not report any models', 'warning')
       return
@@ -3469,22 +4814,37 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       get().showToast(`Only ${models[0].name || models[0].id} is available`, 'warning')
       return
     }
-    const selected = currentConversationModel(state, models)
+    const selected = isSide
+      ? resolveEffectiveSessionModel(state, key, models)
+      : currentConversationModel(state, models)
     const current = models.findIndex((model) => model.id === selected?.id && model.provider === selected?.provider)
     // A model that is not in the list — a scoped one, say — has no place in
     // the cycle, so the walk starts at the first or the last entry.
     const start = current === -1 ? (direction === 1 ? -1 : 0) : current
     const next = models[(start + direction + models.length) % models.length]
-    if (await get().setModel(next)) get().showToast(`Model: ${next.name || next.id}`)
+    const changed = await get().setModel(next, {
+      sessionKey: key || undefined,
+      rememberDefaults: !isSide
+    })
+    if (changed) get().showToast(`Model: ${next.name || next.id}`)
   },
 
-  async cycleThinkingLevel(direction = 1) {
-    if (agentSettingSelectionInFlight) {
+  async cycleThinkingLevel(direction = 1, sessionKey) {
+    const state = get()
+    const owner = sessionKey?.trim() || viewKeyOf(state)
+    const key = owner ? threadKey(owner) : ''
+    const lockKey = key || '__main__'
+    if (agentSettingSelectionsInFlight.has(lockKey)) {
       get().showToast('A model or reasoning change is already in progress', 'warning')
       return
     }
-    const { thinkingLevels, piState } = get()
-    const levels = thinkingLevels
+    const isSide = isSideKeyInState(key, state)
+    const sideThread = isSide && key ? state.threads[key] : undefined
+    const piState = isSide ? sideThread?.piState : state.piState
+    const levels = isSide
+      ? ((sideThread?.thinkingLevels?.length ? sideThread.thinkingLevels : undefined) ??
+          (!sideThread?.piState ? state.thinkingLevels : []))
+      : state.thinkingLevels
     if (levels.length === 0) {
       get().showToast(
         piState
@@ -3498,10 +4858,16 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       get().showToast(`Reasoning effort: ${levels[0]}`, 'warning')
       return
     }
-    const current = levels.indexOf(piState?.thinkingLevel ?? get().settings.thinkingLevel ?? '')
+    const currentLevel = isSide
+      ? (resolveEffectiveThinkingLevel(state, key) ?? '')
+      : (piState?.thinkingLevel ?? state.settings.thinkingLevel ?? '')
+    const current = levels.indexOf(currentLevel)
     const start = current === -1 ? (direction === 1 ? -1 : 0) : current
     const next = levels[(start + direction + levels.length) % levels.length]
-    await get().setThinkingLevel(next)
+    await get().setThinkingLevel(next, {
+      sessionKey: key || undefined,
+      rememberDefaults: !isSide
+    })
     get().showToast(`Reasoning effort: ${next}`)
   },
 
@@ -3731,25 +5097,35 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       if (!isCurrentStateRefresh(key, request)) return
       if (state?.sessionFile) {
         if (threadKey(key) !== state.sessionFile) rekeyThread(set, get, key, state.sessionFile)
-        if (viewKeyOf(get()) === state.sessionFile) void get().rememberSession(state.sessionFile)
+        if (!isSideKeyInState(state.sessionFile, get()) && viewKeyOf(get()) === state.sessionFile) {
+          void get().rememberSession(state.sessionFile)
+        }
       }
       if (!isCurrentStateRefresh(key, request)) return
       // An empty or failed model list is not a reason to forget the provider.
       // Pi reports nothing while its registry is still loading, and replacing
       // the list with [] is what clears the picker.
       const owner = state?.sessionFile ?? key
+      const isSideOwner = isSideKeyInState(owner, get())
       const previousThread = bindGet(get, owner)()
       const nextModels = models && models.length > 0 ? models : previousThread.models
       // A failed read is not "this model has no levels". An empty list is.
       const nextLevels = levels ?? previousThread.thinkingLevels
       bindSet(set, get, owner)({ piState: state, models: nextModels, thinkingLevels: nextLevels, stats })
       // Pi reports no model when its settings have no default and this launch
-      // did not pass one. Put the saved model back once the list can name it.
-      const saved = resolveSavedModel(
-        get().settings.model,
-        get().settings.provider,
-        nextModels.length > 0 ? nextModels : get().catalogModels
-      )
+      // did not pass one. Put the saved/effective model back once the list can name it.
+      const storeSnapshot = get()
+      const saved = isSideOwner
+        ? resolveEffectiveSessionModel(
+            storeSnapshot,
+            owner,
+            nextModels.length > 0 ? nextModels : storeSnapshot.catalogModels
+          )
+        : resolveSavedModel(
+            storeSnapshot.settings.model,
+            storeSnapshot.settings.provider,
+            nextModels.length > 0 ? nextModels : storeSnapshot.catalogModels
+          )
       if (saved && !state?.model?.id && nextModels.some((model) => model.id === saved.id && model.provider === saved.provider)) {
         const attempt = `${owner}:${saved.provider}/${saved.id}`
         if (!modelRestoreAttempts.has(attempt)) {
@@ -3771,7 +5147,9 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
           })
         }
       }
-      const savedLevel = get().settings.thinkingLevel
+      const savedLevel = isSideOwner
+        ? resolveEffectiveThinkingLevel(storeSnapshot, owner)
+        : storeSnapshot.settings.thinkingLevel
       if (savedLevel && !state?.thinkingLevel && nextLevels.includes(savedLevel)) {
         const attempt = `${owner}:thinking:${savedLevel}`
         if (!modelRestoreAttempts.has(attempt)) {
@@ -3812,7 +5190,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
   async rememberSession(file) {
     const epoch = workspaceEpoch
     const workspace = get().workspace
-    if (!workspace || !file) return
+    if (!workspace || !file || isSideKeyInState(file, get())) return
     const last = get().settings.lastSessions ?? {}
     if (last[workspace.path] === file) return
     const settings = await window.pi.settings.patch({
@@ -3988,6 +5366,10 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       case 'image':
         window.dispatchEvent(new CustomEvent('pi:enter-image-mode'))
         break
+      case 'side':
+        if (get().deskPage !== null) get().setDeskPage(null)
+        dispatchOpenSideChat({ mode: 'open', focus: true })
+        break
       default:
         break
     }
@@ -4052,7 +5434,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
   },
 
   dismissError() {
-    set({ error: undefined })
+    get().dismissSessionError()
   },
 
   showToast(message, level = 'info', sessionKey) {
@@ -4147,8 +5529,22 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     await get().respondUi({ cancelled: true }, target)
   },
 
-  clearComposerText() {
-    set({ composerText: undefined })
+  clearComposerText(sessionKey) {
+    const rawTarget = (sessionKey ?? viewKeyOf(get())).trim()
+    const targetKey = rawTarget ? threadKey(rawTarget) : ''
+    const currentView = viewKeyOf(get())
+    const currentCanonical = currentView ? threadKey(currentView) : ''
+    const isViewed = !targetKey || targetKey === currentCanonical
+    set((state) => {
+      const hasEntry = Boolean(targetKey && targetKey in state.composerTexts)
+      if (!hasEntry && (!isViewed || state.composerText === undefined)) return state
+      const nextComposerTexts = hasEntry ? { ...state.composerTexts } : state.composerTexts
+      if (hasEntry) delete nextComposerTexts[targetKey]
+      return {
+        ...(hasEntry ? { composerTexts: nextComposerTexts } : {}),
+        ...(isViewed ? { composerText: undefined } : {})
+      }
+    })
   },
 
   insertIntoComposer(text, mode = 'append', sessionKey) {
@@ -4176,17 +5572,23 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         }
       }
       persistDraftSnapshot(state, nextDrafts, undefined, { debounce: true })
+      const nextSeq =
+        Math.max(
+          state.composerInsert?.seq ?? 0,
+          targetKey ? (state.composerInserts[targetKey]?.seq ?? 0) : 0
+        ) + 1
+      const insertEntry = { text: addition, seq: nextSeq, mode }
       return {
         drafts: nextDrafts,
-        ...(isViewed
+        ...(targetKey
           ? {
-              composerInsert: {
-                text: addition,
-                seq: (state.composerInsert?.seq ?? 0) + 1,
-                mode
+              composerInserts: {
+                ...state.composerInserts,
+                [targetKey]: insertEntry
               }
             }
-          : {})
+          : {}),
+        ...(isViewed ? { composerInsert: insertEntry } : {})
       }
     })
   },
@@ -4406,7 +5808,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       if (prompt) get().insertIntoComposer(prompt, 'replace', key)
       // The branch behind the edited message is still in the session file, so
       // the edit can be taken back until something is sent from here.
-      set({ rewindUndo: { key, prompt: prompt.slice(0, 200) } })
+      bindSet(set, get, key)({ rewindUndo: true })
       get().showToast('Message recalled for editing')
     } catch (error) {
       const message = messageOf(error)
@@ -4421,8 +5823,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
   async undoRewind() {
     const state = get()
     const owner = viewKeyOf(state)
-    const undo = state.rewindUndo
-    if (!owner || !undo || threadKey(undo.key) !== threadKey(owner)) return
+    if (!owner || !state.rewindUndo || state.forking) return
     if (state.isStreaming || state.run.phase !== 'idle' || state.run.compaction) {
       get().showToast('Wait for the current turn to finish before undoing the edit', 'warning')
       return
@@ -4450,8 +5851,15 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       }
       const undoWatch: typeof pendingUndoRewind = { sessionKey: key }
       pendingUndoRewind = undoWatch
-      await tracedRpc(key, 'prompt', { message: '/desktop-undo-rewind' }, 60_000, 'message-undo')
+      const result = await tracedRpc<{ cancelled?: boolean; disposition?: string }>(
+        key, 'prompt', { message: '/desktop-undo-rewind' }, 60_000, 'message-undo'
+      )
       if (undoWatch.error) throw new Error(undoWatch.error)
+      if (result?.cancelled) {
+        get().showToast('Undo was cancelled', 'warning')
+        return
+      }
+      if (result?.disposition !== 'handled') throw new Error('The edit cannot be undone')
       await get().refreshState(key)
       // The restored branch is the saved one, not the runtime's compacted
       // context: replay all of it so the messages the edit hid come back.
@@ -4459,7 +5867,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       await get().reloadMessages(key, history
         ? { messages: history.messages, historyTruncated: history.historyTruncated }
         : undefined)
-      set({ rewindUndo: undefined })
+      bindSet(set, get, key)({ rewindUndo: undefined })
       get().showToast('The messages the edit had removed are back')
     } catch (error) {
       const message = messageOf(error)
@@ -5063,6 +6471,7 @@ function projectThread(thread: SessionThread): Pick<AppStore, (typeof THREAD_KEY
     error: thread.error,
     status: thread.status,
     forkTargets: thread.forkTargets,
+    rewindUndo: thread.rewindUndo,
     agentMode: thread.agentMode ?? 'default',
     hasLiveTaskMode: thread.hasLiveTaskMode,
     models: thread.models ?? [],
@@ -5172,9 +6581,19 @@ function rekeyThread(
   rekeyStreamState(from, to, shouldMove)
 
   const state = get()
+  const isSide = isSideKeyInState(from, state) || isSideSessionKey(to)
   const thread = state.threads[from]
   const threads = { ...state.threads }
   let nextDrafts: Record<string, ComposerDraft> | undefined
+  let nextSideByMainKey: Record<string, string> | undefined
+  let nextSideParentByKey: Record<string, string> | undefined
+  let nextSideModelOverrides: Record<string, SideModelOverride> | undefined
+  let nextSideThinkingOverrides: Record<string, string> | undefined
+  let nextSideQuotes: Record<string, SideChatReference[]> | undefined
+  let nextSideNotices: Record<string, SessionNotice> | undefined
+  let nextHydratingSessions: Record<string, true> | undefined
+  let nextComposerTexts: Record<string, string> | undefined
+  let nextComposerInserts: Record<string, { text: string; seq: number; mode?: 'append' | 'replace' }> | undefined
 
   if (shouldMove) {
     const stateRefreshRequest = refreshStateRequests.get(from)
@@ -5190,6 +6609,17 @@ function rekeyThread(
       inlineBashCounts.set(to, (inlineBashCounts.get(to) ?? 0) + bashCount)
       inlineBashCounts.delete(from)
     }
+    const pendingModel = pendingModelSelections.get(from)
+    if (pendingModel) {
+      pendingModelSelections.delete(from)
+      if (!pendingModelSelections.has(to)) pendingModelSelections.set(to, pendingModel)
+    }
+    const pendingThinking = pendingThinkingSelections.get(from)
+    if (pendingThinking) {
+      pendingThinkingSelections.delete(from)
+      if (!pendingThinkingSelections.has(to)) pendingThinkingSelections.set(to, pendingThinking)
+    }
+    migrateStagedSideTurnRefs(from, to)
     migrateToolStarts(from, to)
     // The reader's place belongs to the conversation, not to whether Pi has
     // written it to disk yet; carry it across the draft→file rename.
@@ -5215,6 +6645,67 @@ function rekeyThread(
         nextDrafts[to] = sourceDraft
       }
     }
+    if (from in state.hydratingSessions) {
+      nextHydratingSessions = { ...state.hydratingSessions, [to]: true }
+      delete nextHydratingSessions[from]
+    }
+    if (from in state.composerTexts) {
+      nextComposerTexts = { ...state.composerTexts }
+      const sourceText = nextComposerTexts[from]
+      delete nextComposerTexts[from]
+      if (!(to in nextComposerTexts)) nextComposerTexts[to] = sourceText
+    }
+    if (from in state.composerInserts) {
+      nextComposerInserts = { ...state.composerInserts }
+      const sourceInsert = nextComposerInserts[from]
+      delete nextComposerInserts[from]
+      if (!(to in nextComposerInserts)) nextComposerInserts[to] = sourceInsert
+    }
+    if (isSide) {
+      const parentKey = state.sideParentByKey[from]
+      if (parentKey) {
+        nextSideParentByKey = { ...state.sideParentByKey, [to]: parentKey }
+        delete nextSideParentByKey[from]
+        if (state.sideByMainKey[parentKey] === from) {
+          nextSideByMainKey = { ...state.sideByMainKey, [parentKey]: to }
+        }
+      }
+      if (from in state.sideModelOverrides) {
+        nextSideModelOverrides = { ...state.sideModelOverrides }
+        const sourceOverride = nextSideModelOverrides[from]
+        delete nextSideModelOverrides[from]
+        if (!(to in nextSideModelOverrides)) nextSideModelOverrides[to] = sourceOverride
+      }
+      if (from in state.sideThinkingOverrides) {
+        nextSideThinkingOverrides = { ...state.sideThinkingOverrides }
+        const sourceThinking = nextSideThinkingOverrides[from]
+        delete nextSideThinkingOverrides[from]
+        if (!(to in nextSideThinkingOverrides)) nextSideThinkingOverrides[to] = sourceThinking
+      }
+      if (from in state.sideQuotes) {
+        nextSideQuotes = { ...state.sideQuotes }
+        const sourceQuotes = nextSideQuotes[from]
+        delete nextSideQuotes[from]
+        if (!(to in nextSideQuotes)) nextSideQuotes[to] = sourceQuotes
+      }
+      if (from in state.sideNotices) {
+        nextSideNotices = { ...state.sideNotices }
+        const sourceNotice = nextSideNotices[from]
+        delete nextSideNotices[from]
+        if (!(to in nextSideNotices)) nextSideNotices[to] = sourceNotice
+      }
+    } else if (from in state.sideByMainKey) {
+      const boundSide = state.sideByMainKey[from]
+      nextSideByMainKey = { ...state.sideByMainKey, [to]: boundSide }
+      delete nextSideByMainKey[from]
+      nextSideParentByKey = { ...state.sideParentByKey, [boundSide]: to }
+      if (boundSide in state.sideQuotes) {
+        const updatedQuotes = state.sideQuotes[boundSide].map((ref) =>
+          ref.sourceMainKey === from ? { ...ref, sourceMainKey: to } : ref
+        )
+        nextSideQuotes = { ...state.sideQuotes, [boundSide]: updatedQuotes }
+      }
+    }
     if (thread) {
       delete threads[from]
       for (const alias of aliases) setThreadAlias(alias, to)
@@ -5232,6 +6723,7 @@ function rekeyThread(
       historyTruncated: false,
       contextBreakdown: undefined,
       forkTargets: [],
+      rewindUndo: undefined,
       clientKey: mintClientKey(),
       notice: undefined,
       uiRequests: pendingDialogsFor(thread)
@@ -5239,14 +6731,43 @@ function rekeyThread(
   }
 
   const targetThread = threads[to]
-  const viewing = state.draftId === from || state.activeSessionFile === from
-  const loadBranch = !shouldMove && targetThread && needsSessionHydration(to, targetThread)
+  const viewing = !isSide && (state.draftId === from || state.activeSessionFile === from)
+  const viewingSide =
+    isSide &&
+    Boolean(
+      state.sideSessionKey &&
+        (state.sideSessionKey === from || threadKey(state.sideSessionKey) === from)
+    )
+  const loadBranch = !shouldMove && !isSide && targetThread && needsSessionHydration(to, targetThread)
+  if (loadBranch) {
+    nextHydratingSessions = { ...(nextHydratingSessions ?? state.hydratingSessions), [to]: true }
+  }
   if (shouldMove && from.startsWith('draft:')) {
-    persistPromotedDraft(state, from, nextDrafts ?? state.drafts)
+    if (isSide) {
+      if (nextDrafts) persistDraftSnapshot(state, nextDrafts)
+    } else {
+      persistPromotedDraft(state, from, nextDrafts ?? state.drafts)
+    }
+  }
+  const resetSideForMainBranch = !shouldMove && !isSide && viewing
+  if (resetSideForMainBranch) {
+    cancelScheduledSidePrewarm()
+    stopPrewarmOnlyRuntime(state.sideSessionKey)
   }
   set({
     threads,
     ...(nextDrafts ? { drafts: nextDrafts } : {}),
+    ...(nextSideByMainKey ? { sideByMainKey: nextSideByMainKey } : {}),
+    ...(nextSideParentByKey ? { sideParentByKey: nextSideParentByKey } : {}),
+    ...(nextSideModelOverrides ? { sideModelOverrides: nextSideModelOverrides } : {}),
+    ...(nextSideThinkingOverrides ? { sideThinkingOverrides: nextSideThinkingOverrides } : {}),
+    ...(nextSideQuotes ? { sideQuotes: nextSideQuotes } : {}),
+    ...(nextSideNotices ? { sideNotices: nextSideNotices } : {}),
+    ...(nextHydratingSessions ? { hydratingSessions: nextHydratingSessions } : {}),
+    ...(nextComposerTexts ? { composerTexts: nextComposerTexts } : {}),
+    ...(nextComposerInserts ? { composerInserts: nextComposerInserts } : {}),
+    ...(viewingSide ? { sideSessionKey: to } : {}),
+    ...(resetSideForMainBranch ? { sideSessionKey: undefined } : {}),
     ...(viewing
       ? {
           draftId: undefined,
@@ -5257,6 +6778,7 @@ function rekeyThread(
       : {})
   })
   if (loadBranch) void get().hydrateSession(to, 'branch')
+  if (resetSideForMainBranch && get().sideChatOpen) void get().ensureSideChatForActiveMain()
 }
 
 type SetState = (
@@ -5319,14 +6841,17 @@ function applyRuntimeStatus(set: SetState, status: RuntimeStatus): void {
  * client-minted ids: Pi's protocol has neither, and a run is not a turn —
  * a run survives a retry, a turn does not.
  */
-function runContextOf(get: GetState): { sessionKey: string; runId?: string; turnId?: string } {
+function runContextOf(
+  get: GetState,
+  ownerKey?: string
+): { sessionKey: string; runId?: string; turnId?: string } {
   const state = get()
   return {
     // The store's own conversation key is the stable thread id: the session
     // file once Pi has written one, or the draft id until then. Pi's session
     // id is not used here because it is not the key the sidebar and the
     // per-thread transcript are stored under.
-    sessionKey: viewKeyOf(state),
+    sessionKey: ownerKey ? threadKey(ownerKey) : viewKeyOf(state),
     runId: state.run.runId,
     turnId: state.run.turnId
   }
@@ -5344,10 +6869,11 @@ function scheduleItems(
   set: SetState,
   get: GetState,
   event: PiEvent,
+  ownerKey?: string,
   flushImmediately = false
 ): void {
-  const context = runContextOf(get)
-  const key = viewKeyOf(get())
+  const context = runContextOf(get, ownerKey)
+  const key = ownerKey ? threadKey(ownerKey) : viewKeyOf(get())
   if (flushImmediately || typeof requestAnimationFrame !== 'function') {
     drainPending(key)
     set((state) => ({ items: applyEvent(state.items, event, context) }))
@@ -5513,10 +7039,19 @@ function takeToolStart(sessionKey: string, toolCallId: string): number | undefin
 function drainPending(onlyKey?: string): void {
   let entries: [string, { set: SetState; events: { event: PiEvent; context: ReturnType<typeof runContextOf> }[] }][]
   if (onlyKey !== undefined) {
-    const batch = pending.get(onlyKey)
-    if (!batch) return
-    pending.delete(onlyKey)
-    entries = [[onlyKey, batch]]
+    const resolvedOnly = threadKey(onlyKey)
+    const direct = pending.get(onlyKey)
+    const canonical = resolvedOnly !== onlyKey ? pending.get(resolvedOnly) : undefined
+    if (!direct && !canonical) return
+    entries = []
+    if (direct) {
+      pending.delete(onlyKey)
+      entries.push([resolvedOnly || onlyKey, direct])
+    }
+    if (canonical) {
+      pending.delete(resolvedOnly)
+      entries.push([resolvedOnly, canonical])
+    }
   } else {
     if (pending.size === 0) {
       if (hiddenFlushTimer !== null) {
@@ -5547,12 +7082,15 @@ function drainPending(onlyKey?: string): void {
   rawStoreSetState((state) => {
     const currentViewKey = viewKeyOf(state)
     const currentViewCanonical = currentViewKey ? threadKey(currentViewKey) : ''
+    const currentSideCanonical = state.sideSessionKey ? threadKey(state.sideSessionKey) : ''
     let nextThreads: Record<string, SessionThread> | undefined
     let activeItemsPatch: { items: ThreadItem[] } | undefined
     let toolChangedHint: boolean | undefined
+    let sideToolChangedHint: boolean | undefined
 
-    for (const [key, batch] of entries) {
+    for (const [rawKey, batch] of entries) {
       if (batch.events.length === 0) continue
+      const key = rawKey ? threadKey(rawKey) : ''
       const base = (nextThreads ? nextThreads[key] : undefined) ?? state.threads[key]
       if (key && !base && deletedSessionKeys.has(key)) continue
       // Match `bindSet`: an uninitialized background thread belongs to its own
@@ -5569,9 +7107,15 @@ function drainPending(onlyKey?: string): void {
         nextThreads[key] = nextThread
       }
 
-      if (!key || key === currentViewKey || (currentViewCanonical && threadKey(key) === currentViewCanonical)) {
+      if (!key || key === currentViewKey || (currentViewCanonical && key === currentViewCanonical)) {
         activeItemsPatch = { items: nextItems }
         toolChangedHint = hasToolItemChange(state.items, nextItems)
+      }
+      if (currentSideCanonical && key === currentSideCanonical) {
+        sideToolChangedHint = hasToolItemChange(
+          state.threads[currentSideCanonical]?.items ?? [],
+          nextItems
+        )
       }
     }
 
@@ -5583,7 +7127,7 @@ function drainPending(onlyKey?: string): void {
         ...(activeItemsPatch ?? {}),
         ...(nextThreads ? { threads: nextThreads } : {})
       },
-      { toolChangedHint }
+      { toolChangedHint, sideToolChangedHint }
     )
   })
 }
@@ -5604,11 +7148,16 @@ function forgetDeletedThread(file: string): void {
     for (const k of toPrune) deletedSessionKeys.delete(k)
   }
   if (scheduledPrewarmKey && keys.has(scheduledPrewarmKey)) cancelScheduledPrewarm()
+  if (scheduledSidePrewarmKey && keys.has(scheduledSidePrewarmKey)) cancelScheduledSidePrewarm()
   for (const key of keys) {
     refreshStateRequests.delete(key)
     retryArmed.delete(key)
     prewarmOnlyRuntimes.delete(key)
     pendingModelSelections.delete(key)
+    pendingThinkingSelections.delete(key)
+    agentSettingSelectionsInFlight.delete(key)
+    clearStagedSideTurnRefs(key)
+    queuedPromptDrafts.delete(key)
     toolStarts.delete(key)
     pending.delete(key)
     liveStatsAt.delete(key)
@@ -5788,12 +7337,26 @@ function handleEvent(
       // Queued records still belong to the message that just ended. Applying
       // them before the identity reset below is what keeps a `message_end`
       // from being re-stamped with the next turn's message id.
-      const sessionKey = runContextOf(get).sessionKey
-      drainPending(sessionKey || (owner ? threadKey(owner) : undefined))
+      const sessionKey = runContextOf(get, owner).sessionKey
+      const canonicalKey = sessionKey || (owner ? threadKey(owner) : '')
+      drainPending(canonicalKey || undefined)
       beginStream(sessionKey)
+      const topState = realGet ? realGet() : get()
+      const isSide = isSideKeyInState(canonicalKey, topState)
       // A new run supersedes whatever the last one left behind, including the
       // persisted copy the sidebar falls back to after a restart.
-      get().forgetSessionNotice(sessionKey || (owner ? threadKey(owner) : ''))
+      if (isSide) {
+        if (realSet && canonicalKey && canonicalKey in topState.sideNotices) {
+          realSet((state) => {
+            if (!(canonicalKey in state.sideNotices)) return state
+            const nextSideNotices = { ...state.sideNotices }
+            delete nextSideNotices[canonicalKey]
+            return { sideNotices: nextSideNotices }
+          })
+        }
+      } else {
+        get().forgetSessionNotice(canonicalKey)
+      }
       // A live-stats read issued before this run describes the session as it
       // was; it must not land on the fresh transcript numbers below, and the
       // first answer of the new run should be allowed to ask again at once.
@@ -5838,7 +7401,7 @@ function handleEvent(
       break
     }
     case 'turn_start': {
-      const sessionKey = runContextOf(get).sessionKey
+      const sessionKey = runContextOf(get, owner).sessionKey
       drainPending(sessionKey || (owner ? threadKey(owner) : undefined))
       beginStream(sessionKey)
       const modelTurnStartedAt = monotonicNow()
@@ -5872,7 +7435,7 @@ function handleEvent(
       if (entry?.type === 'custom_message' && entry.customType === GOAL_CONTINUE_CUSTOM_TYPE) {
         const key = viewKeyOf(get())
         const timingKey = owner ? threadKey(owner) : key
-        drainPending(key || (owner ? threadKey(owner) : undefined))
+        drainPending(timingKey || undefined)
         const state = get()
         const durationMs =
           state.run.startedMonotonicAt !== undefined
@@ -5897,7 +7460,9 @@ function handleEvent(
             settled: false
           }
         }))
-        scheduleItems(set, get, event, true)
+        scheduleItems(set, get, event, owner, true)
+      } else if (entry?.type === 'custom' && entry.customType === SIDE_CHAT_TURN_META_ENTRY_TYPE) {
+        scheduleItems(set, get, event, owner, true)
       }
       break
     }
@@ -5908,10 +7473,11 @@ function handleEvent(
       // its own settle. The user did not stop that run, so it failed.
       const crashed = Boolean(event.crashed)
       const settledKey = owner ? threadKey(owner) : ''
+      const contextSessionKey = runContextOf(get, owner).sessionKey
       // Anything still waiting for a frame is applied first: the final
       // state has to be the state the events actually produced.
-      drainPending(settledKey || runContextOf(get).sessionKey || undefined)
-      finishStream(runContextOf(get).sessionKey)
+      drainPending(settledKey || contextSessionKey || undefined)
+      finishStream(contextSessionKey)
       const state = get()
       const durationMs =
         state.run.startedMonotonicAt !== undefined
@@ -5963,10 +7529,20 @@ function handleEvent(
       // finished while the reader was elsewhere (or while reading a desk page)
       // is unread. A conversation the reader is watching speaks for itself.
       const topState = realGet ? realGet() : get()
+      const isSide = isSideKeyInState(settledKey || contextSessionKey, topState)
       const currentViewKey = viewKeyOf(topState)
-      const viewed = settledKey
-        ? settledKey === (currentViewKey ? threadKey(currentViewKey) : '') && topState.deskPage === null
-        : true
+      const activeSideCanonical = topState.sideSessionKey ? threadKey(topState.sideSessionKey) : ''
+      const viewed = isSide
+        ? Boolean(
+            topState.sideChatOpen &&
+              topState.deskPage === null &&
+              settledKey &&
+              activeSideCanonical &&
+              settledKey === activeSideCanonical
+          )
+        : settledKey
+          ? settledKey === (currentViewKey ? threadKey(currentViewKey) : '') && topState.deskPage === null
+          : true
       const notice: SessionNotice | undefined = viewed
         ? undefined
         : failed
@@ -5997,9 +7573,24 @@ function handleEvent(
         uiRequests: [],
         uiRequest: state.uiRequest ? undefined : state.uiRequest
       })
-      // The mark has to outlive this thread: a scheduled or background run is
-      // often read after the app has been restarted.
-      if (notice) get().rememberSessionNotice(settledKey, notice)
+      if (isSide) {
+        if (realSet && settledKey) {
+          realSet((current) => {
+            if (notice) {
+              if (current.sideNotices[settledKey] === notice) return current
+              return { sideNotices: { ...current.sideNotices, [settledKey]: notice } }
+            }
+            if (!(settledKey in current.sideNotices)) return current
+            const nextSideNotices = { ...current.sideNotices }
+            delete nextSideNotices[settledKey]
+            return { sideNotices: nextSideNotices }
+          })
+        }
+      } else {
+        // The mark has to outlive this thread: a scheduled or background run is
+        // often read after the app has been restarted.
+        if (notice) get().rememberSessionNotice(settledKey, notice)
+      }
       // A crashed run has no live process to read state from, and the reason
       // it stopped is the only thing the reader can still act on.
       if (crashed) {
@@ -6011,13 +7602,9 @@ function handleEvent(
           })
         }))
       }
-      // A finish in another conversation is easy to miss while the reader is
-      // watching this one: the row dot is the only mark, and a folded or long
-      // project lists hide attention rows. A named toast says which
-      // conversation moved and is itself the way back to it. A run the reader
-      // stopped is not news, and an unfocused window already gets the system
-      // notification.
-      if (!viewed && settledKey && !aborted) {
+      // A finish in another Main conversation is easy to miss while the reader
+      // is watching this one. Side Chat settles never pop Main completion toasts.
+      if (!isSide && !viewed && settledKey && !aborted) {
         // Tests and non-DOM hosts have no focus concept; treat them as focused.
         const focused =
           typeof document === 'undefined' || typeof document.hasFocus !== 'function'
@@ -6039,32 +7626,34 @@ function handleEvent(
       }
       if (realGet && realSet) {
         const current = realGet()
-        const threads = enforceSessionLru(current.threads, viewKeyOf(current))
+        const threads = enforceSessionLru(current.threads, protectedSessionKeys(current))
         if (threads !== current.threads) realSet({ threads })
       }
-      const key = viewKeyOf(get())
+      const key = settledKey || viewKeyOf(get())
       if (!event.runtimeStopped && !crashed) {
         const currentThread = get()
         void get().refreshState(key, {
           includeCatalog: currentThread.models.length === 0 || currentThread.thinkingLevels.length === 0
         })
       }
-      void get().refreshSessions()
-      // The agent just edited files, so the branch chip and the review panel
-      // should hear about the new working tree.
-      if (gitBelongsToView(get, realGet, owner)) void get().refreshGit()
-      // The prompt of this turn is a new branch point. Refreshing here as
-      // well as on `message_start` covers the case where Pi had not recorded
-      // the message yet when the event arrived.
-      if (!event.runtimeStopped && !crashed) void get().refreshForkTargets(key)
-      // A project the user asked for while the agent was working is opened
-      // now that nothing is running in the current one.
-      const view = realGet ? viewKeyOf(realGet()) : owner
-      if (pendingProjectPath !== undefined && (!owner || owner === view)) {
-        const target = pendingProjectPath
-        pendingProjectPath = undefined
-        set({ pendingProject: undefined })
-        void (realGet ?? get)().switchProject(target)
+      if (!isSide) {
+        void get().refreshSessions()
+        // The agent just edited files, so the branch chip and the review panel
+        // should hear about the new working tree.
+        if (gitBelongsToView(get, realGet, owner)) void get().refreshGit()
+        // The prompt of this turn is a new branch point. Refreshing here as
+        // well as on `message_start` covers the case where Pi had not recorded
+        // the message yet when the event arrived.
+        if (!event.runtimeStopped && !crashed) void get().refreshForkTargets(key)
+        // A project the user asked for while the agent was working is opened
+        // now that nothing is running in the current one.
+        const view = realGet ? viewKeyOf(realGet()) : owner
+        if (pendingProjectPath !== undefined && (!owner || owner === view)) {
+          const target = pendingProjectPath
+          pendingProjectPath = undefined
+          set({ pendingProject: undefined })
+          void (realGet ?? get)().switchProject(target)
+        }
       }
       break
     }
@@ -6076,7 +7665,9 @@ function handleEvent(
       // Pi can publish a name from a `set_session_name` that did not go
       // through `supervisor.rename` (a scheduled task, `/name` in a draft).
       // The JSONL carries the new `session_info`, so re-read the rows too.
-      void get().refreshSessions()
+      if (!isSideKeyInState(owner || viewKeyOf(get()), realGet ? realGet() : get())) {
+        void get().refreshSessions()
+      }
       break
     }
     case 'thinking_level_changed': {
@@ -6122,7 +7713,7 @@ function handleEvent(
       break
     }
     case 'auto_retry_end': {
-      scheduleItems(set, get, event)
+      scheduleItems(set, get, event, owner)
       const retryFailed =
         !Boolean(event.success) && String(event.finalError ?? '') !== 'Retry cancelled'
       set((state) => ({
@@ -6152,7 +7743,7 @@ function handleEvent(
       if (role === 'user') {
         const startedAt = Date.now()
         const startedMonotonicAt = monotonicNow()
-        pinScrollToBottom(owner || viewKeyOf(get()))
+        pinScrollToBottom(owner ? threadKey(owner) : viewKeyOf(get()))
         set((state) => ({
           // A prompt can start before `agent_start`; invalidate the same
           // cached snapshot here so transcript usage stays current.
@@ -6183,10 +7774,10 @@ function handleEvent(
                 }
         }))
       }
-      scheduleItems(set, get, event, role === 'user')
-      if (role === 'user') {
+      scheduleItems(set, get, event, owner, role === 'user')
+      if (role === 'user' && !isSideKeyInState(owner || viewKeyOf(get()), realGet ? realGet() : get())) {
         // A new prompt is a new place the branch can be forked from.
-        void get().refreshForkTargets(viewKeyOf(get()))
+        void get().refreshForkTargets(owner ? threadKey(owner) : viewKeyOf(get()))
       }
       break
     }
@@ -6194,7 +7785,7 @@ function handleEvent(
       // A command typed into the terminal drawer runs through the same RPC
       // command, but it belongs to the terminal rather than to the thread.
       if (typeof event.id === 'string' && event.id.startsWith('terminal-')) break
-      scheduleItems(set, get, event)
+      scheduleItems(set, get, event, owner)
       break
     }
     case 'message_end':
@@ -6286,6 +7877,7 @@ function handleEvent(
         set,
         get,
         eventForItems,
+        owner,
         event.type === 'tool_execution_start' || event.type === 'tool_execution_end'
       )
       // The run phase is exported from what the transcript actually holds:
@@ -6310,8 +7902,12 @@ function handleEvent(
         // `agent_settled` made the panel show the previous batch of files for
         // the rest of the run. `refreshGit` reads the *active* project, so a
         // run in another conversation of the same project is worth reading too
-        // — only a run in a different project is not.
-        if (touchesWorkingTree(event.toolName) && gitBelongsToView(get, realGet, owner)) {
+        // — only a run in a different project (or read-only Side Chat) is not.
+        if (
+          !isSideKeyInState(owner || viewKeyOf(get()), realGet ? realGet() : get()) &&
+          touchesWorkingTree(event.toolName) &&
+          gitBelongsToView(get, realGet, owner)
+        ) {
           get().scheduleGitRefresh()
         }
         // A tool result is part of the next prompt, and the session totals Pi
@@ -6476,12 +8072,15 @@ function handleExtensionUi(
         const topState = realGet ? realGet() : get()
         const viewKey = viewKeyOf(topState)
         const canonicalOwner = owner ? threadKey(owner) : ''
+        const isSide = isSideKeyInState(canonicalOwner, topState)
         const isBackground = Boolean(
           canonicalOwner && canonicalOwner !== (viewKey ? threadKey(viewKey) : '')
         )
-        const title = isBackground
-          ? activeConversationTitle(topState.sessions, topState.threads, canonicalOwner)
-          : ''
+        const title = isSide
+          ? translate('Side chat', topState.settings.language ?? 'en')
+          : isBackground
+            ? activeConversationTitle(topState.sessions, topState.threads, canonicalOwner)
+            : ''
         const attributed = title ? `[${title}] ${message}` : message
         ;(realGet ?? get)().showToast(attributed, level)
       }
@@ -6594,11 +8193,15 @@ function handleExtensionUi(
           persistDraftSnapshot(state, nextDrafts, undefined, { debounce: true })
           return {
             drafts: nextDrafts,
+            composerTexts: { ...state.composerTexts, [targetKey]: nextText },
             ...(isViewed ? { composerText: nextText } : {})
           }
         })
       } else if (isViewed) {
-        set({ composerText: nextText })
+        set((state) => ({
+          composerText: nextText,
+          ...(targetKey ? { composerTexts: { ...state.composerTexts, [targetKey]: nextText } } : {})
+        }))
       }
       break
     }

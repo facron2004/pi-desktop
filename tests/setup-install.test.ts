@@ -1,10 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import {
   copyPayload,
+  installApp,
   listSource,
   payloadCopyCommand,
   ROBOCOPY_STDIO,
@@ -95,6 +96,36 @@ test('copying a payload keeps the archive bytes and the unpacked folders', async
 
 test('robocopy discards stderr to prevent pipe-buffer deadlocks', () => {
   assert.deepEqual(ROBOCOPY_STDIO, ['ignore', 'pipe', 'ignore'])
+})
+
+test('an interrupted update restores the previous installation even if the retry has no payload', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'pi-setup-recover-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const originalSource = process.env.PI_SETUP_SOURCE
+  process.env.PI_SETUP_SOURCE = path.join(root, 'missing-payload')
+  t.after(() => {
+    if (originalSource === undefined) delete process.env.PI_SETUP_SOURCE
+    else process.env.PI_SETUP_SOURCE = originalSource
+  })
+  const target = path.join(root, 'Pi Desktop')
+  const backup = `${target}.old-2c38865a-f356-4353-ad58-2a8fcc380c10`
+  await mkdir(path.join(backup, 'resources'), { recursive: true })
+  await writeFile(path.join(backup, 'Pi Desktop.exe'), 'old-executable')
+  await writeFile(path.join(backup, 'resources', 'app.asar'), 'old-archive')
+  const marker = JSON.stringify({ version: '0.11.14', installDir: target, installedAt: 1 })
+  await writeFile(path.join(backup, 'install.json'), marker)
+  const lock = `${target}.lock`
+  await mkdir(lock)
+  const expired = new Date(Date.now() - 20_000)
+  await utimes(lock, expired, expired)
+
+  await assert.rejects(installApp({ targetDir: target, launchAfterInstall: false }), /找不到要安装的应用程序文件/)
+
+  assert.equal(await readFile(path.join(target, 'Pi Desktop.exe'), 'utf8'), 'old-executable')
+  assert.equal(await readFile(path.join(target, 'resources', 'app.asar'), 'utf8'), 'old-archive')
+  assert.equal(await readFile(path.join(target, 'install.json'), 'utf8'), marker)
+  await assert.rejects(stat(backup), { code: 'ENOENT' })
+  await assert.rejects(stat(lock), { code: 'ENOENT' })
 })
 
 test('uninstallCleanupSpec passes target via env var with -LiteralPath and waits on PID', () => {

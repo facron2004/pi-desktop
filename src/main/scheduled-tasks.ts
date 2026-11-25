@@ -207,16 +207,20 @@ function isStoredTask(value: unknown): value is ScheduledTask {
 function nextOccurrence(schedule: ScheduledTaskSchedule, from: number): number | undefined {
   if (schedule.kind === 'once') return schedule.at
   const [hour, minute] = schedule.time.split(':').map(Number)
-  const candidate = new Date(from)
-  candidate.setHours(hour, minute, 0, 0)
-  if (schedule.kind === 'daily') {
-    if (candidate.getTime() <= from) candidate.setDate(candidate.getDate() + 1)
-    return candidate.getTime()
-  }
-  const daysUntil = (schedule.weekday - candidate.getDay() + 7) % 7
-  candidate.setDate(candidate.getDate() + daysUntil)
-  if (candidate.getTime() <= from) candidate.setDate(candidate.getDate() + 7)
-  return candidate.getTime()
+  const today = new Date(from)
+  const daysUntil = schedule.kind === 'daily' ? 0 : (schedule.weekday - today.getDay() + 7) % 7
+  // Construct each candidate at the requested wall time. A clock change on
+  // one date must not shift the hour used to calculate a different date.
+  const atDayOffset = (days: number): number =>
+    new Date(today.getFullYear(), today.getMonth(), today.getDate() + days, hour, minute).getTime()
+  const candidate = atDayOffset(daysUntil)
+  return candidate > from ? candidate : atDayOffset(daysUntil + (schedule.kind === 'daily' ? 1 : 7))
+}
+
+function sameSchedule(left: ScheduledTaskSchedule, right: ScheduledTaskSchedule): boolean {
+  if (left.kind === 'once') return right.kind === 'once' && left.at === right.at
+  if (right.kind === 'once' || left.time !== right.time) return false
+  return left.kind === 'daily' ? right.kind === 'daily' : right.kind === 'weekly' && left.weekday === right.weekday
 }
 
 function validateInput(
@@ -341,7 +345,10 @@ export class ScheduledTaskService extends EventEmitter {
       // at the future: its schedule is what will launch it.
       const normalized = validateInput(input, { allowPastOnce: !current.enabled })
       this.assertWorkspace(normalized.workspaceId)
-      const now = Date.now()
+      // Editing the task details must keep an occurrence that is already due.
+      const nextRunAt = current.nextRunAt !== undefined && sameSchedule(current.schedule, normalized.schedule)
+        ? current.nextRunAt
+        : current.enabled ? nextOccurrence(normalized.schedule, Date.now()) : undefined
       return tasks.map((task) => task.id === id
         ? {
             ...task,
@@ -350,7 +357,7 @@ export class ScheduledTaskService extends EventEmitter {
             // the value the task carried before.
             model: normalized.model,
             thinkingLevel: normalized.thinkingLevel,
-            nextRunAt: task.enabled ? nextOccurrence(normalized.schedule, now) : undefined
+            nextRunAt
           }
         : task)
     })

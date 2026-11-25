@@ -29,9 +29,26 @@ function huggingFaceCredentialPaths(cwd: string, env: NodeJS.ProcessEnv): string
   ]
 }
 
+const AUTO_APPROVE_TOOLS = new Set(['read', 'write', 'edit', 'grep', 'find', 'ls'])
+const DEFAULTABLE_SEARCH_TOOLS = new Set(['grep', 'find', 'ls'])
+
+function hasUnsafeSearchPattern(value: unknown): boolean {
+  if (value === undefined) return false
+  if (typeof value !== 'string') return true
+  if (/^[@~]|^file:/i.test(value)) return true
+  if (path.isAbsolute(value)) return true
+  if (/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(value)) return true
+  return false
+}
+
 export function canAutoApprove(approval: ToolApproval, cwd: string, env: NodeJS.ProcessEnv = process.env): boolean {
-  if (approval.toolSource !== 'builtin' || !['read', 'write', 'edit'].includes(approval.toolName)) return false
-  const raw = approval.input.path
+  if (approval.toolSource !== 'builtin' || !AUTO_APPROVE_TOOLS.has(approval.toolName)) return false
+  if (approval.toolName === 'find' && hasUnsafeSearchPattern(approval.input.pattern)) return false
+  if (approval.toolName === 'grep' && hasUnsafeSearchPattern(approval.input.glob)) return false
+  const raw =
+    approval.input.path === undefined && DEFAULTABLE_SEARCH_TOOLS.has(approval.toolName)
+      ? '.'
+      : approval.input.path
   if (typeof raw !== 'string' || !raw || /^[@~]|^file:/i.test(raw)) return false
   // Pi expands these spellings before using them. Ambiguous paths need approval.
   if (/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/.test(raw)) return false
@@ -88,7 +105,8 @@ export function permissionExtension(
   taskModeExtensionPath?: string,
   swarmExtensionPath?: string,
   computerExtensionPath?: string,
-  imageExtensionPath?: string
+  imageExtensionPath?: string,
+  sideChatExtensionPath?: string
 ): string {
   const ownedTools: Record<string, string> = {}
   if (exemptDesktopTools) {
@@ -106,6 +124,13 @@ export function permissionExtension(
     // by extension source path so third-party extensions cannot squat the names.
     if (computerExtensionPath) ownedTools.computer = computerExtensionPath
     if (imageExtensionPath) ownedTools.generate_image = imageExtensionPath
+    // Side Chat read-only inspection tools call back over localhost with a
+    // per-process capability token. Verified strictly by extension source path.
+    if (sideChatExtensionPath) {
+      for (const name of ['inspect_main_conversation', 'inspect_main_changes']) {
+        ownedTools[name] = sideChatExtensionPath
+      }
+    }
   }
   return `export default function (pi) {
     let pending = Promise.resolve();

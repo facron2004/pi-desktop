@@ -7,12 +7,106 @@ import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { registerIpc } from '../src/main/ipc'
 import type { IpcContext } from '../src/main/ipc'
 import { piVersion } from '../src/main/pi/cli'
 import { SettingsStore } from '../src/main/settings'
 import type { PiCliUpgradeProgress, RuntimeEnsureOptions } from '../src/shared/types'
+
+test('saving Automatic reasoning clears the Pi startup override before returning', async (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'pi-automatic-reasoning-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR
+  process.env.PI_CODING_AGENT_DIR = directory
+  t.after(() => {
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir
+  })
+  t.mock.method(app, 'getPath', () => directory)
+  const agentFile = path.join(directory, 'settings.json')
+  const desktopFile = path.join(directory, 'desktop.json')
+  writeFileSync(agentFile, JSON.stringify({ defaultThinkingLevel: 'high', theme: 'dark' }))
+  writeFileSync(desktopFile, JSON.stringify({ thinkingLevel: 'high' }))
+  const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
+  t.mock.method(ipcMain, 'handle', (channel, handler) => handlers.set(channel, handler))
+  registerIpc({
+    settings: new SettingsStore('desktop.json'),
+    supervisor: {},
+    getWindow: () => null,
+    terminals: {},
+    memory: {}
+  } as unknown as IpcContext)
+
+  const patch = handlers.get('settings:patch')
+  assert.ok(patch)
+  await patch({}, { theme: 'light' })
+  assert.equal(JSON.parse(readFileSync(agentFile, 'utf8')).defaultThinkingLevel, 'high')
+  await patch({}, { thinkingLevel: undefined })
+  assert.equal(new SettingsStore('desktop.json').get().thinkingLevel, undefined)
+  assert.deepEqual(JSON.parse(readFileSync(agentFile, 'utf8')), { theme: 'dark' })
+  await patch({}, { thinkingLevel: 'off' })
+  assert.equal(JSON.parse(readFileSync(agentFile, 'utf8')).defaultThinkingLevel, 'off')
+})
+
+test('session export preserves an existing destination until Pi finishes', async (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'pi-export-html-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const target = path.join(directory, 'conversation.html')
+  const sessionKey = 'test-session.jsonl'
+  writeFileSync(target, 'original export', 'utf8')
+  const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
+  t.mock.method(ipcMain, 'handle', (channel, handler) => handlers.set(channel, handler))
+  let cancelled = true
+  t.mock.method(dialog, 'showSaveDialog', async () => ({ canceled: cancelled, filePath: cancelled ? undefined : target }))
+  const opened: string[] = []
+  t.mock.method(shell, 'openPath', async (file) => {
+    opened.push(file)
+    return 'No associated HTML viewer'
+  })
+  let requests = 0
+  let exportFails = true
+  registerIpc({
+    supervisor: {
+      has: (key: string) => key === sessionKey,
+      request: async (key: string, command: string, payload: { outputPath: string }) => {
+        requests += 1
+        assert.equal(key, sessionKey)
+        assert.equal(command, 'export_html')
+        assert.equal(path.dirname(path.dirname(payload.outputPath)), directory)
+        assert.notEqual(payload.outputPath, target)
+        writeFileSync(payload.outputPath, exportFails ? 'partial export' : 'complete export', 'utf8')
+        if (exportFails) throw new Error('Export interrupted')
+        return { path: payload.outputPath }
+      }
+    },
+    settings: { get: () => ({ workspaces: [] }) },
+    getWindow: () => null,
+    terminals: { create: () => ({}) },
+    memory: { promptFor: () => '' }
+  } as unknown as IpcContext)
+
+  const exportHtml = handlers.get('sessions:exportHtml')
+  assert.ok(exportHtml)
+  const request = handlers.get('runtime:request')
+  assert.ok(request)
+  await assert.rejects(async () => request({}, 'export_html', {}, undefined, undefined, sessionKey), /sessions:exportHtml/)
+  assert.deepEqual(await exportHtml({}, sessionKey), { cancelled: true })
+  assert.equal(requests, 0)
+  cancelled = false
+  await assert.rejects(async () => exportHtml({}, sessionKey), /Export interrupted/)
+  assert.equal(readFileSync(target, 'utf8'), 'original export')
+  assert.deepEqual(opened, [])
+  assert.deepEqual(readdirSync(directory), [path.basename(target)])
+
+  exportFails = false
+  assert.deepEqual(await exportHtml({}, sessionKey), {
+    cancelled: false, path: target, openError: 'No associated HTML viewer'
+  })
+  assert.equal(readFileSync(target, 'utf8'), 'complete export')
+  assert.deepEqual(opened, [target])
+  assert.deepEqual(readdirSync(directory), [path.basename(target)])
+})
 
 test('pasted image uses the original project after switching workspaces', async () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'pi-paste-project-'))

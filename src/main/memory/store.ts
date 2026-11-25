@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto'
 import {
-  existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -140,19 +139,30 @@ function recentLedgerSessions(
  * starts empty; memory does the same, so the bytes stay recoverable and the log
  * says what happened.
  */
-function readJson<T>(file: string, fallback: T, label: string): T {
-  if (!existsSync(file)) return fallback
+function readJson<T>(file: string, fallback: T, label: string, lockFile?: string): T {
+  let contents: string
   try {
-    return JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, '')) as T
+    contents = readFileSync(file, 'utf8')
   } catch (error) {
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-    const quarantine = `${file}.corrupt-${stamp}`
-    try {
-      renameSync(file, quarantine)
-      console.error(`[pi-desktop] ${label} could not be read and was moved to ${path.basename(quarantine)}:`, error)
-    } catch (renameError) {
-      console.error(`[pi-desktop] ${label} could not be read and could not be set aside:`, renameError)
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return fallback
+    throw error
+  }
+  try {
+    return JSON.parse(contents.replace(/^\uFEFF/, '')) as T
+  } catch (error) {
+    // A reader may have observed a broken version before a writer replaced it.
+    if (lockFile) {
+      const release = properLockfile.lockSync(lockFile, { realpath: false, retries: 0 })
+      try {
+        return readJson(file, fallback, label)
+      } finally {
+        release()
+      }
     }
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const quarantine = `${file}.corrupt-${stamp}-${randomUUID()}`
+    renameSync(file, quarantine)
+    console.error(`[pi-desktop] ${label} could not be parsed and was moved to ${path.basename(quarantine)}:`, error)
     return fallback
   }
 }
@@ -420,12 +430,21 @@ export class MemoryStore {
     mkdirSync(this.rolloutDir, { recursive: true })
   }
 
-  readEntries(): MemoryEntry[] {
+  readEntries(locked = false): MemoryEntry[] {
     const version = memoryFileVersion(this.entriesFile)
-    if (version !== undefined && version === this.entriesFileVersion && this.entriesCache) {
+    if (!locked && version !== undefined && version === this.entriesFileVersion && this.entriesCache) {
       return cloneEntries(this.entriesCache)
     }
-    const file = readJson<MemoryFile>(this.entriesFile, { version: 1, updatedAt: 0, entries: [] }, 'the memory list')
+    let file: MemoryFile
+    try {
+      file = readJson<MemoryFile>(
+        this.entriesFile, { version: 1, updatedAt: 0, entries: [] }, 'the memory list',
+        locked ? undefined : this.entriesFile
+      )
+    } catch (error) {
+      if (locked) throw error
+      return cloneEntries(this.entriesCache ?? [])
+    }
     const entries = !Array.isArray(file.entries)
       ? []
       : file.entries
@@ -460,26 +479,21 @@ export class MemoryStore {
     return entries
   }
 
-  private writeEntries(entries: MemoryEntry[]): MemoryEntry[] {
-    this.ensure()
-    const next = enforceCaps(entries)
+  private writeEntries(entries: MemoryEntry[]): void {
     writeJsonAtomic(this.entriesFile, {
       version: 1,
       updatedAt: Date.now(),
-      entries: next
+      entries
     } satisfies MemoryFile)
-    writeTextAtomic(this.summaryFile, renderMemorySummary(next))
-    this.entriesCache = cloneEntries(next)
+    this.entriesCache = cloneEntries(entries)
     this.entriesFileVersion = memoryFileVersion(this.entriesFile)
-    return next
   }
 
   async merge(candidates: MemoryCandidate[]): Promise<MergeResult> {
     return this.withLock(() => this.mergeUnlocked(candidates))
   }
 
-  private mergeUnlocked(candidates: MemoryCandidate[]): MergeResult {
-    const entries = this.readEntries()
+  private mergeUnlocked(candidates: MemoryCandidate[], entries = this.readEntries(true)): MergeResult {
     const now = Date.now()
     const newIds = new Set<string>()
     for (const raw of candidates) {
@@ -512,7 +526,9 @@ export class MemoryStore {
       })
       newIds.add(id)
     }
-    const written = this.writeEntries(entries)
+    const written = enforceCaps(entries)
+    this.writeEntries(written)
+    writeTextAtomic(this.summaryFile, renderMemorySummary(written))
     // enforceCaps can drop a fresh entry when the store or its project is full;
     // the status line must not claim to have learned something that is not in
     // the list.
@@ -521,36 +537,45 @@ export class MemoryStore {
 
   async remove(id: string): Promise<void> {
     await this.withLock(() => {
-      const ledger = this.readLedger()
+      const entries = this.readEntries(true)
+      const removed = entries.find((entry) => entry.id === id)
+      if (!removed) return
+      const ledger = this.readLedger(true)
+      const remaining = enforceCaps(entries.filter((entry) => entry.id !== id))
+      // Update the projections first so a blocked file leaves the entry
+      // available to retry and the source note can still be found.
+      writeTextAtomic(this.summaryFile, renderMemorySummary(remaining))
+      if (removed.source) this.updateRolloutAfterRemoval(removed.source, remaining)
       ledger.generation = (ledger.generation ?? 0) + 1
       this.writeLedger(ledger)
-      const entries = this.readEntries()
-      const removed = entries.find((entry) => entry.id === id)
-      const remaining = entries.filter((entry) => entry.id !== id)
       this.writeEntries(remaining)
-      // The rollout note is a projection of what a session taught, and the
-      // injected prompt points the model at those notes by session. The
-      // confirmation promises the entry is gone from memory, so the note goes
-      // with the last entry that references that session.
-      if (removed?.source && !remaining.some((entry) => entry.source === removed.source)) {
-        this.removeRolloutNote(removed.source)
-      }
     })
   }
 
-  /** Delete one session's rollout note; a note someone holds open stays for now. */
-  private removeRolloutNote(sessionFile: string): void {
-    try {
-      const name = `${path.basename(sessionFile, path.extname(sessionFile))}.md`
-      rmSync(path.join(this.rolloutDir, name), { force: true })
-    } catch (error) {
-      console.error('[pi-desktop] could not remove the memory session note:', error)
+  private updateRolloutAfterRemoval(sessionFile: string, remaining: MemoryEntry[]): void {
+    const file = this.rolloutSummaryPath(sessionFile)
+    const source = canonicalSessionFile(sessionFile)
+    const candidates = remaining.filter(entry => entry.source && canonicalSessionFile(entry.source) === source)
+    if (!candidates.length) {
+      rmSync(file, { force: true })
+      return
     }
+    try {
+      statSync(file)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+      throw error
+    }
+    // The old raw model output may also contain the removed entry.
+    this.writeRolloutSummaryUnlocked(sessionFile, {
+      candidates,
+      cwd: candidates.find(entry => entry.projectPath)?.projectPath
+    })
   }
 
   async clear(): Promise<void> {
     await this.withLock(() => {
-      const generation = this.readLedger().generation ?? 0
+      const generation = this.readLedger(true).generation ?? 0
       this.writeLedger({ version: 1, generation: generation + 1, sessions: {} })
       writeJsonAtomic(this.entriesFile, { version: 1, updatedAt: Date.now(), entries: [] } satisfies MemoryFile)
       writeTextAtomic(this.summaryFile, '')
@@ -569,12 +594,21 @@ export class MemoryStore {
     return renderMemorySummary(this.readEntries())
   }
 
-  readLedger(): MemoryLedgerFile {
+  readLedger(locked = false): MemoryLedgerFile {
     const version = memoryFileVersion(this.ledgerFile)
-    if (version !== undefined && version === this.ledgerFileVersion && this.ledgerCache) {
+    if (!locked && version !== undefined && version === this.ledgerFileVersion && this.ledgerCache) {
       return cloneLedger(this.ledgerCache)
     }
-    const file = readJson<MemoryLedgerFile>(this.ledgerFile, { version: 1, sessions: {} }, 'the memory learning record')
+    let file: MemoryLedgerFile
+    try {
+      file = readJson<MemoryLedgerFile>(
+        this.ledgerFile, { version: 1, sessions: {} }, 'the memory learning record',
+        locked ? undefined : this.entriesFile
+      )
+    } catch (error) {
+      if (locked) throw error
+      return cloneLedger(this.ledgerCache ?? { version: 1, generation: 0, sessions: {} })
+    }
     const sessions = file?.sessions
     const ledger: MemoryLedgerFile = {
       version: 1,
@@ -643,11 +677,13 @@ export class MemoryStore {
     if (!stats) return Promise.resolve(false)
     const key = canonicalSessionFile(file)
     return this.withLock(() => {
-      const ledger = this.readLedger()
+      const ledger = this.readLedger(true)
       if (expectedGeneration !== undefined && ledger.generation !== expectedGeneration) return false
       const previous = ledger.sessions[key] ?? ledger.sessions[file]
       if (key !== file && file in ledger.sessions) delete ledger.sessions[file]
-      const attempts = skipped === 'error' ? (previous?.attempts ?? 0) + 1 : 0
+      const attempts = skipped === 'error'
+        ? (previous && this.wasProcessed(file, stats, previous) ? previous.attempts ?? 0 : 0) + 1
+        : 0
       ledger.sessions[key] = {
         mtimeMs: stats.mtimeMs,
         size: stats.size,
@@ -674,13 +710,16 @@ export class MemoryStore {
     return this.withLock(() => this.writeRolloutSummaryUnlocked(sessionFile, payload))
   }
 
+  private rolloutSummaryPath(sessionFile: string): string {
+    return path.join(this.rolloutDir, `${path.basename(sessionFile, path.extname(sessionFile))}.md`)
+  }
+
   private writeRolloutSummaryUnlocked(
     sessionFile: string,
     payload: { cwd?: string; candidates: MemoryCandidate[]; raw?: string }
   ): void {
     this.ensure()
-    const name = `${path.basename(sessionFile, path.extname(sessionFile))}.md`
-    const file = path.join(this.rolloutDir, name)
+    const file = this.rolloutSummaryPath(sessionFile)
     const lines = [
       `# Session memory`,
       '',
@@ -747,9 +786,10 @@ export class MemoryStore {
     shouldCommit?: () => boolean
   ): Promise<MergeResult | null> {
     return this.withLock(() => {
-      if (this.generation() !== expectedGeneration || (shouldCommit && !shouldCommit())) return null
+      if ((this.readLedger(true).generation ?? 0) !== expectedGeneration || (shouldCommit && !shouldCommit())) return null
+      const entries = this.readEntries(true)
       this.writeRolloutSummaryUnlocked(sessionFile, payload)
-      return this.mergeUnlocked(payload.candidates)
+      return this.mergeUnlocked(payload.candidates, entries)
     })
   }
 

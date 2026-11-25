@@ -1,6 +1,8 @@
-import { memo, useMemo } from 'react'
+import { memo, useMemo, useRef } from 'react'
 import { resolveSavedModel } from '@shared/provider-models'
+import { isSideSessionKey } from '@shared/side-chat'
 import { useAppStore } from '../store/useAppStore'
+import { useSessionViewSlice } from '../lib/conversation-scope'
 import { contextReading } from '../lib/context-reading'
 import { formatTokens } from '../lib/format'
 import { useT } from '../lib/i18n'
@@ -16,31 +18,54 @@ import { ContextPanel } from './ContextPanel'
  * from `lib/context-reading.ts`, so a conversation with no live process still
  * shows the transcript's estimate instead of an empty arc at 0%.
  */
-export const ContextRing = memo(function ContextRing() {
+export const ContextRing = memo(function ContextRing({
+  sessionKey: explicitSessionKey
+}: {
+  sessionKey?: string
+} = {}) {
+  const slice = useSessionViewSlice(explicitSessionKey)
+  const resolvedKey = explicitSessionKey ?? slice.sessionKey
+  const isSide = Boolean(resolvedKey && isSideSessionKey(resolvedKey))
   const showContextUsage = useAppStore((state) => state.settings.showContextUsage !== false)
-  const stats = useAppStore((state) => state.stats)
-  const itemCount = useAppStore((state) => state.items.length)
-  const lastAssistantUsage = useAppStore((state) => {
-    for (let index = state.items.length - 1; index >= 0; index -= 1) {
-      const item = state.items[index]
+  const stats = slice.stats
+  const items = slice.items
+  const itemsRef = useRef(items)
+  itemsRef.current = items
+  const itemCount = items.length
+  const lastAssistantUsage = useMemo(() => {
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const item = items[index]
       if (item.kind === 'assistant' && item.usage) return item.usage
     }
     return undefined
-  })
-  const lastCompletedAssistant = useAppStore((state) =>
-    state.items.findLast((item) => item.kind === 'assistant' && !item.streaming)
+  }, [items])
+  const lastCompletedAssistant = useMemo(
+    () => items.findLast((item) => item.kind === 'assistant' && !item.streaming),
+    [items]
   )
-  const piState = useAppStore((state) => state.piState)
-  const models = useAppStore((state) => state.models)
+  const piState = slice.piState
+  const mainModels = useAppStore((state) => state.models)
+  const models = slice.models.length > 0 ? slice.models : mainModels
   const catalogModels = useAppStore((state) => state.catalogModels)
+  const sideOverride = useAppStore((state) =>
+    resolvedKey ? state.sideModelOverrides?.[resolvedKey] : undefined
+  )
+  const mainLiveModel = useAppStore((state) => state.piState?.model)
   const savedModel = useAppStore((state) => state.settings.model)
   const savedProvider = useAppStore((state) => state.settings.provider)
   const t = useT()
 
-  const fallbackModel = useMemo(
-    () => resolveSavedModel(savedModel, savedProvider, models.length ? models : catalogModels),
-    [savedModel, savedProvider, models, catalogModels]
-  )
+  const fallbackModel = useMemo(() => {
+    const pool = models.length ? models : catalogModels
+    if (isSide) {
+      if (sideOverride) {
+        const resolved = resolveSavedModel(sideOverride.spec, sideOverride.provider, pool)
+        if (resolved) return resolved
+      }
+      if (mainLiveModel?.id && mainLiveModel.provider) return mainLiveModel
+    }
+    return resolveSavedModel(savedModel, savedProvider, pool)
+  }, [isSide, sideOverride, mainLiveModel, savedModel, savedProvider, models, catalogModels])
 
   // Pi's own `contextWindow` outranks the saved model: the reading mixes Pi's
   // `percent` with the window, so a stale saved model would print a
@@ -56,7 +81,7 @@ export const ContextRing = memo(function ContextRing() {
       showContextUsage
         ? contextReading({
             stats,
-            items: useAppStore.getState().items,
+            items: itemsRef.current,
             model: liveModel,
             fallbackModel: modelWindow
           })
@@ -115,7 +140,7 @@ export const ContextRing = memo(function ContextRing() {
         </button>
       )}
     >
-      {() => <ContextPanel />}
+      {() => <ContextPanel sessionKey={resolvedKey} />}
     </Popover>
   )
 })

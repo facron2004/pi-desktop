@@ -5,6 +5,10 @@ import { readdir, rm, unlink } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import type * as pty from 'node-pty'
+import {
+  SIDE_CHAT_DIR_NAME,
+  type SessionRuntimeRole
+} from '@shared/types'
 import { bridgeRuntime, registerIpc, sendToWindow } from './ipc'
 import { MemoryService } from './memory/service'
 import { AutoTitleService } from './auto-title'
@@ -15,13 +19,16 @@ import { readAgentPresets } from './pi/agents'
 import { fetchPiCatalog } from './pi-catalog'
 import { canonicalPath } from './pi/session-file'
 import { SessionSupervisor } from './pi/supervisor'
+import { MainConversationMirror } from './pi/main-mirror'
+import { SideChatBridgeServer } from './pi/side-chat-bridge'
+import { SideChatBindingService } from './side-chats'
 import { RemoteAccessService } from './remote-access'
 import { ImChannelService } from './channels/im-channel-service'
 import { createChannelAdapter } from './channels/adapters'
 import { applyTaskbarIcon, windowIconImage } from './app-icon'
 import { scheduleCapture, scheduleWindowClose } from './screenshot'
 import { didUserDataAclChange, secureUserDataDirectory, scheduleUserDataAclSweep, SettingsStore } from './settings'
-import { configureExternalSessionRoots, resolveSessionRoots } from './sessions'
+import { configureExternalSessionRoots, encodeWorkspaceDir, resolveSessionRoot, resolveSessionRoots } from './sessions'
 import { TerminalManager } from './terminal'
 import {
   claimSingleInstance,
@@ -109,6 +116,9 @@ let remoteAccess: RemoteAccessService | null = null
 let remoteInitialization: Promise<void> | null = null
 let scheduledTaskService: ScheduledTaskService | null = null
 let imChannelService: ImChannelService | null = null
+let sideChatBindings: SideChatBindingService | null = null
+let mainMirror: MainConversationMirror | null = null
+let sideChatBridge: SideChatBridgeServer | null = null
 let startupFinished = false
 /** A second launch that arrived before the first window existed. */
 let revealPending = false
@@ -337,6 +347,12 @@ function createWindow(): BrowserWindow {
     window.hide()
   })
 
+  const disposeRendererTerminals = () => {
+    void terminalManager?.disposeAll().catch((error: unknown) => {
+      console.error('[pi-desktop] terminal cleanup failed:', error)
+    })
+  }
+
   // The window can be closed while Pi is still shutting down; drop the
   // reference so nothing tries to push events into a destroyed renderer.
   window.on('closed', () => {
@@ -344,20 +360,17 @@ function createWindow(): BrowserWindow {
     clearShowFallback()
     if (mainWindow === window) {
       mainWindow = null
-      void terminalManager?.disposeAll().catch((error: unknown) => {
-        console.error('[pi-desktop] terminal cleanup failed:', error)
-      })
+      disposeRendererTerminals()
     }
   })
 
-  // A crashed renderer has lost every terminal session id, so those PTYs no
-  // longer have a controllable owner.
+  // A new main document loses the previous renderer's terminal IDs and output
+  // acknowledgements, even when the renderer process itself survives a reload.
+  window.webContents.on('did-navigate', () => {
+    if (mainWindow === window) disposeRendererTerminals()
+  })
   window.webContents.on('render-process-gone', (_event, details) => {
-    if (mainWindow === window) {
-      void terminalManager?.disposeAll().catch((error: unknown) => {
-        console.error('[pi-desktop] terminal cleanup failed:', error)
-      })
-    }
+    if (mainWindow === window) disposeRendererTerminals()
     if (!app.isPackaged) {
       console.error('[renderer] process gone:', details.reason)
     }
@@ -543,7 +556,11 @@ async function cleanupOrphanedScratchFiles(): Promise<void> {
         continue
       }
       if (!entry.isFile()) continue
-      const isMjsScratch = name.startsWith('pi-desktop-') && name.endsWith('.mjs')
+      // Covers pi-desktop-permissions-*.mjs, pi-desktop-task-modes-*.mjs,
+      // pi-desktop-side-chat-*.mjs, pi-desktop-subagent-*.mjs, pi-desktop-swarm-*.mjs
+      const isMjsScratch =
+        (name.startsWith('pi-desktop-') || name.startsWith('pi-desktop-side-chat-')) &&
+        name.endsWith('.mjs')
       const isMdScratch = name.startsWith('pi-desktop-instructions-') && name.endsWith('.md')
       if (isMjsScratch || isMdScratch) {
         await unlink(path.join(userData, name)).catch(() => {})
@@ -584,10 +601,28 @@ async function start(): Promise<void> {
     getCustomPiPath: () => settingsStore.get().piPath,
     getTrustProject: () => settingsStore.get().trustProject === true,
     getSessionRoots: () => resolveSessionRoots(settingsStore.get().externalChatFolder),
-    getSessionDir: (cwd: string) => {
+    getSessionDir: (cwd: string, options?: { role?: SessionRuntimeRole }) => {
       const projectless = path.join(app.getPath('userData'), 'chats')
+      const externalRoot = settingsStore.get().externalChatFolder?.trim()
+      if (options?.role === 'side') {
+        const baseRoot =
+          canonicalPath(cwd) === canonicalPath(projectless) && externalRoot
+            ? path.resolve(externalRoot)
+            : resolveSessionRoot()
+        return path.join(baseRoot, SIDE_CHAT_DIR_NAME, encodeWorkspaceDir(cwd))
+      }
       if (canonicalPath(cwd) !== canonicalPath(projectless)) return undefined
-      return settingsStore.get().externalChatFolder?.trim() || undefined
+      return externalRoot || undefined
+    },
+    registerSideChatBridge: async (
+      sideOwnerId: string,
+      parentSessionKey: string | undefined,
+      cwd: string
+    ) => {
+      if (!sideChatBridge) {
+        return { bridgeUrl: 'http://127.0.0.1:0', bridgeToken: '', revoke: () => {} }
+      }
+      return sideChatBridge.registerRuntime(sideOwnerId, parentSessionKey, cwd)
     },
     getPermissionMode: () => settingsStore.get().permissionMode ?? 'ask',
     getComputerUse: () => settingsStore.get().computerUse === true,
@@ -615,6 +650,22 @@ async function start(): Promise<void> {
     () => new PiRuntime(runtimeOptions),
     path.join(app.getPath('userData'), 'cwd-gate')
   )
+  const getSideSessionRoots = () => resolveSessionRoots(settingsStore.get().externalChatFolder)
+  sideChatBindings = new SideChatBindingService({
+    userData: app.getPath('userData'),
+    supervisor,
+    getSessionRoots: getSideSessionRoots
+  })
+  mainMirror = new MainConversationMirror({
+    supervisor,
+    getSessionRoots: getSideSessionRoots
+  })
+  sideChatBridge = new SideChatBridgeServer({
+    mirror: mainMirror,
+    bindings: sideChatBindings,
+    supervisor,
+    getSessionRoots: getSideSessionRoots
+  })
   const memoryStore = new MemoryStore(path.join(app.getPath('userData'), 'memories'))
   memoryService = new MemoryService(memoryStore, () => settingsStore.get())
   memoryService.attach(supervisor)
@@ -692,6 +743,9 @@ async function start(): Promise<void> {
     remoteReady,
     scheduledTasks: scheduledTaskService,
     imChannels: imChannelService,
+    sideChatBindings,
+    mainMirror,
+    sideChatBridge,
     syncTray: () => applyTray()
   }
   registerIpc(context)
@@ -743,6 +797,9 @@ app.on('before-quit', () => {
   memoryService?.dispose()
   autoTitleService?.dispose()
   scheduledTaskService?.stopScheduling()
+  sideChatBindings?.dispose()
+  mainMirror?.dispose()
+  void sideChatBridge?.dispose().catch(() => {})
   void imChannelService?.dispose().catch(() => {})
 })
 

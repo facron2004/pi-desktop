@@ -4,8 +4,10 @@ import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, rename, rm, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { resolveSessionFilePath, resolveSessionRoots } from '../sessions'
+import { encodeWorkspaceDir, resolveSessionFilePath, resolveSessionRoot, resolveSessionRoots } from '../sessions'
 import {
+  SIDE_CHAT_DIR_NAME,
+  SIDE_CHAT_STATUS_KEY,
   SUBAGENT_EDITOR_CANCEL_STATUS_KEY,
   SUBAGENT_EDITOR_PENDING_STATUS_KEY
 } from '@shared/types'
@@ -17,13 +19,19 @@ import type {
   PiState,
   RpcTraceHint,
   RuntimeStartOptions,
-  RuntimeStatus
+  RuntimeStatus,
+  SessionRuntimeRole
 } from '@shared/types'
 import { resolvePiLaunch } from './locate'
 import { PiRpcClient } from './rpc-client'
 import { buildRpcArgs } from './rpc-args'
 import { canAutoApprove, parseToolApproval, permissionExtension } from './permissions'
 import { prepareLaunchAgentSettings } from './retry-policy'
+import {
+  SIDE_CHAT_ALLOWED_TOOLS,
+  SIDE_CHAT_EXCLUDED_TOOLS,
+  sideChatExtension
+} from './side-chat'
 import { taskModesExtension } from './task-modes'
 import { subagentExtension } from './subagent'
 import { swarmExtension } from './swarm'
@@ -51,7 +59,13 @@ export interface RuntimeOptions {
   customPiPath?: string
   getCustomPiPath?: () => string | undefined
   getSessionRoots?: () => readonly string[]
-  getSessionDir?: (cwd: string) => string | undefined
+  getSessionDir?: (cwd: string, options?: { role?: SessionRuntimeRole }) => string | undefined
+  /** Register a per-runtime capability token with the localhost Side Chat bridge. */
+  registerSideChatBridge?: (
+    sideOwnerId: string,
+    parentSessionKey: string | undefined,
+    cwd: string
+  ) => Promise<{ bridgeUrl: string; bridgeToken: string; revoke: () => void }>
   /** Trust project-local configuration such as `.pi/settings.json`. */
   trustProject?: boolean
   getTrustProject?: () => boolean
@@ -94,6 +108,8 @@ export class PiRuntime extends EventEmitter {
   private generation = 0
   /** Scripts written for one process, removed once that process has exited. */
   private scratch = new Map<PiRpcClient, string[]>()
+  /** Loopback bridge token revokers for Side Chat child processes. */
+  private sideBridgeRevoke = new Map<PiRpcClient, () => void>()
   /** Epoch captured at spawn. `dispose` runs after `generation` has already moved on. */
   private epochs = new WeakMap<PiRpcClient, number>()
   /**
@@ -168,11 +184,13 @@ export class PiRuntime extends EventEmitter {
     // A fresh path per process. Reusing one file makes the new launch wait
     // until the process that still has it open — the one we just retired —
     // lets go of it, which on Windows is the whole shutdown.
+    const isSide = options.role === 'side'
     const scratchId = randomUUID()
     const userData = app.getPath('userData')
     const expectedStaticFiles = staticExtensionPaths(userData)
     const customInstructionsFile = path.join(userData, `pi-desktop-instructions-${scratchId}.md`)
     const permissionFile = path.join(userData, `pi-desktop-permissions-${scratchId}.mjs`)
+    const sideChatFile = path.join(userData, `pi-desktop-side-chat-${scratchId}.mjs`)
     const subagentPermissionFile = path.join(userData, `pi-desktop-subagent-permissions-${scratchId}.mjs`)
     const subagentToolsFile = path.join(userData, `pi-desktop-workspace-tools-${scratchId}.mjs`)
     const modeFile = path.join(userData, `pi-desktop-task-modes-${scratchId}.mjs`)
@@ -181,57 +199,91 @@ export class PiRuntime extends EventEmitter {
     const permissionTitle = `pi-desktop-permissions-${scratchId}`
     const files: string[] = []
     let staticFiles: StaticExtensionFilePaths
+    let revokeSideBridge: (() => void) | undefined
     try {
       await mkdir(userData, { recursive: true })
-      files.push(permissionFile, subagentPermissionFile, subagentToolsFile, modeFile, subagentFile, swarmFile)
-      // `sessionFile` is undefined exactly when Pi has nothing to resume, so this
-      // is the one moment "a brand-new conversation starts in Plan Mode" is true.
-      const defaultMode =
-        !sessionFile && this.options.getDefaultPlanMode?.() === true ? 'plan' : 'default'
       const [resolvedStaticFiles] = await Promise.all([
         ensureStaticExtensionFiles(userData),
         (async () => {
-          const writes: [string, string][] = [
-            [
-              permissionFile,
-              permissionExtension(
-                permissionTitle,
-                true,
-                modeFile,
+          const writes: [string, string][] = []
+          if (isSide) {
+            const sideOwnerId = trace?.uiSessionId || sessionFile || `draft:side:${scratchId}`
+            const bridge = this.options.registerSideChatBridge
+              ? await this.options.registerSideChatBridge(sideOwnerId, options.parentSessionKey, options.cwd)
+              : { bridgeUrl: 'http://127.0.0.1:0', bridgeToken: '', revoke: () => {} }
+            revokeSideBridge = bridge.revoke
+            files.push(permissionFile, sideChatFile)
+            writes.push(
+              [
+                permissionFile,
+                permissionExtension(
+                  permissionTitle,
+                  true,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  sideChatFile
+                )
+              ],
+              [
+                sideChatFile,
+                sideChatExtension({
+                  bridgeUrl: bridge.bridgeUrl,
+                  bridgeToken: bridge.bridgeToken,
+                  extensionPath: sideChatFile,
+                  parentSessionKey: options.parentSessionKey
+                })
+              ]
+            )
+          } else {
+            files.push(permissionFile, subagentPermissionFile, subagentToolsFile, modeFile, subagentFile, swarmFile)
+            // `sessionFile` is undefined exactly when Pi has nothing to resume, so this
+            // is the one moment "a brand-new conversation starts in Plan Mode" is true.
+            const defaultMode =
+              !sessionFile && this.options.getDefaultPlanMode?.() === true ? 'plan' : 'default'
+            writes.push(
+              [
+                permissionFile,
+                permissionExtension(
+                  permissionTitle,
+                  true,
+                  modeFile,
+                  swarmFile,
+                  expectedStaticFiles.computer,
+                  expectedStaticFiles.image
+                )
+              ],
+              [subagentPermissionFile, permissionExtension(permissionTitle, false)],
+              [subagentToolsFile, workspaceToolsExtension()],
+              [modeFile, taskModesExtension(this.options.getComputerUse?.() === true, defaultMode, modeFile)],
+              [
+                subagentFile,
+                subagentExtension(
+                  this.options.getSubagentModel?.() ?? {},
+                  subagentPermissionFile,
+                  permissionTitle,
+                  trustProject,
+                  { command: launch.command, prefixArgs: launch.prefixArgs },
+                  // Named agent presets are project data, not Settings, but they cross
+                  // the same boundary: read here once per process, verified and bounded
+                  // by the loader, so the generated extension never re-opens a file.
+                  this.options.getAgentPresets?.(options.cwd) ?? [],
+                  subagentToolsFile
+                )
+              ],
+              [
                 swarmFile,
-                expectedStaticFiles.computer,
-                expectedStaticFiles.image
-              )
-            ],
-            [subagentPermissionFile, permissionExtension(permissionTitle, false)],
-            [subagentToolsFile, workspaceToolsExtension()],
-            [modeFile, taskModesExtension(this.options.getComputerUse?.() === true, defaultMode, modeFile)],
-            [
-              subagentFile,
-              subagentExtension(
-                this.options.getSubagentModel?.() ?? {},
-                subagentPermissionFile,
-                permissionTitle,
-                trustProject,
-                { command: launch.command, prefixArgs: launch.prefixArgs },
-                // Named agent presets are project data, not Settings, but they cross
-                // the same boundary: read here once per process, verified and bounded
-                // by the loader, so the generated extension never re-opens a file.
-                this.options.getAgentPresets?.(options.cwd) ?? [],
-                subagentToolsFile
-              )
-            ],
-            [
-              swarmFile,
-              swarmExtension({
-                permissionExtensionPath: subagentPermissionFile,
-                permissionTitle,
-                trustProject,
-                fallbackInvocation: { command: launch.command, prefixArgs: launch.prefixArgs },
-                workspaceToolsExtensionPath: subagentToolsFile
-              })
-            ]
-          ]
+                swarmExtension({
+                  permissionExtensionPath: subagentPermissionFile,
+                  permissionTitle,
+                  trustProject,
+                  fallbackInvocation: { command: launch.command, prefixArgs: launch.prefixArgs },
+                  workspaceToolsExtensionPath: subagentToolsFile
+                })
+              ]
+            )
+          }
           if (options.customInstructions?.trim()) {
             files.push(customInstructionsFile)
             writes.push([customInstructionsFile, options.customInstructions.trim()])
@@ -242,6 +294,7 @@ export class PiRuntime extends EventEmitter {
       ])
       staticFiles = resolvedStaticFiles
     } catch (error) {
+      revokeSideBridge?.()
       await this.deleteFiles(files)
       if (generation !== this.generation) return { ok: false }
       const message = `Could not prepare runtime configuration: ${error instanceof Error ? error.message : String(error)}`
@@ -249,6 +302,7 @@ export class PiRuntime extends EventEmitter {
       return { ok: false, error: message }
     }
     if (generation !== this.generation) {
+      revokeSideBridge?.()
       await this.deleteFiles(files)
       return { ok: false }
     }
@@ -260,19 +314,42 @@ export class PiRuntime extends EventEmitter {
         trustProject,
         options.customInstructions?.trim() ? customInstructionsFile : undefined,
         permissionFile,
-        modeFile,
+        isSide ? undefined : modeFile,
         staticFiles.provider,
-        subagentFile,
-        staticFiles.computer,
+        isSide ? undefined : subagentFile,
+        isSide ? undefined : staticFiles.computer,
         staticFiles.contextBreakdown,
         staticFiles.generationTiming,
         staticFiles.mermaid,
-        staticFiles.image,
-        swarmFile
+        isSide ? undefined : staticFiles.image,
+        isSide ? undefined : swarmFile,
+        isSide
+          ? {
+              sideChatFile,
+              noMcp: true,
+              tools: SIDE_CHAT_ALLOWED_TOOLS,
+              excludeTools: SIDE_CHAT_EXCLUDED_TOOLS
+            }
+          : undefined
       )
     ]
-    const sessionDir = this.options.getSessionDir?.(options.cwd)?.trim()
-    if (sessionDir) args.push('--session-dir', path.resolve(sessionDir))
+    const configuredSessionDir = this.options.getSessionDir?.(options.cwd, { role: options.role })?.trim()
+    const sessionDir =
+      configuredSessionDir ||
+      (isSide
+        ? path.join(
+            (this.options.getSessionRoots?.() ?? resolveSessionRoots())[0] ?? resolveSessionRoot(),
+            SIDE_CHAT_DIR_NAME,
+            encodeWorkspaceDir(options.cwd)
+          )
+        : undefined)
+    if (sessionDir) {
+      const resolvedSessionDir = path.resolve(sessionDir)
+      if (isSide) {
+        await mkdir(resolvedSessionDir, { recursive: true }).catch(() => {})
+      }
+      args.push('--session-dir', resolvedSessionDir)
+    }
 
     // A 429 has to outlast the provider's rate window. Pi reads the budget
     // once, when this process starts, so it has to be in place before launch.
@@ -280,12 +357,13 @@ export class PiRuntime extends EventEmitter {
       await prepareLaunchAgentSettings({
         model: options.model,
         thinkingLevel: options.thinkingLevel,
-        rememberDefaults: options.rememberDefaults
+        rememberDefaults: isSide ? false : options.rememberDefaults
       })
     } catch {
       /* an unreadable settings file keeps Pi's own budget and model */
     }
     if (generation !== this.generation) {
+      revokeSideBridge?.()
       await this.deleteFiles(files)
       return { ok: false }
     }
@@ -319,6 +397,7 @@ export class PiRuntime extends EventEmitter {
 
     let permissionsReady = false
     let modesReady = false
+    let sideChatReady = false
     this.aborting = false
     client.on('event', (event: PiEvent) => {
       // A newer launch owns the wire. This process is only still exiting.
@@ -333,6 +412,10 @@ export class PiRuntime extends EventEmitter {
       if (event.type === 'extension_ui_request') {
         const request = event as unknown as ExtensionUiRequest
         if (request.method === 'setStatus' && request.statusKey === 'pi-desktop-mode') modesReady = true
+        if (request.method === 'setStatus' && request.statusKey === SIDE_CHAT_STATUS_KEY) {
+          sideChatReady = request.statusText === 'ready'
+          return
+        }
         if (request.method === 'setStatus' && request.statusKey === SUBAGENT_EDITOR_PENDING_STATUS_KEY) {
           const token = typeof request.statusText === 'string' && request.statusText
             ? request.statusText
@@ -412,6 +495,7 @@ export class PiRuntime extends EventEmitter {
       })
     })
     this.scratch.set(client, files)
+    if (revokeSideBridge) this.sideBridgeRevoke.set(client, revokeSideBridge)
     client.on('error', (error: Error) => {
       if (this.generation !== generation || this.client !== client) return
       this.setStatus({ phase: 'error', cwd: options.cwd, error: error.message })
@@ -464,7 +548,11 @@ export class PiRuntime extends EventEmitter {
       // A newer start may have replaced this client while it was coming up.
       if (generation !== this.generation || this.client !== client) return { ok: false }
       if (!permissionsReady) throw new Error('Pi did not load its tool approval controls. Restart the runtime to try again.')
-      if (!modesReady) throw new Error('Pi did not load its task mode controls. Restart the runtime to try again.')
+      if (isSide) {
+        if (!sideChatReady) throw new Error('Pi did not load its Side Chat read-only controls. Restart the runtime to try again.')
+      } else {
+        if (!modesReady) throw new Error('Pi did not load its task mode controls. Restart the runtime to try again.')
+      }
       if (generation !== this.generation || this.client !== client) return { ok: false }
       this.setStatus({
         phase: 'ready',
@@ -621,6 +709,9 @@ export class PiRuntime extends EventEmitter {
     this.detach(client)
     const files = this.scratch.get(client)
     this.scratch.delete(client)
+    const revoke = this.sideBridgeRevoke.get(client)
+    this.sideBridgeRevoke.delete(client)
+    revoke?.()
     await client.stop()
     await this.deleteFiles(files ?? [])
     if (!legacyRuntimeFilesCleaned) {

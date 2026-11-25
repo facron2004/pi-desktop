@@ -15,6 +15,7 @@ import {
   type RuntimeQueueEvent,
   type RuntimeStatus,
   type SessionMeta,
+  type SessionExportResult,
   type SessionHydrationResult,
   type SettingsPatchBaseline,
   type Workspace
@@ -74,7 +75,12 @@ const bridge = {
       }
     }
   },
-  sessions: { list: async () => [], hydrate: async () => ({ messages: [], historyTruncated: false }), remove: async (_file?: string) => true },
+  sessions: {
+    list: async () => [],
+    exportHtml: async (_owner: string): Promise<SessionExportResult> => ({ cancelled: true }),
+    hydrate: async () => ({ messages: [], historyTruncated: false }),
+    remove: async (_file?: string) => true
+  },
   git: {
     status: async () => ({ isRepo: false }),
     branches: async (_expectedRoot?: string): Promise<GitBranches> => ({ detached: false, branches: [], worktrees: [] }),
@@ -756,6 +762,23 @@ test('an unpersisted fork restores shell output from before the first prompt', a
   assert.equal(state.drafts[target]?.text, 'First prompt')
 })
 
+test('session export reports a saved file and a viewer failure separately from cancellation', async (t) => {
+  const owner = 'export-viewer-failure.jsonl'
+  await useAppStore.getState().selectSession(session(owner))
+  await tick()
+  useAppStore.getState().clearToast()
+  await useAppStore.getState().exportSession()
+  assert.equal(useAppStore.getState().toast, undefined)
+
+  t.mock.method(bridge.sessions, 'exportHtml', async (key): Promise<SessionExportResult> => {
+    assert.equal(key, owner)
+    return { cancelled: false, path: 'C:/exports/conversation.html', openError: 'No associated HTML viewer' }
+  })
+  await useAppStore.getState().exportSession()
+  assert.equal(useAppStore.getState().toast?.text, 'Exported conversation.html. No associated HTML viewer')
+  assert.equal(useAppStore.getState().toast?.level, 'warning')
+})
+
 test('editing a repeated live prompt uses the matching saved entry instead of an older branch', async () => {
   const ownerId = 'edit-repeated-prompt.jsonl'
   await useAppStore.getState().selectSession(session(ownerId))
@@ -827,6 +850,104 @@ test('rewinding a compacted conversation keeps the saved transcript before the e
   assert.equal(lastAssistantText(state.items), 'Original answer')
   assert.equal(state.historyTruncated, true)
   assert.equal(state.drafts[ownerId]?.text, 'Revise this question')
+})
+
+test('edits in two conversations retain independent undo actions across a switch', async () => {
+  const first = 'undo-edit-first.jsonl'
+  const second = 'undo-edit-second.jsonl'
+  const firstUndoStarted = Promise.withResolvers<void>()
+  const finishFirstUndo = Promise.withResolvers<void>()
+  const undoOwners: (string | undefined)[] = []
+  bridge.sessions.hydrate = async () => ({
+    messages: [{ role: 'user', content: 'Original prompt', timestamp: 100, entryId: 'original' }],
+    historyTruncated: false
+  })
+  bridge.runtime.request = async (command, ...args) => {
+    if (command === 'get_commands') return {
+      commands: [{ name: 'desktop-rewind', source: 'extension' }, { name: 'desktop-undo-rewind', source: 'extension' }]
+    }
+    if (command !== 'prompt') return originalRequest(command, ...args)
+    if (args[0]?.message === '/desktop-undo-rewind') {
+      const owner = args[3]
+      undoOwners.push(owner)
+      if (owner === first) {
+        firstUndoStarted.resolve()
+        await finishFirstUndo.promise
+      }
+    }
+    return { disposition: 'handled' }
+  }
+
+  for (const owner of [first, second]) {
+    await useAppStore.getState().selectSession(session(owner))
+    assert.equal(useAppStore.getState().rewindUndo, undefined)
+    await useAppStore.getState().editMessageFrom('original', 'Original prompt')
+    assert.ok(useAppStore.getState().rewindUndo)
+  }
+  await useAppStore.getState().selectSession(session(first))
+  const restoring = useAppStore.getState().undoRewind()
+  try {
+    assert.equal(await Promise.race([firstUndoStarted.promise.then(() => true), restoring.then(() => false)]), true)
+    await useAppStore.getState().selectSession(session(second))
+    await useAppStore.getState().undoRewind()
+    assert.deepEqual(undoOwners, [first])
+  } finally {
+    finishFirstUndo.resolve()
+    await restoring
+  }
+
+  assert.ok(useAppStore.getState().rewindUndo, 'finishing the other undo leaves this one available')
+  await useAppStore.getState().undoRewind()
+  assert.deepEqual(undoOwners, [first, second])
+  assert.equal(useAppStore.getState().rewindUndo, undefined)
+  await useAppStore.getState().selectSession(session(first))
+  assert.equal(useAppStore.getState().rewindUndo, undefined)
+})
+
+test('cancelling a queued undo keeps the edit available for retry', async () => {
+  const ownerId = 'undo-edit-cancelled.jsonl'
+  let hydrations = 0
+  bridge.sessions.hydrate = async () => {
+    hydrations += 1
+    return {
+      messages: [
+        { role: 'user', content: 'Original prompt', timestamp: 100, entryId: 'original' },
+        { role: 'assistant', content: 'Original reply', timestamp: 200 }
+      ],
+      historyTruncated: false
+    }
+  }
+  let undoResponse: { disposition: string; cancelled?: boolean } = { disposition: 'handled', cancelled: true }
+  bridge.runtime.request = async (command, ...args) => {
+    if (command === 'get_commands') return {
+      commands: [{ name: 'desktop-rewind', source: 'extension' }, { name: 'desktop-undo-rewind', source: 'extension' }]
+    }
+    if (command !== 'prompt') return originalRequest(command, ...args)
+    return args[0]?.message === '/desktop-undo-rewind' ? undoResponse : { disposition: 'handled' }
+  }
+  await useAppStore.getState().selectSession(session(ownerId))
+  await useAppStore.getState().editMessageFrom('original', 'Original prompt')
+  const edited = useAppStore.getState()
+  hydrations = 0
+
+  await useAppStore.getState().undoRewind()
+  const cancelled = useAppStore.getState()
+  assert.equal(cancelled.rewindUndo, true)
+  assert.equal(cancelled.items, edited.items)
+  assert.equal(cancelled.drafts[ownerId], edited.drafts[ownerId])
+  assert.equal(cancelled.toast?.level, 'warning')
+  assert.equal(hydrations, 0)
+
+  undoResponse = { disposition: 'started' }
+  await useAppStore.getState().undoRewind()
+  assert.equal(useAppStore.getState().rewindUndo, true)
+  assert.equal(useAppStore.getState().toast?.level, 'error')
+  assert.equal(hydrations, 0)
+
+  undoResponse = { disposition: 'handled' }
+  await useAppStore.getState().undoRewind()
+  assert.equal(useAppStore.getState().rewindUndo, undefined)
+  assert.equal(lastAssistantText(useAppStore.getState().items), 'Original reply')
 })
 
 test('a rejected rewind keeps the transcript and composer even if Pi acknowledges the command', async () => {

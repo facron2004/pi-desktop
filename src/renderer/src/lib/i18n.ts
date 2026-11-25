@@ -1274,6 +1274,7 @@ const zhCN: Record<string, string> = {
   s: '秒',
   'minutes-short': '分',
   'Pi did not report an export file': 'Pi 未返回导出文件',
+  'Choose an HTML file for the export.': '请选择 HTML 文件作为导出目标。',
   'Conversation deleted': '对话已删除',
   'Conversation archived': '对话已归档',
   'Conversation restored to the sidebar': '对话已恢复到侧边栏',
@@ -2263,6 +2264,17 @@ const zhCN: Record<string, string> = {
   'Actionable prompt': '可执行提示词',
   'Compacting context': '正在压缩上下文',
   'This command is only available in the main conversation': '该命令仅在主对话中可用',
+  'Up to 6 references can be attached': '最多可附加 6 条引用',
+  'Suggested actions': '推荐操作',
+  'Click to run · Shift+Click to edit before sending': '点击直接发送 · Shift+点击填入输入框编辑',
+  'Start the main conversation first': '请先开始主对话',
+  Turn: '轮次',
+  'Jump to main conversation': '跳转到主对话',
+  Error: '错误',
+  Synced: '已同步',
+  'Main conversation sync': '主对话同步状态',
+  'Send to main conversation': '发送到主对话',
+  'Prompt for main chat': '发往主对话的提示词',
   // Side chat (in flight): the composer and the transcript's find bar.
   'Explain this referenced context from the main conversation.': '解释主对话中引用的这段内容。',
   'Waiting for another operation in this folder…': '正在等待该文件夹中的另一项操作…',
@@ -2345,6 +2357,18 @@ export function translate(text: string, language: AppLanguage): string {
     }
     return `${activity[1]} ${units[activity[2]]}`
   }
+  const syncedTurnRunning = /^Synced · Main turn (\d+) running$/.exec(text)
+  if (syncedTurnRunning) return `已同步 · 主对话第 ${syncedTurnRunning[1]} 轮运行中`
+  const syncedTurns = /^Synced · (\d+) turns?$/.exec(text)
+  if (syncedTurns) return `已同步 · 共 ${syncedTurns[1]} 轮`
+  const reviewSessionFiles = /^Review conversation changes \((\d+) files?\)$/.exec(text)
+  if (reviewSessionFiles) return `审查本次对话改动（${reviewSessionFiles[1]} 个文件）`
+  const reviewWorktreeFiles = /^Review working tree \((\d+) files?\)$/.exec(text)
+  if (reviewWorktreeFiles) return `审查工作区未提交变更（${reviewWorktreeFiles[1]} 个文件）`
+  const sessionChangesCount = /^Session changes \((\d+)\)$/.exec(text)
+  if (sessionChangesCount) return `本次对话改动（${sessionChangesCount[1]}）`
+  const workingTreeCount = /^Working tree \((\d+)\)$/.exec(text)
+  if (workingTreeCount) return `工作区未提交变更（${workingTreeCount[1]}）`
   return text
 }
 
