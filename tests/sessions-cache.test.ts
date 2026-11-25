@@ -2160,3 +2160,31 @@ test('a long session without an index is searched from its newest window', async
   assert.equal(hits.length, 1, 'the newest window of a long session was not searched')
   assert.match(hits[0].snippet ?? '', /tailword/)
 })
+
+test('a hit whose fold changes the string length highlights the original text', async (t) => {
+  const parent = mkdtempSync(path.join(tmpdir(), 'pi-search-fold-'))
+  const root = path.join(parent, 'sessions')
+  const project = path.join(parent, 'project')
+  const workspace = path.join(root, encodeWorkspaceDir(project))
+  const previousRoot = process.env.PI_CODING_AGENT_SESSION_DIR
+  mkdirSync(project, { recursive: true })
+  mkdirSync(workspace, { recursive: true })
+  process.env.PI_CODING_AGENT_SESSION_DIR = root
+  clearSessionCache()
+  t.after(() => {
+    if (previousRoot === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
+    else process.env.PI_CODING_AGENT_SESSION_DIR = previousRoot
+    clearSessionCache()
+    rmSync(parent, { recursive: true, force: true })
+  })
+  // 'İ'.toLowerCase() is two code units, so an offset found in the folded copy
+  // points one character early in the original and the snippet highlighted
+  // 'tanbul' instead of 'stanbul'.
+  writeFileSync(path.join(workspace, 'fold.jsonl'), [
+    JSON.stringify({ type: 'session', version: 3, id: 'fold', cwd: project }),
+    JSON.stringify({ type: 'message', id: 'u1', parentId: null, message: { role: 'user', content: 'İstanbul meeting notes', timestamp: 1 } })
+  ].join('\n') + '\n')
+  const hits = await searchSessions('stanbul')
+  assert.equal(hits.length, 1)
+  assert.ok(hits[0].snippet.startsWith('İstanbul'), 'the snippet is ' + JSON.stringify(hits[0].snippet))
+})

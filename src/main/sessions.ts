@@ -252,9 +252,14 @@ let searchIndexPruneQueue = Promise.resolve()
 let autoPruneWritesSinceLastPrune = 0
 let lastAutoPruneAt = 0
 const activeSearchIndexTemps = new Set<string>()
+/** An extension rewrites the whole sidecar, so it is persisted in batches. */
+const SEARCH_INDEX_PERSIST_MIN_BYTES = 1 * 1024 * 1024
+const SEARCH_INDEX_PERSIST_MIN_MS = 30_000
+const searchIndexPersistState = new Map<string, { at: number; bytes: number }>()
 
 function removeCachedSearchIndex(indexPath: string): void {
   searchIndexCache.delete(indexPath)
+  searchIndexPersistState.delete(indexPath)
   const weight = searchIndexCacheWeights.get(indexPath)
   if (weight !== undefined) searchIndexCacheBytes = Math.max(0, searchIndexCacheBytes - weight)
   searchIndexCacheWeights.delete(indexPath)
@@ -263,6 +268,7 @@ function removeCachedSearchIndex(indexPath: string): void {
 function clearSearchIndexCache(): void {
   searchIndexCache.clear()
   searchIndexCacheWeights.clear()
+  searchIndexPersistState.clear()
   searchIndexCacheBytes = 0
   autoPruneWritesSinceLastPrune = 0
 }
@@ -2183,6 +2189,7 @@ export async function searchSessions(
           identity,
           stats.mtimeMs,
           stats.size,
+          needle,
           needleLower,
           needle.length,
           ceiling - hitCount,
@@ -2210,6 +2217,7 @@ export async function searchSessions(
         fileHits = await searchSessionFile(
           candidate.file,
           stats.mtimeMs,
+          needle,
           needleLower,
           needle.length,
           ceiling - hitCount,
@@ -2245,10 +2253,30 @@ function snippetAround(
   return { snippet: `${prefix}${matched}${suffix}`, matchStart: prefix.length, matchLength: matched.length }
 }
 
+/**
+ * Offset of the query in the original text.
+ *
+ * The scan runs on the lower-cased copy, and folding can change a string's
+ * length — `İ` becomes `i` plus U+0307 — so an offset taken from the copy can
+ * point one character early in the original. The snippet then highlights the
+ * wrong characters and the in-thread jump, which matches the snippet against
+ * the message, cannot find the message. The common fold keeps the cheap
+ * `indexOf`; only a length-changing one pays for a regex on the original.
+ */
+function indexOfOriginal(text: string, needle: string, needleLower: string): number {
+  const folded = text.toLowerCase()
+  const at = folded.indexOf(needleLower)
+  if (at < 0 || folded.length === text.length) return at
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = new RegExp(escaped, 'iu').exec(text)
+  return match?.index ?? -1
+}
+
 /** Read one session file and collect the matching messages of any branch. */
 async function searchSessionFile(
   file: string,
   mtime: number,
+  needle: string,
   needleLower: string,
   needleLength: number,
   remaining: number,
@@ -2308,7 +2336,7 @@ async function searchSessionFile(
     if (!text) continue
     if (!preview && message.role === 'user') preview = text.replace(/\s+/g, ' ').slice(0, 120)
 
-    const at = text.toLowerCase().indexOf(needleLower)
+    const at = indexOfOriginal(text, needle, needleLower)
     if (at === -1) continue
     const snippet = snippetAround(text, at, needleLength)
     if (seenSnippets.has(snippet.snippet)) continue
@@ -2775,7 +2803,21 @@ async function updateSearchIndex(
     indexedFrom,
     mtime
   }
-  await writeSearchIndexFile(indexPath, snapshot, isCurrent)
+  // A session still being written changes on every keystroke. Rewriting the
+  // whole sidecar for a few appended records put megabytes of JSON on the main
+  // thread per keypress, and the read side is budgeted while this write was not.
+  // The in-memory snapshot stays authoritative; a cold load extends the older
+  // sidecar by the delta it is missing.
+  const persisted = searchIndexPersistState.get(indexPath)
+  const now = Date.now()
+  const worthPersisting = base === null ||
+    !persisted ||
+    size - persisted.bytes >= SEARCH_INDEX_PERSIST_MIN_BYTES ||
+    now - persisted.at >= SEARCH_INDEX_PERSIST_MIN_MS
+  if (worthPersisting) {
+    await writeSearchIndexFile(indexPath, snapshot, isCurrent)
+    searchIndexPersistState.set(indexPath, { at: now, bytes: size })
+  }
   return { snapshot, sourceBytesRead: readBytes, indexBytesRead }
 }
 
@@ -2898,6 +2940,7 @@ async function searchIndexedSession(
   identity: string,
   mtime: number,
   size: number,
+  needle: string,
   needleLower: string,
   needleLength: number,
   remaining: number,
@@ -2930,7 +2973,11 @@ async function searchIndexedSession(
     const match = await findSearchIndexMatch(entry.lower, needleLower, entryBytes, shouldStop)
     scanned += match.scanned
     if (match.cancelled) return { hits: [], workBytes: loadedBytes + scanned, usedIndex: true }
-    const at = match.at
+    let at = match.at
+    if (at !== -1 && entry.lower.length !== entry.text.length) {
+      const original = indexOfOriginal(entry.text, needle, needleLower)
+      if (original >= 0) at = original
+    }
     if (at === -1) {
       if (entryBytes < entry.lower.length || !match.complete) break
       continue
