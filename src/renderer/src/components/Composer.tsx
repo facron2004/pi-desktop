@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import {
   draftKeyOf,
+  rewindUndoFor,
   useAppStore,
   type ComposerDraft,
   type ComposerDraftCommand,
@@ -200,7 +201,9 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
   })
   const submitting = useAppStore((state) => Boolean(state.submittingDrafts[clientKey]))
   // A message edit can be taken back until something is sent from here.
-  const undoEdit = useAppStore((state) => state.rewindUndo === true)
+  // `rewindUndo` is the record itself, and it only belongs to the conversation
+  // on screen; `rewindUndoFor` does that scoping (an edit is not a boolean).
+  const undoEdit = useAppStore((state) => rewindUndoFor(state) !== undefined)
   const undoRewind = useAppStore((state) => state.undoRewind)
   const draftEntry = useAppStore(
     useCallback((state) => (draftKey ? state.drafts[draftKey] : undefined), [draftKey])
