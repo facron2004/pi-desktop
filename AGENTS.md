@@ -1378,6 +1378,12 @@ instance of `SubagentTree`; the left sidebar does not contain subagent status.
 The Images page lists at most 1,000 pictures after scanning at most 100,000
 directory entries; a newer image-list request in the same window supersedes
 the previous walk.
+
+**The picture strip is one listbox Tab stop.** Its thumbnails are
+`role="option"` buttons with a roving tab index (the active picture), and
+Up/Down/Left/Right/Home/End move the selection and the preview. A requested
+picture outside the rendered slice leaves the first thumbnail as the way in.
+
 The docked panel defaults to 520px and can be dragged between 360 and 760px;
 MCode's 640px default does not fit beside Pi's 280px task rail at the same
 window width. The comparison with the reference app is in

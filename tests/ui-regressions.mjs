@@ -34,6 +34,10 @@ writeFileSync(
   path.join(workspace, 'shot.png'),
   Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
 )
+writeFileSync(
+  path.join(workspace, 'shot-two.png'),
+  Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
+)
 const agent = path.join(profile, 'home', '.pi', 'agent')
 mkdirSync(agent, { recursive: true })
 const searchFixtureDir = path.join(agent, 'sessions', `--${workspace.replace(/^[\\/]+/, '').replace(/[\\/:]/g, '-')}--`)
@@ -2066,6 +2070,29 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   check(!reveal.textContent?.trim(), `The reveal control still carries a label: ${reveal.textContent?.trim()}`)
   check(Boolean(reveal.title), 'The reveal control has no tooltip to explain the icon')
   check(meta.getBoundingClientRect().height < 48, `The picture's meta line wrapped: ${meta.getBoundingClientRect().height}px`)
+  // The strip is one listbox Tab stop with arrow navigation.
+  const imageThumbs = [...document.querySelectorAll('.image-viewer__thumb')]
+  check(imageThumbs.length >= 2, 'The Images page listed fewer than two pictures')
+  check(
+    imageThumbs.filter((thumb) => thumb.tabIndex === 0).length === 1,
+    'The image strip has more than one Tab stop'
+  )
+  const activeThumbIndex = imageThumbs.findIndex((thumb) => thumb.tabIndex === 0)
+  const nextIndex = activeThumbIndex + 1 < imageThumbs.length ? activeThumbIndex + 1 : activeThumbIndex - 1
+  const activeThumb = imageThumbs[activeThumbIndex]
+  const nextThumb = imageThumbs[nextIndex]
+  const forward = nextIndex > activeThumbIndex ? 'ArrowRight' : 'ArrowLeft'
+  const backward = forward === 'ArrowRight' ? 'ArrowLeft' : 'ArrowRight'
+  activeThumb.focus()
+  activeThumb.dispatchEvent(new KeyboardEvent('keydown', { key: forward, bubbles: true }))
+  await until(() => document.activeElement === nextThumb, 'The arrows did not move to the next picture')
+  await until(
+    () => nextThumb.getAttribute('aria-selected') === 'true',
+    'The arrows did not select the next picture'
+  )
+  nextThumb.dispatchEvent(new KeyboardEvent('keydown', { key: backward, bubbles: true }))
+  await until(() => document.activeElement === activeThumb, 'The arrows did not return to the previous picture')
+  passed.push('the image strip walks with the arrow keys')
   passed.push('the image viewer reveals a picture with a tooltip-only icon')
 
   // The jump controls float centred on the composer's own axis, directly above
@@ -2929,7 +2956,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 58 : 54)
+  assert.equal(passed.length, process.platform === 'win32' ? 59 : 55)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

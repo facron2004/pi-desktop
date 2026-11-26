@@ -109,6 +109,9 @@ export function ImageViewer({
   }, [active])
 
   const activeInfo = (images ?? []).find((image) => image.path === active)
+  // One Tab stop for the whole strip. A requested picture outside the rendered
+  // slice leaves the first thumbnail as the way in.
+  const tabbable = visible.some((image) => image.path === active) ? active : (visible[0]?.path ?? null)
 
   return (
     <div className="image-viewer">
@@ -178,7 +181,37 @@ export function ImageViewer({
       ) : null}
 
       {images && images.length > 0 ? (
-        <div className="image-viewer__strip" role="listbox" aria-label={t('Pictures in this project')}>
+        <div
+          className="image-viewer__strip"
+          role="listbox"
+          aria-label={t('Pictures in this project')}
+          onKeyDown={(event) => {
+            // A listbox is one keyboard stop with arrow navigation: moving the
+            // selection moves the preview and leaves the single Tab stop on
+            // the active picture instead of on every thumbnail.
+            if (event.altKey || event.ctrlKey || event.metaKey) return
+            const keys = ['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End']
+            if (!keys.includes(event.key)) return
+            const target = event.target
+            if (!(target instanceof HTMLElement) || target.getAttribute('role') !== 'option') return
+            const options = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="option"]')]
+            const index = options.indexOf(target)
+            if (index < 0) return
+            event.preventDefault()
+            const next =
+              event.key === 'Home'
+                ? 0
+                : event.key === 'End'
+                  ? options.length - 1
+                  : event.key === 'ArrowRight' || event.key === 'ArrowDown'
+                    ? Math.min(options.length - 1, index + 1)
+                    : Math.max(0, index - 1)
+            const option = options[next]
+            const path = option.dataset.imagePath
+            if (path) setActive(path)
+            option.focus()
+          }}
+        >
           {visible.map((image) => (
             <button
               key={image.path}
@@ -187,6 +220,8 @@ export function ImageViewer({
               aria-selected={image.path === active}
               className="image-viewer__thumb"
               data-active={image.path === active}
+              data-image-path={image.path}
+              tabIndex={image.path === tabbable ? 0 : -1}
               title={relativePath(workspace?.path ?? '', image.path)}
               onClick={() => setActive(image.path)}
             >
