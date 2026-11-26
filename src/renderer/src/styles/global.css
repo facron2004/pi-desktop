@@ -1088,6 +1088,10 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   text-align: center;
 }
 
+.sidebar__empty-action {
+  margin-top: var(--sp-2);
+}
+
 .runtime-chip {
   display: flex;
   align-items: center;

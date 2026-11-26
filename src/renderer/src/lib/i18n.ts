@@ -460,6 +460,7 @@ const zhCN: Record<string, string> = {
   'No new notifications': '暂无新通知',
   'Show more': '展开显示',
   'No project selected yet.': '尚未选择项目。',
+  'No projects yet.': '还没有项目。',
   'Unknown location': '位置未知',
   'Remove project': '移除项目',
   Rename: '重命名',

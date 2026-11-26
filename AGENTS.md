@@ -392,6 +392,12 @@ either place. Rows carry `data-search-result`, and the dialog's arrow handler
 acts only when the event starts on such a row, so the field keeps its own
 combobox keys (recents use the same Up/Down when the query is empty).
 
+**An empty column carries its next step.** The flat conversation list offers
+*New chat* when it has no rows — except in archived-only mode, where a new chat
+is not the missing thing — and the first-run project tree offers *Open project*
+(`pickWorkspace()`). Its line says "No projects yet.", not "No project selected
+yet.": there is nothing to select.
+
 Opening a conversation does not start Pi. A conversation that stays on screen
 for a moment prewarms its own process in the background (`schedulePrewarm`),
 and focusing the composer starts a cold runtime; the prompt itself is still sent

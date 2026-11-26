@@ -3205,6 +3205,42 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   )
   passed.push('empty pages offer the action that fills them')
 
+  // The first-run project list offers the way to its first project. The whole
+  // view is emptied here (live rows included), then restored.
+  const sidebarState = {
+    items: store.getState().items,
+    threads: store.getState().threads,
+    draftId: store.getState().draftId,
+    activeSessionFile: store.getState().activeSessionFile,
+    sessions: store.getState().sessions,
+    workspace: store.getState().workspace,
+    settings: store.getState().settings
+  }
+  store.setState({
+    items: [],
+    threads: {},
+    draftId: undefined,
+    activeSessionFile: undefined,
+    sessions: [],
+    workspace: undefined,
+    settings: {
+      ...sidebarState.settings,
+      workspaces: [],
+      projectOrder: [],
+      sidebarGroupBy: 'workspace'
+    }
+  })
+  const sidebarEmptyAction = await until(
+    () => document.querySelector('.sidebar__empty .sidebar__empty-action'),
+    'The empty project list lost its open-project action'
+  )
+  check(
+    sidebarEmptyAction.textContent?.includes('Open project'),
+    'The empty project list action has no label'
+  )
+  store.setState(sidebarState)
+  passed.push('the first-run project list offers the door')
+
   return passed
 }
 
@@ -3235,7 +3271,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 70 : 65)
+  assert.equal(passed.length, process.platform === 'win32' ? 71 : 66)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

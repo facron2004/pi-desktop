@@ -1490,11 +1490,22 @@ export const Sidebar = memo(function Sidebar({
           {sidebarGroupBy === 'flat' ? (
             flatList.length === 0 && archivedGroups.length === 0 ? (
               <div className="sidebar__empty">
-                {t(
-                  sidebarArchiveFilter === 'archived'
-                    ? 'No archived conversations.'
-                    : 'No conversations yet.'
-                )}
+                <div>
+                  {t(
+                    sidebarArchiveFilter === 'archived'
+                      ? 'No archived conversations.'
+                      : 'No conversations yet.'
+                  )}
+                </div>
+                {sidebarArchiveFilter !== 'archived' ? (
+                  <button
+                    type="button"
+                    className="btn btn--sm sidebar__empty-action"
+                    onClick={() => void newChat()}
+                  >
+                    {t('New chat')}
+                  </button>
+                ) : null}
               </div>
             ) : (
               <>
@@ -1553,7 +1564,17 @@ export const Sidebar = memo(function Sidebar({
               </>
             )
           ) : ordered.length === 0 ? (
-            <div className="sidebar__empty">{t('No project selected yet.')}</div>
+            <div className="sidebar__empty">
+              <div>{t('No projects yet.')}</div>
+              <button
+                type="button"
+                className="btn btn--sm sidebar__empty-action"
+                onClick={() => void useAppStore.getState().pickWorkspace()}
+              >
+                <FolderOpen size={13} />
+                {t('Open project')}
+              </button>
+            </div>
           ) : (
             <div className="project-tree">
               {projectTip.tip ? (
