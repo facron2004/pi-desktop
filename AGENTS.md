@@ -852,6 +852,10 @@ guards the projection and `tests/ui-regressions.mjs` drives a catalog row into t
 child conversation against real child processes. Do not add a second summary of
 the same children to the header.
 
+**The subagent catalog is a keyboard list.** Rows carry `data-subagent-row`:
+Up/Down walk them and Home/End jump to the ends, moving focus only — Enter opens
+the child conversation, and each branch's fold button stays a separate control.
+
 **The title bar must wear the same row the sidebar highlights.** The sidebar
 lists disk sessions *plus* live threads (`lib/live-sessions.ts`), because a chat
 Pi has not flushed to the session folder yet still has a first prompt. The

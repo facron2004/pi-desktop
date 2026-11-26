@@ -654,6 +654,20 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     // the rail and this panel are the two places a child is reachable.)
     const avatarSources = (rows) => [...rows].map((row) => row.querySelector('img.subagent-avatar')?.src)
     const catalogRows = () => document.querySelectorAll('.subagent-tree__task')
+    // The catalog is one keyboard column: the arrows move focus, Enter opens.
+    const catalogRowButtons = () => [...document.querySelectorAll('.subagent-tree__task-row')]
+    catalogRowButtons()[0].focus()
+    catalogRowButtons()[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    await until(
+      () => document.activeElement === catalogRowButtons()[1],
+      'ArrowDown did not move to the next subagent catalog row'
+    )
+    catalogRowButtons()[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+    await until(
+      () => document.activeElement === catalogRowButtons()[0],
+      'ArrowUp did not move to the previous subagent catalog row'
+    )
+    passed.push('the subagent catalog walks with the arrow keys')
     // `data-status` is the row's own contract (the styles and the completion
     // check below read it); the visible summary line only exists once the child
     // has reported something.
@@ -2009,21 +2023,25 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   // the whole work area, so the rail must be covered by it instead of printing
   // its ticks over the panel's edge.
   const railItemsBefore = store.getState().items
-  store.setState({
-    items: [
-      ...railItemsBefore,
-      { id: 'ui-rail-second-user', kind: 'user', text: 'A second turn', images: [], timestamp: 10, order: 10 },
-      {
-        id: 'ui-rail-second-assistant',
-        kind: 'assistant',
-        blocks: [{ type: 'text', text: 'A second answer' }],
-        streaming: false,
-        timestamp: 11,
-        order: 11
-      }
-    ]
-  })
-  await until(() => document.querySelector('.session-rail'), 'The session rail did not render for the maximize check')
+  const seededRailItems = [
+    ...railItemsBefore,
+    { id: 'ui-rail-second-user', kind: 'user', text: 'A second turn', images: [], timestamp: 10, order: 10 },
+    {
+      id: 'ui-rail-second-assistant',
+      kind: 'assistant',
+      blocks: [{ type: 'text', text: 'A second answer' }],
+      streaming: false,
+      timestamp: 11,
+      order: 11
+    }
+  ]
+  // A late paint from the fixture can replace `items`; seed until the rail is
+  // on screen rather than assert against a frame that has already been rebuilt.
+  await until(() => {
+    if (document.querySelector('.session-rail')) return true
+    store.setState({ items: seededRailItems })
+    return false
+  }, 'The session rail did not render for the maximize check')
   check(
     getComputedStyle(document.querySelector('.session-rail')).visibility === 'visible',
     'The session rail is hidden before the panel is maximized'
@@ -3160,7 +3178,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 66 : 61)
+  assert.equal(passed.length, process.platform === 'win32' ? 67 : 62)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

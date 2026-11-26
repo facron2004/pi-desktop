@@ -153,7 +153,32 @@ function ConversationBranch({ session, calls, now, onSelect, onOpenTask, onCance
         </span>
       </div>
       {open ? (
-        <ul className="subagent-tree__tasks">
+        <ul
+          className="subagent-tree__tasks"
+          onKeyDown={(event) => {
+            // The catalog is one keyboard column: the arrows move focus only,
+            // so Enter still decides which child conversation to open.
+            if (event.altKey || event.ctrlKey || event.metaKey) return
+            if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+            const target = event.target
+            if (!(target instanceof HTMLElement) || !target.matches('[data-subagent-row]')) return
+            const rows = [
+              ...event.currentTarget.querySelectorAll<HTMLElement>('[data-subagent-row]')
+            ]
+            const index = rows.indexOf(target)
+            if (index < 0) return
+            event.preventDefault()
+            const next =
+              event.key === 'Home'
+                ? 0
+                : event.key === 'End'
+                  ? rows.length - 1
+                  : event.key === 'ArrowDown'
+                    ? Math.min(rows.length - 1, index + 1)
+                    : Math.max(0, index - 1)
+            rows[next]?.focus()
+          }}
+        >
           {tasks.map((task) => (
             <TaskRow
               key={task.id}
@@ -183,7 +208,7 @@ function TaskRow({ task, now, onOpen, onCancel }: {
   return (
     <li className="subagent-tree__task" data-status={task.status}>
       <div className="subagent-tree__task-line">
-        <button type="button" className="subagent-tree__task-row" title={task.task} onClick={onOpen} aria-label={`${status}: ${task.label || task.task}`}>
+        <button type="button" className="subagent-tree__task-row" data-subagent-row title={task.task} onClick={onOpen} aria-label={`${status}: ${task.label || task.task}`}>
           <span className="subagent-tree__disclosure-space" aria-hidden="true" />
           <span className="subagent-tree__status" data-status={task.status}>
             <StatusMark status={task.status} />
