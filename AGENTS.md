@@ -1425,6 +1425,22 @@ key from an open dialog, menu or lightbox. There is no permanent
 "Tools" tab: closing the last page closes the panel. Reopening it starts from a
 centered "start from here" card list (`ToolPanel`).
 
+**A closed tab leaves the keyboard in its strip.** Both tab strips — the
+panel's pages and the terminal's shells — put a close button beside every tab,
+and that button is a Tab stop of its own, so pressing Enter on it removes the
+node that holds focus. The keyboard then fell to `<body>`, and the next Tab
+started at the top of the app instead of beside the tab the reader had just
+closed. `tabIndexAfterClose` in
+[`lib/tab-focus.ts`](src/renderer/src/lib/tab-focus.ts) names the landing spot —
+the tab that moved into the closed one's place, or the new last tab when the
+closed one was last — and both strips focus it. Closing the panel's last page
+folds the panel and removes every control in it, so `closeChanges` hands the
+keyboard to the corner toggle that reopens the panel; it does that only when
+the focus was inside `.tool-panel`, so a close driven from elsewhere does not
+move the reader's keyboard. A terminal's *active* tab is the one exception:
+closing it brings the next shell forward and that pane focuses itself, which is
+where the reader was working.
+
 **A maximized panel makes the conversation behind it inert.** `ToolPanel` reports
 its maximize state through `onMaximizedChange`; `App` sets `inert` and
 `aria-hidden` on `.main__body` and on the task rail, so Tab and clicks cannot

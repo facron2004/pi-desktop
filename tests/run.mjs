@@ -185,7 +185,8 @@ const suites = [
   'adversarial-dialog-stress.test.ts',
   'challenger.test.ts',
   'challenger-r2.test.ts',
-  'challenger-r3-idle-guard.test.ts'
+  'challenger-r3-idle-guard.test.ts',
+  'tab-focus.test.ts'
 ]
 const debug = process.argv.includes('--debug')
 // `node tests/run.mjs --only=tray` runs one suite while debugging it, with the

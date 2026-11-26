@@ -833,6 +833,32 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
       document.querySelector('.terminal__tab-main').click()
       await until(() => terminalText().includes('PI_UI_HANDOFF_347'), 'The exited terminal lost its previous output')
       passed.push('rapid terminal hand-offs queue in order and replace an exited shell without discarding its tab')
+
+      // A background tab's close button is a Tab stop of its own: the button
+      // goes away with the tab, so the tab that takes its place has to take the
+      // keyboard too instead of leaving it on the document.
+      const terminalTabButtons = [...document.querySelectorAll('.terminal__tab-main')]
+      const activeTabButton = document.querySelector('.terminal__tab[data-active="true"] .terminal__tab-main')
+      const backgroundTabButton = terminalTabButtons.find((tab) => tab !== activeTabButton)
+      check(
+        Boolean(backgroundTabButton) && terminalTabButtons.length >= 2,
+        'The terminal focus check needs a background tab'
+      )
+      const backgroundIndex = terminalTabButtons.indexOf(backgroundTabButton)
+      const backgroundClose = backgroundTabButton.parentElement.querySelector('.terminal__tab-close')
+      backgroundClose.focus()
+      backgroundClose.click()
+      const landedOn = await until(() => {
+        const active = document.activeElement
+        return active instanceof HTMLElement && active.getAttribute('role') === 'tab' ? active : null
+      }, 'Closing a background terminal tab left the keyboard outside the strip')
+      check(landedOn.closest('.terminal__tabstrip'), 'The keyboard landed outside the terminal tab strip')
+      const remainingTabs = [...document.querySelectorAll('.terminal__tab-main')]
+      check(
+        landedOn === remainingTabs[Math.min(backgroundIndex, remainingTabs.length - 1)],
+        'The keyboard did not land on the terminal tab that took the closed one\'s place'
+      )
+      passed.push('closing a background terminal tab keeps the keyboard in the strip')
     } finally {
       off()
       const panel = visibleToolPanel()
@@ -1970,7 +1996,11 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
       (tab) => !tab.querySelector('.tool-panel__tab-label')?.textContent?.includes('New tab')
     )
     if (!pageTab) break
-    pageTab.querySelector('.tool-panel__tab-close').click()
+    const closeButton = pageTab.querySelector('.tool-panel__tab-close')
+    // Close from the keyboard, the way a Tab stop on that button does: the
+    // button that is removed is the one holding the focus.
+    closeButton.focus()
+    closeButton.click()
     await pause(30)
   }
   // Closing the last page folds the panel away. It stays mounted (its tabs and
@@ -3285,6 +3315,68 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   await until(() => !document.querySelector('.welcome__error'), 'The welcome error did not dismiss')
   passed.push('a failed startup offers to be tried again')
 
+  // Tab-strip focus, last: closing the panel's pages folds the task rail and
+  // leaves the interface in a state no other check expects, so this runs after
+  // everything else has been asserted.
+  if (!visibleToolPanel()) document.querySelector('.shell__panel-toggle button').click()
+  await until(visibleToolPanel, 'The tools panel did not open for the tab-focus check')
+  const openPage = async (label) => {
+    if (!document.querySelector('.tool-start')) {
+      document.querySelector('.tool-panel__new-tab').click()
+      await until(() => document.querySelector('.tool-start'), `A new page tab did not show the start page (${label})`)
+    }
+    const card = [...document.querySelectorAll('.tool-start .tool-menu__card')].find(
+      (node) => node.textContent?.includes(label)
+    )
+    check(card, `The start page has no ${label} entry`)
+    card.click()
+    await pause(80)
+  }
+  await openPage('Images')
+  await openPage('Files')
+  const pageShell = (label) => [...document.querySelectorAll('.tool-panel__tab-shell')].find(
+    (shell) => shell.querySelector('.tool-panel__tab-label')?.textContent?.includes(label)
+  )
+  check(pageShell('Images') && pageShell('Files'), 'The two page tabs are not both in the strip')
+  // The close button of a background page is its own Tab stop: it goes away
+  // with the tab, so the tab that takes its place has to take the keyboard.
+  const tabButtonsBefore = [...document.querySelectorAll('.tool-panel__tab')]
+  const backgroundIndex = tabButtonsBefore.indexOf(pageShell('Images').querySelector('.tool-panel__tab'))
+  const backgroundClose = pageShell('Images').querySelector('.tool-panel__tab-close')
+  backgroundClose.focus()
+  backgroundClose.click()
+  const landedTab = await until(() => {
+    const active = document.activeElement
+    return active instanceof HTMLElement && active.getAttribute('role') === 'tab' ? active : null
+  }, 'Closing a background page tab left the keyboard outside the strip')
+  check(landedTab.closest('.tool-panel__tab-scroll'), 'The keyboard landed outside the panel tab strip')
+  const tabButtonsAfter = [...document.querySelectorAll('.tool-panel__tab')]
+  check(
+    landedTab === tabButtonsAfter[Math.min(backgroundIndex, tabButtonsAfter.length - 1)],
+    'The keyboard did not land on the page tab that took the closed one\'s place'
+  )
+  // Closing the last page removes every control in the panel and folds it; the
+  // corner toggle is the door back in, so it takes the keyboard.
+  for (let guard = 0; guard < 12 && visibleToolPanel(); guard += 1) {
+    const closeButton =
+      document.querySelector('.tool-panel__tab-shell[data-active="true"] .tool-panel__tab-close') ??
+      document.querySelector('.tool-panel__tab-shell .tool-panel__tab-close')
+    if (!closeButton) break
+    closeButton.focus()
+    closeButton.click()
+    await pause(40)
+  }
+  await until(() => !visibleToolPanel(), 'Closing the last page did not fold the panel')
+  const focusAfterFold = await until(() => {
+    const active = document.activeElement
+    return active instanceof HTMLElement && active.closest('.shell__panel-toggle') ? active : null
+  }, 'Closing the last page left the keyboard on the document instead of the corner toggle')
+  check(
+    focusAfterFold === document.querySelector('.shell__panel-toggle button'),
+    'The keyboard did not return to the panel toggle'
+  )
+  passed.push('closing a tab keeps the keyboard in its strip, and closing the last page returns it to the panel toggle')
+
   return passed
 }
 
@@ -3315,7 +3407,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 73 : 68)
+  assert.equal(passed.length, process.platform === 'win32' ? 75 : 69)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

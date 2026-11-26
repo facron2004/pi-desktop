@@ -25,6 +25,7 @@ import {
 import { useAppStore } from '../store/useAppStore'
 import { formatPlatformShortcut, keysFor } from '../lib/shortcuts'
 import { useT } from '../lib/i18n'
+import { tabIndexAfterClose } from '../lib/tab-focus'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { ErrorBoundary } from './ErrorBoundary'
 import { Popover } from './Popover'
@@ -297,11 +298,18 @@ export const ToolPanel = memo(function ToolPanel({
       onClose()
       return
     }
-    if (active !== next.id) return
-    const fallback = remaining[Math.min(index, remaining.length - 1)] ?? remaining[remaining.length - 1]
+    // The close button that held the keyboard is being removed. The tab that
+    // takes its place keeps it — whether the page being closed was the one on
+    // screen or another one in the strip.
+    const fallback = remaining[tabIndexAfterClose(index, remaining.length)] ?? remaining[remaining.length - 1]
+    if (active !== next.id) {
+      if (fallback) focusTab(fallback)
+      return
+    }
     if (fallback) {
       setActive(fallback.id)
       onViewChange(fallback.view ?? 'start')
+      focusTab(fallback)
     } else {
       setActive(null)
       onViewChange('start')

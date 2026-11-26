@@ -1,0 +1,71 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { tabIndexAfterClose } from '../src/renderer/src/lib/tab-focus'
+
+/**
+ * The keyboard used to fall out of a tab strip when a tab closed.
+ *
+ * A tab's close button is a Tab stop of its own. Pressing Enter on it removes
+ * the node that holds focus, so the browser puts the keyboard on `<body>` and
+ * the next Tab starts at the top of the application instead of beside the tab
+ * the reader just closed. Both strips — the tools panel's pages and the
+ * terminal's shells — keep the keyboard in the strip now, and closing the
+ * panel's last page hands it to the corner toggle that opens the panel again.
+ */
+
+test('the tab that takes a closed tab\'s place takes the keyboard too', () => {
+  // Closing the first of three leaves two: the one now first is the landing spot.
+  assert.equal(tabIndexAfterClose(0, 3), 0)
+  // A middle tab hands the keyboard to the tab that moves into its place.
+  assert.equal(tabIndexAfterClose(1, 3), 1)
+  // The last tab has no successor, so the new last tab takes it.
+  assert.equal(tabIndexAfterClose(2, 2), 1)
+  // Closing the first of two leaves the only one.
+  assert.equal(tabIndexAfterClose(0, 1), 0)
+  // Nothing left to focus: the caller closes the panel instead.
+  assert.equal(tabIndexAfterClose(0, 0), -1)
+  // A tab that is not in the strip is not a position to land on.
+  assert.equal(tabIndexAfterClose(-1, 3), -1)
+  // A stale index past the end still resolves to a real tab.
+  assert.equal(tabIndexAfterClose(5, 2), 1)
+})
+
+test('both tab strips move the keyboard when a tab closes', () => {
+  const read = (file: string) => readFileSync(path.resolve(process.cwd(), file), 'utf8')
+  const toolPanel = read('src/renderer/src/components/ToolPanel.tsx')
+  const terminal = read('src/renderer/src/components/TerminalPanel.tsx')
+  const app = read('src/renderer/src/App.tsx')
+
+  assert.match(
+    toolPanel,
+    /remaining\[tabIndexAfterClose\(index, remaining\.length\)\]/,
+    'the tools panel tab strip no longer finds the tab that takes a closed one\'s place'
+  )
+  assert.match(
+    toolPanel,
+    /focusTab\(fallback\)/,
+    'closing a tools-panel page drops the keyboard with the button that closed it'
+  )
+  assert.match(
+    terminal,
+    /focusIndex = tabIndexAfterClose\(index, next\.length\)/,
+    'the terminal tab strip no longer finds the tab that takes a closed one\'s place'
+  )
+  assert.match(
+    terminal,
+    /querySelectorAll<HTMLElement>\('\[role="tab"\]'\)/,
+    'closing a background terminal tab no longer returns the keyboard to the strip'
+  )
+  assert.match(
+    app,
+    /panelToggleRef\.current\?\.focus\(\)/,
+    'closing the tools panel no longer returns the keyboard to its corner toggle'
+  )
+  assert.match(
+    app,
+    /active\.closest\('\.tool-panel'\)/,
+    'a close from outside the panel must not pull the keyboard away from where the reader put it'
+  )
+})

@@ -202,6 +202,8 @@ export default function App() {
   // inert until the panel is restored or closed.
   const [panelMaximized, setPanelMaximized] = useState(false)
   const panelCloseTimer = useRef<number | null>(null)
+  /** The corner door into the tools panel; a deliberate close returns the keyboard here. */
+  const panelToggleRef = useRef<HTMLButtonElement | null>(null)
   // The panel opens on its home page; its pages are a choice made per visit,
   // not a mode that follows the conversation around.
   const [panelView, setPanelView] = useState<ToolPanelView>('start')
@@ -573,7 +575,21 @@ export default function App() {
   const closeShortcuts = useCallback(() => setShortcutsOpen(false), [])
   const closeSessionTree = useCallback(() => setSessionTreeOpen(false), [])
   const closeMcp = useCallback(() => setMcpOpen(false), [])
-  const closeChanges = useCallback(() => setChangesOpen(false), [])
+  const closeChanges = useCallback(() => {
+    // A close the reader aimed at (the panel's own X, Escape, its last page)
+    // removes the control that held the keyboard, and the next Tab then starts
+    // at the top of the app. The corner toggle is the panel's door in both
+    // directions, so focus comes back to it. A close driven from elsewhere — a
+    // conversation switch, a desk page — keeps the focus where the reader put
+    // it, and a floating panel is a dialog whose own hook already returns focus
+    // to the control that opened it.
+    const active = document.activeElement
+    const fromPanel = active instanceof HTMLElement && Boolean(active.closest('.tool-panel'))
+    setChangesOpen(false)
+    if (fromPanel && !inspectorOverlay) {
+      requestAnimationFrame(() => panelToggleRef.current?.focus())
+    }
+  }, [inspectorOverlay])
   const handlePanelViewChange = useCallback((view: ToolPanelView) => {
     setPanelView(view)
     // The Files page keeps the open file while the reader visits
@@ -1365,6 +1381,7 @@ export default function App() {
           onMouseLeave={() => setPanelToggleHoverMuted(false)}
         >
           <button
+            ref={panelToggleRef}
             className="icon-btn shell__panel-toggle__btn"
             type="button"
             data-active={changesOpen}

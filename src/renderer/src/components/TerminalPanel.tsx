@@ -14,6 +14,7 @@ import { EarlyTerminalExits } from '../lib/terminal-startup'
 import { useAppStore } from '../store/useAppStore'
 import { useIsDark } from '../lib/theme'
 import { translate, useT } from '../lib/i18n'
+import { tabIndexAfterClose } from '../lib/tab-focus'
 import '@xterm/xterm/css/xterm.css'
 import '../styles/terminal.css'
 
@@ -424,6 +425,7 @@ export function TerminalPanel({
   const nextKeyRef = useRef(2)
   const assignedSequenceRef = useRef(0)
   const paneApis = useRef(new Map<string, TerminalPaneHandle>())
+  const tabStripRef = useRef<HTMLDivElement | null>(null)
   const heightRef = useRef(height)
   const draggingRef = useRef(false)
 
@@ -491,13 +493,28 @@ export function TerminalPanel({
       const index = tabs.findIndex((tab) => tab.key === key)
       const next = tabs.filter((tab) => tab.key !== key)
       paneApis.current.delete(key)
+      const closingActive = activeKey === key
       if (next.length === 0) {
         onClose()
         return
       }
       if (assignedRequest?.key === key) onRequestHandled(assignedRequest.request.seq)
       setTabs(next)
-      if (activeKey === key) setActiveKey(next[Math.max(0, index - 1)].key)
+      if (closingActive) {
+        setActiveKey(next[Math.max(0, index - 1)].key)
+        return
+      }
+      // A background tab's close removes the button that held the keyboard, so
+      // the tab that takes its place gets it back. Closing the active tab hands
+      // the keyboard to the shell in front instead — the pane focuses itself
+      // when it becomes active, which is where the reader was working.
+      const focusIndex = tabIndexAfterClose(index, next.length)
+      if (focusIndex < 0) return
+      requestAnimationFrame(() => {
+        tabStripRef.current
+          ?.querySelectorAll<HTMLElement>('[role="tab"]')
+          [focusIndex]?.focus()
+      })
     },
     [tabs, activeKey, assignedRequest, onRequestHandled, onClose]
   )
@@ -657,6 +674,7 @@ export function TerminalPanel({
       ) : (
         <div className="terminal__bar">
           <div
+            ref={tabStripRef}
             className="terminal__tabstrip"
             role="tablist"
             aria-label={t('Terminal')}
