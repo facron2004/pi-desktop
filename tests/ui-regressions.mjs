@@ -3787,6 +3787,53 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   typeIntoBox('')
   passed.push('the command palette walks with Home, End and the page keys, and Shift+Tab leaves the box')
 
+  // The launcher's shortcut hints are 12px text. On the highlighted row the
+  // tertiary token measured 3.84:1, so the active row steps up to secondary;
+  // this measures the rendered colours rather than trusting the token table.
+  window.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'P', ctrlKey: true, shiftKey: true, bubbles: true })
+  )
+  const launcher = await until(() => document.querySelector('.launcher'), 'The command palette did not open')
+  await pause(250)
+  const activeHint =
+    launcher.querySelector('.launcher__item[data-active="true"] .launcher__hint') ??
+    launcher.querySelector('.launcher__hint')
+  check(activeHint, 'The launcher shows no shortcut hint to measure')
+  check(
+    activeHint.closest('.launcher__item')?.getAttribute('data-active') === 'true',
+    'The launcher hint is not on the row the keyboard is on'
+  )
+  const parseRgb = (value) => {
+    const parts = (value.match(/rgba?\(([^)]+)\)/) ?? ['', ''])[1]
+      .split(',')
+      .map((part) => Number(part.trim()))
+    return parts.length >= 3 && parts.every((part) => !Number.isNaN(part))
+      ? { r: parts[0], g: parts[1], b: parts[2] }
+      : null
+  }
+  const relativeLuminance = ({ r, g, b }) => {
+    const channel = (value) => {
+      const v = value / 255
+      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)
+    }
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+  }
+  const contrastRatio = (fg, bg) => {
+    const a = relativeLuminance(fg)
+    const b = relativeLuminance(bg)
+    return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)
+  }
+  const hintFg = parseRgb(getComputedStyle(activeHint).color)
+  const hintBg = parseRgb(getComputedStyle(activeHint.closest('.launcher__item')).backgroundColor)
+  check(hintFg && hintBg, 'The launcher hint colours could not be read')
+  const hintRatio = hintFg && hintBg ? contrastRatio(hintFg, hintBg) : 0
+  check(hintRatio >= 4.5, 'The highlighted launcher hint reads ' + hintRatio.toFixed(2) + ':1')
+  document.activeElement?.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+  )
+  await until(() => !document.querySelector('.launcher'), 'Escape did not close the command palette')
+  passed.push('the launcher keeps its shortcut hints readable on the highlighted row')
+
   // A draft belongs to its conversation, not to the window: switching away and
   // back has to bring the text into the box again.
   const draftTargets = store.getState().sessions
@@ -3928,7 +3975,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 85 : 79)
+  assert.equal(passed.length, process.platform === 'win32' ? 86 : 80)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

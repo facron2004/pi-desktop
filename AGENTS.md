@@ -506,6 +506,19 @@ dialog's reference in both states (`tests/ui-regressions.mjs`, and the same prob
 over the main surface, the palette and Settings in
 `output/audit/check-a11y.mjs`, which reads zero on all three).
 
+**A highlighted row keeps its 12px hint readable.** `.launcher__hint` uses
+`--text-tertiary`, which clears 4.5:1 on the launcher surface but not on the
+highlighted row's `--bg-active` background — measured **3.84:1** in the real app.
+The active row steps up to `--text-secondary` (≈5.9:1) instead of raising the
+token for every row, where tertiary is correct. The probe now walks ten layers
+(main, launcher, Settings, session tree, shortcut list, conversation search,
+scheduled page, plugins page, tools panel, side chat) and each reads zero for
+unnamed controls, unlabeled fields, dangling ARIA references, duplicate ids,
+missing alt and low contrast; a layer's Escape is dispatched on the focused
+element, because a React handler never sees a window-level synthetic key.
+`tests/ui-regressions.mjs` computes the launcher hint's rendered colours against
+its row and fails below 4.5:1.
+
 The app's name is a **drawing, not text**. `PiWordmark`
 (`components/PiWordmark.tsx`) fills "Pi Desktop" one pixel at a time on a
 5-column cell, so it reads like a terminal (TUI) font: no pixel font ships with

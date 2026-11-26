@@ -9035,6 +9035,13 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   text-overflow: ellipsis;
 }
 
+/* The hint is 12px text, so it needs 4.5:1. Tertiary clears that on the
+   launcher surface but not on the highlighted row's `--bg-active` background
+   (measured 3.84:1), and the highlighted row is the one the reader is reading. */
+.launcher__item[data-active='true'] .launcher__hint {
+  color: var(--text-secondary);
+}
+
 .launcher__item[data-hint-kind='description'][data-has-hint='true'] .launcher__hint {
   grid-column: 2 / -1;
   grid-row: 2;
