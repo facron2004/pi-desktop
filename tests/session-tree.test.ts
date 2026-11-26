@@ -9,8 +9,10 @@ import {
   branchTips,
   filterTree,
   type SessionTree,
-  type SessionTreeNode
+  type SessionTreeNode,
+  type TreeRow
 } from '../src/renderer/src/lib/session-tree'
+import { treeNavAction } from '../src/renderer/src/lib/session-tree-nav'
 
 function makeNode(
   id: string,
@@ -210,4 +212,55 @@ test('normalizeTree parses raw deeply nested tree structures iteratively', () =>
   assert.equal(normalized.leafId, 'leaf')
   const stats = treeStats(normalized)
   assert.equal(stats.entries, 1500)
+})
+
+function navRow(id: string, depth: number, hasChildren = false, childrenOpen = false): TreeRow {
+  return {
+    id,
+    depth,
+    role: 'user',
+    title: id,
+    active: false,
+    leaf: false,
+    hasChildren,
+    childrenOpen,
+    branch: false
+  }
+}
+
+test('the session tree walks visible rows and opens or closes branches', () => {
+  const rows = [
+    navRow('root', 0, true, true),
+    navRow('a', 1, true, true),
+    navRow('a1', 2),
+    navRow('b', 1, true, false),
+    navRow('c', 1)
+  ]
+
+  assert.deepEqual(treeNavAction(rows, 0, 'ArrowDown'), { kind: 'focus', index: 1 })
+  assert.deepEqual(treeNavAction(rows, 1, 'ArrowUp'), { kind: 'focus', index: 0 })
+  assert.deepEqual(treeNavAction(rows, 0, 'ArrowUp'), { kind: 'filter' })
+  assert.equal(treeNavAction(rows, rows.length - 1, 'ArrowDown'), null)
+  assert.deepEqual(treeNavAction(rows, 3, 'Home'), { kind: 'focus', index: 0 })
+  assert.deepEqual(treeNavAction(rows, 1, 'End'), { kind: 'focus', index: rows.length - 1 })
+
+  // Right opens a closed branch, steps into an open one, and does nothing on a
+  // leaf. Left closes an open branch and otherwise climbs to the parent.
+  assert.deepEqual(treeNavAction(rows, 3, 'ArrowRight'), { kind: 'toggle', id: 'b' })
+  assert.deepEqual(treeNavAction(rows, 0, 'ArrowRight'), { kind: 'focus', index: 1 })
+  assert.equal(treeNavAction(rows, 4, 'ArrowRight'), null)
+  assert.deepEqual(treeNavAction(rows, 1, 'ArrowLeft'), { kind: 'toggle', id: 'a' })
+  assert.deepEqual(treeNavAction(rows, 2, 'ArrowLeft'), { kind: 'focus', index: 1 })
+  assert.deepEqual(treeNavAction(rows, 3, 'ArrowLeft'), { kind: 'focus', index: 0 })
+  assert.deepEqual(treeNavAction(rows, 0, 'ArrowLeft'), { kind: 'toggle', id: 'root' })
+  assert.equal(treeNavAction([navRow('leaf', 0)], 0, 'ArrowLeft'), null)
+
+  // A collapsed branch's children are not in the visible list, so Right on it
+  // toggles instead of stepping into a row that is not there.
+  assert.deepEqual(treeNavAction([navRow('only', 0, true, false)], 0, 'ArrowRight'), {
+    kind: 'toggle',
+    id: 'only'
+  })
+  assert.equal(treeNavAction(rows, -1, 'ArrowDown'), null)
+  assert.equal(treeNavAction(rows, rows.length, 'ArrowUp'), null)
 })

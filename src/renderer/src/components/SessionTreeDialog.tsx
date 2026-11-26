@@ -24,6 +24,7 @@ import {
   type TreeRow,
   type TreeView
 } from '../lib/session-tree'
+import { treeNavAction, type TreeNavKey } from '../lib/session-tree-nav'
 import '../styles/session-tree.css'
 
 type LoadState =
@@ -59,6 +60,8 @@ const SessionTreeRow = memo(function SessionTreeRow({
     <div
       ref={(element) => onRowRef(row.id, row.leaf, element)}
       className="session-tree__row"
+      tabIndex={-1}
+      data-tree-row-id={row.id}
       data-role={row.role}
       data-active={row.active || undefined}
       data-leaf={row.leaf || undefined}
@@ -396,6 +399,22 @@ export function SessionTreeDialog({ onClose }: { onClose: () => void }) {
         aria-labelledby="session-tree-title"
         tabIndex={-1}
         onMouseDown={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.altKey || event.ctrlKey || event.metaKey) return
+          const keys: TreeNavKey[] = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End']
+          if (!keys.includes(event.key as TreeNavKey)) return
+          const target = event.target
+          if (!(target instanceof HTMLElement) || !target.matches('[data-tree-row-id]')) return
+          const elements = [...event.currentTarget.querySelectorAll<HTMLElement>('[data-tree-row-id]')]
+          const index = elements.indexOf(target)
+          if (index < 0) return
+          event.preventDefault()
+          const action = treeNavAction(visibleRows, index, event.key as TreeNavKey)
+          if (!action) return
+          if (action.kind === 'focus') elements[action.index]?.focus()
+          else if (action.kind === 'toggle') toggle(action.id)
+          else filterRef.current?.focus()
+        }}
       >
         <div className="modal__head">
           <h2 id="session-tree-title" className="modal__title">
@@ -419,6 +438,13 @@ export function SessionTreeDialog({ onClose }: { onClose: () => void }) {
                   placeholder={t('Filter the session tree')}
                   aria-label={t('Filter the session tree')}
                   onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'ArrowDown' || event.altKey || event.ctrlKey || event.metaKey) return
+                    const first = dialogRef.current?.querySelector<HTMLElement>('[data-tree-row-id]')
+                    if (!first) return
+                    event.preventDefault()
+                    first.focus()
+                  }}
                 />
                 {query ? (
                   <button

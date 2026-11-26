@@ -329,6 +329,15 @@ them), remembers collapsed branches in localStorage keyed by `activeSessionFile`
 and walks the branch tips with two header buttons that expand the path, scroll and
 flash the row.
 
+The dialog is one keyboard tree. Down/Up walk the rendered rows in order, Home/End
+jump to the ends, Right opens a closed branch or steps into an open one, Left
+closes an open branch or climbs to the nearest parent row, and Up at the first
+row returns to the filter (Down in the filter enters the first row). Rows are
+`tabIndex={-1}` and focused programmatically, so Tab still lands on the chevron
+and the row's fork/copy actions instead of stopping on every row;
+`lib/session-tree-nav.ts` decides what a key means, and
+`tests/session-tree.test.ts` pins it without a renderer.
+
 ## The sidebar is a list, not a switch
 
 A project row in the sidebar **only expands and collapses** its conversations. It
