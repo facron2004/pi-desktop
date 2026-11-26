@@ -296,6 +296,9 @@ export const Thread = memo(function Thread() {
   const activeSyncFrameRef = useRef(0)
   const [scrolledTurnId, setScrolledTurnId] = useState<string | null>(null)
   const [, setHistoryViewVersion] = useState(0)
+  /** True while "load all" walks the fold open a page per frame. */
+  const [loadingAllHistory, setLoadingAllHistory] = useState(false)
+  const loadAllHistoryToken = useRef(0)
   /**
    * A jump that has to wait for the history fold to open. `align` decides what
    * "reached the turn" means: a rail pick reads forward from its own prompt, so
@@ -429,6 +432,45 @@ export const Thread = memo(function Thread() {
     writeHistoryFirstVisibleTurn(sessionKey, Math.max(0, firstVisibleTurn - HISTORY_PAGE_TURNS))
     setHistoryViewVersion((version) => version + 1)
   }, [firstVisibleTurn, sessionKey])
+  // The chain below reads these between frames, after React has committed the
+  // page it asked for; a ref is the only value it can trust.
+  const firstVisibleTurnRef = useRef(firstVisibleTurn)
+  firstVisibleTurnRef.current = firstVisibleTurn
+  useEffect(() => {
+    // A different conversation (or an unmount) cancels a load in flight: the
+    // chain writes the view state of the session it started in.
+    loadAllHistoryToken.current = 0
+    setLoadingAllHistory(false)
+    return () => {
+      loadAllHistoryToken.current = 0
+    }
+  }, [sessionKey])
+  /**
+   * Open the whole folded history, one page per frame.
+   *
+   * A single mount of 400 turns blocks for about a second, and the reader
+   * cannot see anything happen while it does. Walking the same page size the
+   * button uses keeps every frame short, and the row counts down as the
+   * history fills in.
+   */
+  const loadAllHistory = useCallback(() => {
+    if (firstVisibleTurnRef.current === 0) return
+    const token = (loadAllHistoryToken.current += 1)
+    const key = sessionKey
+    setLoadingAllHistory(true)
+    const step = () => {
+      if (loadAllHistoryToken.current !== token || sessionKeyRef.current !== key) return
+      const current = firstVisibleTurnRef.current
+      if (current === 0) {
+        setLoadingAllHistory(false)
+        return
+      }
+      writeHistoryFirstVisibleTurn(key, Math.max(0, current - HISTORY_PAGE_TURNS))
+      setHistoryViewVersion((version) => version + 1)
+      requestAnimationFrame(() => requestAnimationFrame(step))
+    }
+    requestAnimationFrame(step)
+  }, [sessionKey])
   const expandHistory = useCallback(() => {
     writeHistoryFirstVisibleTurn(sessionKey, 0)
     setHistoryViewVersion((version) => version + 1)
@@ -1162,15 +1204,24 @@ export const Thread = memo(function Thread() {
         ) : null}
 
         {historyCollapsed ? (
-          <div className="thread__history">
+          <div className="thread__history" aria-busy={loadingAllHistory || undefined}>
             <button
               type="button"
               aria-expanded={false}
               aria-label={t(`Up ${hiddenMessageCount} messages`)}
               onClick={revealOlderHistory}
+              disabled={loadingAllHistory}
             >
               <span>{t(`Up ${hiddenMessageCount} messages`)}</span>
               <ChevronRight size={15} strokeWidth={1.6} />
+            </button>
+            <button
+              type="button"
+              className="thread__history-all"
+              onClick={loadAllHistory}
+              disabled={loadingAllHistory}
+            >
+              {loadingAllHistory ? t('Loading…') : t('Load all')}
             </button>
           </div>
         ) : null}

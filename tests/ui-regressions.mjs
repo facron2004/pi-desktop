@@ -1288,6 +1288,60 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
   await until(() => !streamBody().textContent.includes('STREAM_PROGRESS'), 'Closing search lost the manual fold')
 
+  // A folded history opens to the beginning in one action. The chain walks a
+  // page per frame, so a long conversation fills in instead of freezing the
+  // window while hundreds of turns mount together.
+  const historyBefore = {
+    draftId: store.getState().draftId,
+    activeSessionFile: store.getState().activeSessionFile,
+    items: store.getState().items,
+    run: store.getState().run,
+    isStreaming: store.getState().isStreaming
+  }
+  const longItems = []
+  for (let index = 0; index < 60; index += 1) {
+    longItems.push({
+      id: `long-user-${index}`,
+      kind: 'user',
+      text: `Long question ${index}`,
+      images: [],
+      timestamp: index * 2 + 1,
+      order: index * 2 + 1
+    })
+    longItems.push({
+      id: `long-reply-${index}`,
+      kind: 'assistant',
+      streaming: false,
+      timestamp: index * 2 + 2,
+      order: index * 2 + 2,
+      blocks: [{ type: 'text', text: `Long answer ${index}` }]
+    })
+  }
+  store.setState({
+    draftId: 'draft:long-history',
+    activeSessionFile: undefined,
+    items: longItems,
+    isStreaming: false,
+    run: { phase: 'idle', turns: 60, settled: true, outcome: 'completed' },
+    error: undefined,
+    retry: undefined
+  })
+  const loadAll = await until(
+    () => [...document.querySelectorAll('.thread__history button')].find((node) => node.textContent?.trim() === 'Load all'),
+    'The folded history has no load-all control'
+  )
+  loadAll.click()
+  await until(
+    () => document.querySelector('.thread')?.textContent?.includes('Long question 0'),
+    'Load all did not reach the beginning of the history',
+    20000
+  )
+  check(!document.querySelector('.thread__history'), 'The history row stayed after the whole history loaded')
+  const longTurns = document.querySelectorAll('.turn').length
+  check(longTurns === 60, `Load all rendered ${longTurns} of 60 turns`)
+  store.setState(historyBefore)
+  passed.push('a folded history opens to the beginning in one action')
+
   const waitDraft = 'draft:stream-model-wait'
   const waitItems = [{ ...streamItems[0], id: 'model-wait-user' }]
   const waitSummary = () => document.querySelector('[data-turn="model-wait-user"] .run-outcome[data-running="true"]')
@@ -2739,7 +2793,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 51 : 47)
+  assert.equal(passed.length, process.platform === 'win32' ? 52 : 48)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

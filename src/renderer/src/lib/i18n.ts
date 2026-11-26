@@ -8,6 +8,8 @@ export const REMOTE_ACCESS_WARNING =
 
 const zhCN: Record<string, string> = {
   'Loading conversation history…': '正在加载对话记录…',
+  'Load all': '全部加载',
+  'Load the whole history': '加载全部历史消息',
   Providers: '提供商',
   Provider: '提供商',
   'Cache hit': '缓存命中',

@@ -2226,6 +2226,9 @@ transition: background var(--dur-fast) var(--ease);
 }
 
 .thread__history {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
   flex: 0 0 auto;
   min-height: 25px;
   border-bottom: 1px solid var(--border-soft);
@@ -2242,6 +2245,23 @@ transition: background var(--dur-fast) var(--ease);
 }
 
 .thread__history button:hover {
+  color: var(--text);
+}
+
+.thread__history button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* "Load all" is the same row's secondary action: smaller, quiet, at the far
+   end, so it never competes with the page the reader is about to reveal. */
+.thread__history .thread__history-all {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: var(--text-assist);
+}
+
+.thread__history .thread__history-all:hover:not(:disabled) {
   color: var(--text);
 }
 

@@ -249,6 +249,18 @@ every update; expanding a tool body must not move the reader's viewport.
 Per-conversation tool/file/process/history expansion lives in
 `lib/view-state.ts`, not in component-local state.
 
+**A folded history opens in one action, one page per frame.** The history row
+carries *Up N messages* — one 20-turn page, unchanged — and *Load all*, which
+walks the fold to zero with the same `HISTORY_PAGE_TURNS` per step and waits
+two animation frames between steps so React commits and the browser paints
+each page. Mounting 400 turns in one commit blocks the renderer for about a
+second (measured); the chain keeps every frame short and lets the row's count
+fall visibly. A session change or unmount cancels it through
+`loadAllHistoryToken`, because the chain writes the view state of the session
+it started in. Both controls disable while it runs and the row carries
+`aria-busy`; opening a hit or a jump still uses `expandHistory`, which writes
+zero at once because the reader is waiting for one specific turn.
+
 Tests: `npm test` runs the reducer unit tests (`tests/thread.test.ts`,
 against the real RPC event shapes), `npm run test:e2e` spawns the bundled
 CLI and drives the real reducer with a real run — including a stop mid-run.
