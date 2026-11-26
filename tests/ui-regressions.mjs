@@ -2991,6 +2991,28 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     Boolean(sideDraftKey) && store.getState().drafts[sideDraftKey]?.text === sideDraftText,
     'The side draft was not saved under its side session'
   )
+  // Attachments are part of the same draft object: a chip and a picture must
+  // come back with the text when the pane is hidden and shown again.
+  store.getState().updateDraft(sideDraftKey, (draft) => ({
+    ...draft,
+    files: [{ id: 'side-draft-file', path: 'C:/workspace/side-draft.md', name: 'side-draft.md' }],
+    images: [{
+      id: 'side-draft-image',
+      type: 'image',
+      name: 'side-draft.png',
+      bytes: 3,
+      data: 'YWJj',
+      mimeType: 'image/png'
+    }]
+  }))
+  await until(
+    () => document.querySelector('.side-chat .composer__file-name')?.textContent === 'side-draft.md',
+    'The side draft file chip did not render'
+  )
+  check(
+    document.querySelectorAll('.side-chat .composer__attachment').length === 1,
+    'The side draft image did not render'
+  )
   await openToolPage('files', 'Files')
   await pause(200)
   await openToolPage('side-chat', 'Side chat')
@@ -3003,8 +3025,17 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     sideBackBox.value === sideDraftText,
     'The side draft did not come back with its panel'
   )
+  check(
+    document.querySelector('.side-chat .composer__file-name')?.textContent === 'side-draft.md',
+    'The side draft file chip did not come back with its panel'
+  )
+  check(
+    document.querySelectorAll('.side-chat .composer__attachment').length === 1,
+    'The side draft image did not come back with its panel'
+  )
   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(sideBackBox, '')
   sideBackBox.dispatchEvent(new Event('input', { bubbles: true }))
+  store.getState().updateDraft(sideDraftKey, { files: [], images: [] })
   await pause(300)
   passed.push('a side-chat draft comes back with its panel')
   await store.getState().updateSettings({ model: 'fixture/sidebar-test', provider: 'fixture' })

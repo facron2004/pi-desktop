@@ -808,10 +808,12 @@ entry is dropped when the draft is promoted to a real side session, when the
 reader clears the side chat (`clear` mints a fresh key and records that one), and
 when the parent conversation is deleted. Draft parents are never recorded: their
 keys would not survive a restart either, which is why the original zero-write
-rule for them still holds. `tests/side-chat-supervisor.test.ts` covers
-resolve → restart → clear → delete; `output/audit/check-side-draft-restart.mjs`
-reports the same side key and the text in the second launch where it used to
-report a new key and an empty box.
+rule for them still holds. The draft's **attachments** travel with it: the audit
+reads one file chip (`side-file.md`) and one picture in both launches, and the UI
+suite checks the chip name and image count after hiding and reopening the pane.
+`tests/side-chat-supervisor.test.ts` covers resolve → restart → clear → delete;
+`output/audit/check-side-draft-restart.mjs` reports the same side key and the
+text in the second launch where it used to report a new key and an empty box.
 
 If a draft snapshot exceeds browser storage quota, drop sent-prompt history
 before removing any unsent images. If the images still exceed the quota,
