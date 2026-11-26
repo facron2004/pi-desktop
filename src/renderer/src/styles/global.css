@@ -8555,6 +8555,10 @@ body.is-resizing {
   text-align: center;
 }
 
+.drawer__empty-action {
+  margin-top: var(--sp-3);
+}
+
 .drawer__body--changes {
   padding: 0;
   gap: 0;

@@ -116,7 +116,19 @@ export function ImageViewer({
   return (
     <div className="image-viewer">
       <div className="image-viewer__stage">
-        {activeSource ? (
+        {!workspace?.path ? (
+          <div className="image-viewer__empty">
+            <FolderSearch size={20} />
+            <span>{t('Open a project folder to see its pictures.')}</span>
+            <button
+              type="button"
+              className="btn btn--sm"
+              onClick={() => void useAppStore.getState().pickWorkspace()}
+            >
+              {t('Open project')}
+            </button>
+          </div>
+        ) : activeSource ? (
           <img
             src={activeSource}
             alt={activeInfo?.name ?? ''}

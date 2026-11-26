@@ -1431,6 +1431,12 @@ The Images page lists at most 1,000 pictures after scanning at most 100,000
 directory entries; a newer image-list request in the same window supersedes
 the previous walk.
 
+**An empty page names the action that fills it.** The Files page, its text
+search, the Images page and the scheduled-task page carry an *Open project*
+button that calls `pickWorkspace()`, because a page that says a project is
+needed has to offer the door, not only the reason. The message and the button
+are one empty state, not a toast or a link to Settings.
+
 **The picture strip is one listbox Tab stop.** Its thumbnails are
 `role="option"` buttons with a roving tab index (the active picture), and
 Up/Down/Left/Right/Home/End move the selection and the preview. A requested

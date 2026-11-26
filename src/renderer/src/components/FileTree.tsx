@@ -278,7 +278,19 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
   }
 
   if (!root) {
-    return <div className="drawer__empty">{t('Open a project folder to browse its files.')}</div>
+    return (
+      <div className="drawer__empty">
+        <div>{t('Open a project folder to browse its files.')}</div>
+        <button
+          className="btn btn--sm drawer__empty-action"
+          type="button"
+          onClick={() => void useAppStore.getState().pickWorkspace()}
+        >
+          <FolderOpen size={13} />
+          {t('Open project')}
+        </button>
+      </div>
+    )
   }
 
   const placeholder = mode === 'all' ? t('Filter files…') : t('Filter changed files…')

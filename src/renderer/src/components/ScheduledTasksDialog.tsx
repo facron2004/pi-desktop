@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   Clock,
   Ellipsis,
+  FolderOpen,
   Loader2,
   Pause,
   Play,
@@ -569,6 +570,14 @@ export function ScheduledTasksDialog() {
               <div className="scheduled-tasks__empty" role="status">
                 <Clock className="scheduled-tasks__empty-glyph" size={30} />
                 <h2>{t('Add a project before creating a scheduled task.')}</h2>
+                <button
+                  type="button"
+                  className="btn scheduled-tasks__empty-action"
+                  onClick={() => void useAppStore.getState().pickWorkspace()}
+                >
+                  <FolderOpen size={14} />
+                  {t('Open project')}
+                </button>
               </div>
             ) : loading ? (
               <div className="scheduled-tasks__empty" role="status">

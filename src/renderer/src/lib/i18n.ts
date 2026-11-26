@@ -1022,6 +1022,7 @@ const zhCN: Record<string, string> = {
   'Ask Pi about this file': '询问 Pi 关于此文件的问题',
   'No file matches that name.': '没有找到匹配名称的文件。',
   'Open a project folder to browse its files.': '打开项目文件夹以浏览文件。',
+  'Open a project folder to see its pictures.': '打开项目文件夹以查看图片。',
   'to move': '移动',
   'to run': '执行',
   'to dismiss': '关闭',

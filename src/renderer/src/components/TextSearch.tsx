@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ArrowLeft, Loader2, Search, X } from 'lucide-react'
+import { ArrowLeft, FolderOpen, Loader2, Search, X } from 'lucide-react'
 import { MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
 import type { TextSearchHit } from '@shared/types'
 import { relativePath } from '../lib/path'
 import { useT } from '../lib/i18n'
+import { useAppStore } from '../store/useAppStore'
 import '../styles/text-search.css'
 
 /** The scan reads files, so the user has to stop typing before it starts. */
@@ -86,7 +87,19 @@ export function TextSearch({
   }, [hits])
 
   if (!root) {
-    return <div className="drawer__empty">{t('Open a project folder to browse its files.')}</div>
+    return (
+      <div className="drawer__empty">
+        <div>{t('Open a project folder to browse its files.')}</div>
+        <button
+          className="btn btn--sm drawer__empty-action"
+          type="button"
+          onClick={() => void useAppStore.getState().pickWorkspace()}
+        >
+          <FolderOpen size={13} />
+          {t('Open project')}
+        </button>
+      </div>
+    )
   }
 
   return (

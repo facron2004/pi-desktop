@@ -3176,6 +3176,35 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   )
   passed.push('a new chat puts the caret in the composer')
 
+  // An empty page offers the action that fills it, instead of naming a state
+  // the reader cannot leave from there.
+  const savedWorkspace = store.getState().workspace
+  store.setState({ workspace: undefined })
+  await openToolPage('files', 'Files')
+  const openFromFiles = await until(
+    () => document.querySelector('.drawer__empty .btn'),
+    'The file page lost its open-project action'
+  )
+  check(
+    openFromFiles.textContent?.includes('Open project'),
+    'The file page empty action has no label'
+  )
+  await openToolPage('images', 'Images')
+  const openFromImages = await until(
+    () => document.querySelector('.image-viewer__empty .btn'),
+    'The images page lost its open-project action'
+  )
+  check(
+    openFromImages.textContent?.includes('Open project'),
+    'The images page empty action has no label'
+  )
+  store.setState({ workspace: savedWorkspace })
+  await until(
+    () => !document.querySelector('.image-viewer__empty .btn'),
+    'Restoring the workspace left the no-project state on the images page'
+  )
+  passed.push('empty pages offer the action that fills them')
+
   return passed
 }
 
@@ -3206,7 +3235,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 69 : 64)
+  assert.equal(passed.length, process.platform === 'win32' ? 70 : 65)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })
