@@ -17,6 +17,8 @@ import { findSessionMeta } from './RunStatusRow'
 export function AppToast() {
   const toast = useAppStore((state) => state.toast)
   const clearToast = useAppStore((state) => state.clearToast)
+  const holdToast = useAppStore((state) => state.holdToast)
+  const releaseToast = useAppStore((state) => state.releaseToast)
   const selectSession = useAppStore((state) => state.selectSession)
   const t = useT()
 
@@ -56,7 +58,18 @@ export function AppToast() {
 
   return (
     <div className="app-toast-layer">
-      <div className="app-toast" data-level={level} role={level === 'error' ? 'alert' : 'status'}>
+      <div
+        className="app-toast"
+        data-level={level}
+        role={level === 'error' ? 'alert' : 'status'}
+        // An actionable toast must not expire while the reader is reaching
+        // for its button: the clock stops under the pointer or focus and
+        // starts again when they leave.
+        onMouseEnter={holdToast}
+        onMouseLeave={releaseToast}
+        onFocus={holdToast}
+        onBlur={releaseToast}
+      >
         <span className="app-toast__mark" aria-hidden="true">
           <Icon size={11} strokeWidth={level === 'success' ? 3 : 2.6} />
         </span>

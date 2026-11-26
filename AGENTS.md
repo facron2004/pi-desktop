@@ -692,6 +692,12 @@ from that retry replaces the toast with the translated "Could not open the
 exported file" line. The path comes from the save dialog, not from the reader's
 text, so the action cannot be used to launch an arbitrary string.
 
+**A toast pauses while the reader is on it.** `holdToast` stops the 3.2-second
+dismissal clock while the pointer is over the card or focus is inside it, and
+`releaseToast` gives it a fresh 3.2 seconds when they leave; otherwise an action
+would be a race against the timer. `clearToast` also clears the clock, so the
+next message starts from its own delay.
+
 ### The usage line under the composer
 
 `UsageBar` is one compact line **centred** under the input after a run, and it

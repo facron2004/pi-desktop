@@ -2858,6 +2858,11 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     'An exported-file toast has no Open action'
   )
   check(openAction, 'An exported-file toast has no Open action')
+  // An actionable toast must not expire while the reader is on its button.
+  openAction.focus()
+  await pause(3500)
+  check(document.querySelector('.app-toast'), 'An actionable toast expired while its action had focus')
+  openAction.blur()
   store.getState().clearToast()
   passed.push('a file toast offers to open what it names')
 

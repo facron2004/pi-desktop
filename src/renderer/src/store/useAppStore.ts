@@ -1106,6 +1106,10 @@ export interface AppStore {
   dismissError: () => void
   showToast: (message: string, level?: 'info' | 'warning' | 'error', sessionKey?: string, openPath?: string) => void
   clearToast: () => void
+  /** Keep the current toast on screen (the pointer or keyboard is on it). */
+  holdToast: () => void
+  /** Put the current toast back on its dismissal clock. */
+  releaseToast: () => void
   respondUi: (
     response: ExtensionUiResponse,
     target?: { sessionKey?: string; requestId?: string }
@@ -5700,7 +5704,21 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
   },
 
   clearToast() {
+    if (toastTimer) clearTimeout(toastTimer)
+    toastTimer = null
     set({ toast: undefined })
+  },
+
+  holdToast() {
+    if (toastTimer) clearTimeout(toastTimer)
+    toastTimer = null
+  },
+
+  releaseToast() {
+    if (toastTimer) clearTimeout(toastTimer)
+    toastTimer = null
+    if (!get().toast) return
+    toastTimer = setTimeout(() => set({ toast: undefined }), 3200)
   },
 
   async togglePin(file) {

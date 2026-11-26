@@ -2415,3 +2415,18 @@ test('concurrent inline bash across drafts in the same project and operation cwd
   assert.equal(useAppStore.getState().threads[draftB].cwdWait, undefined)
   assert.equal(useAppStore.getState().cwdWait, undefined)
 })
+
+test('a toast holds while it has attention and resumes its clock on release', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  useAppStore.getState().clearToast()
+  useAppStore.getState().showToast('Hold me', 'info')
+  t.mock.timers.tick(1_000)
+  useAppStore.getState().holdToast()
+  t.mock.timers.tick(10_000)
+  assert.equal(useAppStore.getState().toast?.text, 'Hold me')
+  useAppStore.getState().releaseToast()
+  t.mock.timers.tick(3_199)
+  assert.equal(useAppStore.getState().toast?.text, 'Hold me')
+  t.mock.timers.tick(1)
+  assert.equal(useAppStore.getState().toast, undefined)
+})
