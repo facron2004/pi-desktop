@@ -112,8 +112,11 @@ export function useDialogFocus<T extends HTMLElement>(
         // A filter field clears before the dialog closes: this capture listener
         // runs before any field handler, so without an exception the filter
         // could never be cleared from the keyboard. A field marked
-        // `data-escape-clears` clears itself on the same key; a `type="search"`
-        // field gets the browser's own clear. The next Escape closes the dialog.
+        // `data-escape-clears` clears itself on the same key, and the next
+        // Escape closes the dialog. Do not special-case `type="search"`: a
+        // controlled input never receives the browser's native cancel, so such
+        // a field would only be able to stop the dialog from closing while
+        // doing nothing itself.
         const active = document.activeElement
         if (active instanceof HTMLElement && active.hasAttribute('data-escape-clears')) {
           const value =
@@ -122,11 +125,6 @@ export function useDialogFocus<T extends HTMLElement>(
               : ''
           if (value.trim()) return
         }
-        if (
-          active instanceof HTMLInputElement &&
-          active.type === 'search' &&
-          active.value.trim()
-        ) return
         // A popover opened from this dialog handles Escape before the dialog.
         if (dialog.querySelector('.popover-wrap [aria-expanded="true"]')) return
         if (dialog.querySelector('select:open')) {

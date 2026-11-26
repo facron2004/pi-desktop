@@ -300,6 +300,7 @@ export function SettingsDialog({
                 ref={searchRef}
                 type="search"
                 value={pageQuery}
+                data-escape-clears=""
                 onChange={(event) => setPageQuery(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.nativeEvent.isComposing) return

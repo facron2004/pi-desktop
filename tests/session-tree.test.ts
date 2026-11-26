@@ -282,4 +282,10 @@ test('the tree filter clears on Escape before the dialog closes', () => {
   assert.match(hook, /data-escape-clears/, 'the dialog hook does not let a marked filter own Escape')
   assert.match(dialog, /data-escape-clears=""/, 'the tree filter is not marked as clearing itself')
   assert.match(dialog, /event\.key === 'Escape' && query/, 'the tree filter does not clear on Escape')
+  // A controlled `type="search"` input never receives the browser's native
+  // cancel, so the hook must not keep a special case for it: such a field could
+  // only stop the dialog from closing while doing nothing itself.
+  assert.doesNotMatch(hook, /type === 'search'/, 'the dialog hook still special-cases search inputs')
+  const settings = read('src/renderer/src/components/SettingsDialog.tsx')
+  assert.match(settings, /data-escape-clears=""/, 'the settings search does not claim Escape')
 })
