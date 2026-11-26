@@ -20,7 +20,9 @@ export function FileMention({
   onSelect,
   listRef,
   searching = false,
-  noProject = false
+  failed = false,
+  noProject = false,
+  queryTooLong = false
 }: {
   id?: string
   files: FileEntry[]
@@ -31,8 +33,12 @@ export function FileMention({
   listRef: RefObject<HTMLDivElement | null>
   /** The search for this query is still in flight. */
   searching?: boolean
+  /** The search for this query failed; editing the text retries it. */
+  failed?: boolean
   /** No project is open, so there is nothing to search. */
   noProject?: boolean
+  /** The query is longer than a file search is allowed to take. */
+  queryTooLong?: boolean
 }) {
   const t = useT()
   return (
@@ -45,7 +51,9 @@ export function FileMention({
       </div>
 
       {files.length === 0 ? (
-        <div className="mention__empty">{t(mentionEmptyLine({ searching, noProject }))}</div>
+        <div className="mention__empty">
+          {t(mentionEmptyLine({ searching, failed, noProject, queryTooLong }))}
+        </div>
       ) : (
         <div className="mention__list" ref={listRef} data-list-rows>
           {files.map((file, index) => {

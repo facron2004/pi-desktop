@@ -3491,8 +3491,19 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   )
   store.setState({ workspace: workspaceBeforeMention })
   await pause(80)
+  // A query over the search limit never ran either; the line says so instead of
+  // reporting an empty result.
+  typeMention('@' + 'x'.repeat(520))
+  const longQueryEmpty = await until(
+    () => document.querySelector('.mention__empty'),
+    'The over-long query has no explanation'
+  )
+  check(
+    (longQueryEmpty.textContent ?? '').includes('too long'),
+    `The over-long @ query blames the file name: ${JSON.stringify(longQueryEmpty.textContent)}`
+  )
   typeMention('')
-  passed.push('the @ list names the missing project instead of blaming the file name')
+  passed.push('the @ list names why it has no rows instead of blaming the file name')
 
   return passed
 }

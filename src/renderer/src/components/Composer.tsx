@@ -536,6 +536,8 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
   // The `@` search for this query is still in flight. The list says so instead
   // of claiming no file matches before a search has even run.
   const [mentionSearching, setMentionSearching] = useState(false)
+  // The search for this query failed; the next keystroke retries it.
+  const [mentionFailed, setMentionFailed] = useState(false)
   const [paletteIndex, setPaletteIndex] = useState(0)
   const [commandSelected, setCommandSelected] = useState(false)
   const [imageSelected, setImageSelected] = useState(false)
@@ -917,11 +919,13 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
       setMentionFiles([])
       setMentionIndex(0)
       setMentionSearching(false)
+      setMentionFailed(false)
       return
     }
     setMentionFiles([])
     setMentionIndex(0)
     setMentionSearching(true)
+    setMentionFailed(false)
     let cancelled = false
     let requestStarted = false
     const onResult = (result: { entries: FileEntry[] }) => {
@@ -934,6 +938,7 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
       if (cancelled) return
       setMentionFiles([])
       setMentionSearching(false)
+      setMentionFailed(true)
     }
     const timer = window.setTimeout(() => {
       requestStarted = true
@@ -1599,7 +1604,9 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
             root={workspace?.path}
             activeIndex={mentionIndex}
             searching={mentionSearching}
+            failed={mentionFailed}
             noProject={!workspace?.path}
+            queryTooLong={mention.query.length > MAX_SEARCH_QUERY_LENGTH}
             onActiveChange={setMentionIndex}
             onSelect={insertMention}
           />

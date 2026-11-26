@@ -122,14 +122,29 @@ export function extractFilePathMentions(text: string): {
 /**
  * What the `@` list says when it has no rows to show.
  *
- * "No file matches that name." was printed for three different situations: a
- * search still running, a name that really matched nothing, and a chat with no
- * project — where no search happened at all and the file name was never the
- * problem. The line names the reason instead. The project case comes first
- * because a projectless chat is never searching.
+ * "No file matches that name." was printed for every empty state: a search
+ * still running, a search that failed, a name too long to search, a chat with no
+ * project — where no search happened at all — and a search that really found
+ * nothing. Only the last one is about the name. The line names the reason
+ * instead, in this order:
+ *
+ * 1. no project: nothing can be searched, whatever the name is;
+ * 2. the query is too long for the search the composer is allowed to make;
+ * 3. a search is running;
+ * 4. the search failed (the next keystroke retries it);
+ * 5. the finished search found nothing.
  */
-export function mentionEmptyLine(state: { noProject: boolean; searching: boolean }): string {
+export interface MentionEmptyState {
+  noProject?: boolean
+  queryTooLong?: boolean
+  searching?: boolean
+  failed?: boolean
+}
+
+export function mentionEmptyLine(state: MentionEmptyState): string {
   if (state.noProject) return 'Open a project to reference its files.'
+  if (state.queryTooLong) return 'That name is too long to search.'
   if (state.searching) return 'Searching files…'
+  if (state.failed) return 'The file search failed. Type to try again.'
   return 'No file matches that name.'
 }

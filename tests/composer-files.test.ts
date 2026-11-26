@@ -346,7 +346,32 @@ test('the @ list names why it has no rows instead of always blaming the name', (
     'Open a project to reference its files.',
     'a projectless chat is never searching'
   )
+  assert.equal(
+    mentionEmptyLine({ noProject: true, queryTooLong: true }),
+    'Open a project to reference its files.',
+    'the project is the bigger problem'
+  )
   // Inside a project: a request in flight must not read as "no match".
   assert.equal(mentionEmptyLine({ noProject: false, searching: true }), 'Searching files…')
   assert.equal(mentionEmptyLine({ noProject: false, searching: false }), 'No file matches that name.')
+  // A query too long for the search never ran.
+  assert.equal(
+    mentionEmptyLine({ noProject: false, queryTooLong: true, searching: false }),
+    'That name is too long to search.'
+  )
+  assert.equal(
+    mentionEmptyLine({ noProject: false, queryTooLong: true, searching: true }),
+    'That name is too long to search.',
+    'no search runs for a query over the limit'
+  )
+  // A failed search is not an empty result; editing the text retries it.
+  assert.equal(
+    mentionEmptyLine({ noProject: false, failed: true }),
+    'The file search failed. Type to try again.'
+  )
+  assert.equal(
+    mentionEmptyLine({ noProject: false, failed: true, searching: true }),
+    'Searching files…',
+    'a running retry outranks the failure it follows'
+  )
 })
