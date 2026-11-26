@@ -1948,6 +1948,13 @@ contract. `Ctrl+F` focuses the settings search while the dialog owns the
 keyboard; the conversation search it normally opens is already disabled behind
 a modal.
 
+Search is reachable by keyboard alone: ArrowDown in the field enters the page
+list at its first row and ArrowUp enters at the last; inside the list the
+arrows walk rows and either end hands focus back to the field. Enter in the
+field opens the top result (the same action a row click runs). A row is a
+button, so Enter and Space on it are the browser's own activation — do not add
+another key handler for the row itself.
+
 ## Jumping to a search hit
 
 A conversation-search hit becomes a `pendingJump` in the store. The sidebar only

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PiCliUpgradeProgress } from '@shared/types'
 import {
   Archive,
@@ -19,7 +19,7 @@ import {
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { useT } from '../lib/i18n'
 import { useAppStore } from '../store/useAppStore'
-import { searchSettings } from '../lib/settings-search'
+import { searchSettings, type SettingsSearchResult } from '../lib/settings-search'
 import type { SettingsPage } from '../lib/settings-pages'
 import { SETTINGS_PAGE_LABELS } from '../lib/settings-pages'
 import { FeatureLoading } from './FeatureLoading'
@@ -83,10 +83,19 @@ export function SettingsDialog({
   const [hit, setHit] = useState<{ text: string; seq: number } | undefined>(undefined)
   const contentRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
+  const navRef = useRef<HTMLElement>(null)
   // The search reads the curated index in lib/settings-search.ts, never the
   // lazy pages themselves: mounting all twelve to read their labels would
   // start provider, update and memory requests the reader never asked for.
   const pageResults = useMemo(() => searchSettings(PAGES, pageQuery, t), [pageQuery, t])
+  /** Open a result from a click, Enter in the field or a keyboard pick. */
+  const openResult = useCallback((result: SettingsSearchResult) => {
+    setPage(result.page)
+    setPageQuery('')
+    setHit((current) => result.match
+      ? { text: result.match, seq: (current?.seq ?? 0) + 1 }
+      : undefined)
+  }, [])
   const [customInstructions, setCustomInstructions] = useState(settings.customInstructions ?? '')
   const customInstructionsRef = useRef(customInstructions)
   customInstructionsRef.current = customInstructions
@@ -255,7 +264,36 @@ export function SettingsDialog({
         </div>
 
         <div className="settings-layout">
-          <nav className="settings-nav" aria-label={t('Settings sections')}>
+          <nav
+            ref={navRef}
+            className="settings-nav"
+            aria-label={t('Settings sections')}
+            onKeyDown={(event) => {
+              // The field and the page list are one keyboard column: the
+              // arrows walk it, and the first or last row hands focus back to
+              // the field. Enter on a row is the button's own activation.
+              if (event.altKey || event.ctrlKey || event.metaKey) return
+              if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+              const buttons = [...(navRef.current?.querySelectorAll<HTMLButtonElement>('[data-settings-page]') ?? [])]
+              if (!buttons.length) return
+              event.preventDefault()
+              const active = document.activeElement
+              if (active === searchRef.current) {
+                (event.key === 'ArrowDown' ? buttons[0] : buttons[buttons.length - 1]).focus()
+                return
+              }
+              const index = buttons.indexOf(active as HTMLButtonElement)
+              if (index < 0) return
+              if (event.key === 'ArrowDown') {
+                if (index === buttons.length - 1) searchRef.current?.focus()
+                else buttons[index + 1].focus()
+              } else if (index === 0) {
+                searchRef.current?.focus()
+              } else {
+                buttons[index - 1].focus()
+              }
+            }}
+          >
             <label className="settings-nav__search">
               <Search size={13} aria-hidden="true" />
               <input
@@ -264,12 +302,22 @@ export function SettingsDialog({
                 value={pageQuery}
                 onChange={(event) => setPageQuery(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key !== 'Escape' || !pageQuery) return
-                  // The first Escape clears the field; the dialog's own Escape
-                  // only gets the next one.
-                  event.preventDefault()
-                  event.stopPropagation()
-                  setPageQuery('')
+                  if (event.nativeEvent.isComposing) return
+                  if (event.key === 'Escape') {
+                    if (!pageQuery) return
+                    // The first Escape clears the field; the dialog's own
+                    // Escape only gets the next one.
+                    event.preventDefault()
+                    event.stopPropagation()
+                    setPageQuery('')
+                    return
+                  }
+                  // Enter takes the top result, so a typed search is one
+                  // keystroke away from the row it found.
+                  if (event.key === 'Enter' && !event.shiftKey && pageQuery.trim() && pageResults[0]) {
+                    event.preventDefault()
+                    openResult(pageResults[0])
+                  }
                 }}
                 placeholder={t('Search settings…')}
                 aria-label={t('Search settings')}
@@ -294,15 +342,10 @@ export function SettingsDialog({
                 <button
                   key={result.page}
                   type="button"
+                  data-settings-page={result.page}
                   data-active={page === result.page}
                   aria-current={page === result.page ? 'page' : undefined}
-                  onClick={() => {
-                    setPage(result.page)
-                    setPageQuery('')
-                    setHit(result.match
-                      ? { text: result.match, seq: (hit?.seq ?? 0) + 1 }
-                      : undefined)
-                  }}
+                  onClick={() => openResult(result)}
                 >
                   <Icon size={15} />
                   <span className="settings-nav__text">

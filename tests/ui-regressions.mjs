@@ -1208,6 +1208,18 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   const settingHit = document.querySelector('.settings-nav > button')
   check(settingHit.textContent.includes('Agent and conversation'), 'The setting search did not find its page')
   check(settingHit.textContent.includes('Auto-generate title'), 'The search result does not name the setting it matched')
+  // ArrowDown walks from the field into the results; ArrowUp returns.
+  settingsSearch.focus()
+  settingsSearch.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+  await until(
+    () => document.activeElement === settingHit,
+    'ArrowDown did not enter the settings results'
+  )
+  settingHit.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+  await until(
+    () => document.activeElement === settingsSearch,
+    'ArrowUp did not return to the search field'
+  )
   settingHit.click()
   await until(
     () => document.querySelector('.settings-content')?.textContent?.includes('Auto-generate title'),
@@ -1239,6 +1251,21 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   await until(
     () => document.querySelectorAll('.settings-nav > button').length === 1,
     'The second search did not narrow the navigation'
+  )
+  // Enter takes the top result.
+  settingsSearch.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  await until(
+    () => document.querySelector('.settings-content')?.textContent?.includes('Font'),
+    'Enter did not open the top search result'
+  )
+  check(settingsSearch.value === '', 'Enter left the query behind')
+  // …and Escape still clears a filter before closing.
+  settingsSearch.focus()
+  setSettingsField.call(settingsSearch, 'font')
+  settingsSearch.dispatchEvent(new Event('input', { bubbles: true }))
+  await until(
+    () => document.querySelectorAll('.settings-nav > button').length === 1,
+    'The third search did not narrow the navigation'
   )
   settingsSearch.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
   await until(
