@@ -350,3 +350,29 @@ export function forgetLastDraftKey(
   )
   return { ...snapshot, lastDraftKeys }
 }
+
+/**
+ * The snapshot after a draft chat was given a session file.
+ *
+ * Focusing the composer starts Pi, which writes a session file for the draft
+ * chat and promotes the draft to that key. When nothing has been sent the text
+ * is still the reader's unsent work, and the empty session never reaches the
+ * session index — so a later launch has no row to open and would show an empty
+ * new chat. Keep a copy under the draft key and point the workspace at it (the
+ * new-chat pointer only accepts `draft:` keys, which is why the copy stays
+ * under the old id). A sent draft is empty by the time it is promoted, and the
+ * session speaks for itself.
+ */
+export function promotedDraftSnapshot(
+  snapshot: ComposerDraftSnapshot,
+  from: string,
+  to: string,
+  workspaceKey: string
+): ComposerDraftSnapshot {
+  const promoted = snapshot.drafts[to]
+  if (!composerDraftHasContent(promoted)) return forgetLastDraftKey(snapshot, from)
+  return {
+    drafts: { ...snapshot.drafts, [from]: promoted },
+    lastDraftKeys: { ...snapshot.lastDraftKeys, [workspaceKey]: from }
+  }
+}

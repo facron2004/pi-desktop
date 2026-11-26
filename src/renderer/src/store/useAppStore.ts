@@ -112,6 +112,7 @@ import {
   composerDraftAfterSend,
   forgetLastDraftKey,
   loadComposerDrafts,
+  promotedDraftSnapshot,
   pruneComposerDrafts,
   saveComposerDrafts
 } from '../lib/composer-drafts'
@@ -736,14 +737,29 @@ function persistDraftSnapshot(
   writeDraftSnapshot(state, { drafts, lastDraftKeys })
 }
 
-function persistPromotedDraft(state: AppStore, from: string, drafts: Record<string, ComposerDraft>): void {
+function persistPromotedDraft(
+  state: AppStore,
+  from: string,
+  drafts: Record<string, ComposerDraft>,
+  promotedKey?: string
+): void {
   if (draftSaveTimer !== null) {
     globalThis.clearTimeout(draftSaveTimer)
     draftSaveTimer = null
   }
   pendingDraftSnapshotWrite = null
   const lastDraftKeys = readCachedLastDraftKeys()
-  const updated = forgetLastDraftKey({ drafts, lastDraftKeys }, from)
+  // A draft chat gets a Pi session file as soon as the composer starts a
+  // runtime, which promotes the draft. `promotedDraftSnapshot` keeps the
+  // unsent text reachable when that empty session never reaches the index.
+  const updated = promotedKey
+    ? promotedDraftSnapshot(
+        { drafts, lastDraftKeys },
+        from,
+        promotedKey,
+        draftWorkspaceKey(state.workspace)
+      )
+    : forgetLastDraftKey({ drafts, lastDraftKeys }, from)
   writeDraftSnapshot(state, updated)
 }
 
@@ -7037,7 +7053,7 @@ function rekeyThread(
     if (isSide) {
       if (nextDrafts) persistDraftSnapshot(state, nextDrafts)
     } else {
-      persistPromotedDraft(state, from, nextDrafts ?? state.drafts)
+      persistPromotedDraft(state, from, nextDrafts ?? state.drafts, to)
     }
   }
   const resetSideForMainBranch = !shouldMove && !isSide && viewing

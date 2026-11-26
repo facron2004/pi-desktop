@@ -771,15 +771,19 @@ them in the flow of every row, where they would repeat for each prompt.
 **A draft belongs to its conversation, and only to it.** The composer's text and
 attachments are saved per conversation key, so switching away and back brings
 them back; `tests/ui-regressions.mjs` types a draft, switches conversations
-twice and fails if the box changes. A launch still starts a new chat by design
-(`bootstrap` reopens the project, not the conversation), so a draft stays with
-the conversation it was written in. Measured with
-`output/audit/check-draft-restart.mjs` (two launches, one profile): a first
-prompt typed in a new chat gets a Pi session file, but that empty session is not
-in the index, so on the next launch the text is still in localStorage under a
-key no row points at and the reader sees an empty new chat. Closing that gap
-means deciding whether a launch may reopen an unread draft — a product
-decision, not another keyboard guard.
+twice and fails if the box changes. A launch still starts a new chat for real
+conversations (`bootstrap` reopens the project, not the conversation), but an
+**unsent** draft that Pi gave a session file to stays reachable: focusing the
+composer starts a runtime, Pi writes a session for the draft chat, and the
+promotion keeps a copy under the draft key while pointing the workspace at that
+draft again (`promotedDraftSnapshot` in `lib/composer-drafts.ts`). The copy is
+what makes it survive `saveComposerDrafts`, which only accepts `draft:` pointers;
+the empty session never reaches the index, so without it the next launch showed
+an empty new chat and the text sat under a key no row pointed at. A sent draft is
+empty when it is promoted and the session speaks for itself.
+`tests/composer-files.test.ts` pins both sides, and
+`output/audit/check-draft-restart.mjs` relaunches the real app (two launches, one
+profile) and reads the box back — `okAtStart` is true now, false before.
 
 If a draft snapshot exceeds browser storage quota, drop sent-prompt history
 before removing any unsent images. If the images still exceed the quota,
