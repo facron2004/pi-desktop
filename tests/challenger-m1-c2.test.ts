@@ -777,18 +777,25 @@ test('fs:reveal only opens files within the active workspace', async () => {
   }
 })
 
-test('shell:openPath resolves projectless exports and rejects paths outside the chat directory', async () => {
+test('shell:openPath resolves projectless exports, rejects paths outside the chat directory, and never runs an executable', async () => {
   const userData = mkdtempSync(path.join(tmpdir(), 'open-projectless-export-'))
   const chats = path.join(userData, 'chats')
   const exportFile = path.join(chats, 'Pi Desktop-session.html')
+  const markdownExport = path.join(chats, 'Pi Desktop-session.markdown')
   const outsideFile = path.join(userData, 'outside.html')
+  // Inside the project, so containment alone would let them through.
+  const programFile = path.join(chats, 'Pi Desktop-session.exe')
+  const scriptFile = path.join(chats, 'Pi Desktop-session.bat')
+  const shortcutFile = path.join(chats, 'Pi Desktop-session.lnk')
   const originalGetPath = app.getPath
   const originalOpenPath = shell.openPath
   const opened: string[] = []
   try {
     mkdirSync(chats, { recursive: true })
     writeFileSync(exportFile, '<html></html>', 'utf8')
+    writeFileSync(markdownExport, '# Conversation', 'utf8')
     writeFileSync(outsideFile, '<html></html>', 'utf8')
+    for (const file of [programFile, scriptFile, shortcutFile]) writeFileSync(file, 'not a real program', 'utf8')
     app.getPath = () => userData
     shell.openPath = async (target: string) => {
       opened.push(target)
@@ -806,11 +813,23 @@ test('shell:openPath resolves projectless exports and rejects paths outside the 
     })
 
     assert.equal(await anyIpc._invoke('shell:openPath', {}, path.basename(exportFile)), '')
+    assert.equal(await anyIpc._invoke('shell:openPath', {}, path.basename(markdownExport)), '')
     assert.equal(
       await anyIpc._invoke('shell:openPath', {}, outsideFile),
       'Path is not available inside the open project.'
     )
-    assert.deepEqual(opened, [exportFile])
+    // `shell.openPath` runs these on Windows rather than opening them, and the
+    // channel exists only to open an exported conversation.
+    for (const file of [programFile, scriptFile, shortcutFile]) {
+      assert.equal(
+        await anyIpc._invoke('shell:openPath', {}, path.basename(file)),
+        'Only an exported document can be opened from here.',
+        path.basename(file)
+      )
+    }
+    // A non-string target is refused before any path is resolved.
+    assert.equal(await anyIpc._invoke('shell:openPath', {}, { path: path.basename(exportFile) }), 'Invalid path.')
+    assert.deepEqual(opened, [exportFile, markdownExport], 'only the two documents reach the OS')
   } finally {
     app.getPath = originalGetPath
     shell.openPath = originalOpenPath

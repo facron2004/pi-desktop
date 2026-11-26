@@ -2958,10 +2958,26 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('shell:nativeIcons', () => nativeAppIcons())
 
-  ipcMain.handle('shell:openPath', async (_event, target: string) => {
+  /**
+   * What `shell:openPath` may hand to the OS, by extension.
+   *
+   * The only caller is the Open action on an export toast, so the only files
+   * it ever names are the Markdown and HTML conversations the app wrote.
+   * `shell.openPath` executes rather than opens on Windows — `.exe`, `.bat`,
+   * `.cmd`, `.msi`, `.lnk` and more — so being inside the project is not
+   * enough: a renderer path that resolved to one of those would run it. An
+   * allow-list of the documents this channel is for means no executable type
+   * has to be enumerated to be refused.
+   */
+  const OPEN_PATH_DOCUMENT_EXTENSIONS = new Set(['.md', '.markdown', '.html', '.htm'])
+
+  ipcMain.handle('shell:openPath', async (_event, target: unknown): Promise<string> => {
     if (typeof target !== 'string' || !target) return 'Invalid path.'
     const resolved = await resolveWorkspacePath(workspaceRoot(context), target)
     if (!resolved) return 'Path is not available inside the open project.'
+    if (!OPEN_PATH_DOCUMENT_EXTENSIONS.has(path.extname(resolved).toLowerCase())) {
+      return 'Only an exported document can be opened from here.'
+    }
     return openFile(resolved)
   })
 
