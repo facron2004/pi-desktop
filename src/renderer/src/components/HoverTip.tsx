@@ -435,6 +435,10 @@ export function HoverTip() {
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
+      // Only a card that is actually on screen owns the key: a card still
+      // waiting out the hover delay has not been read yet, so the Escape is the
+      // reader's, and the composer stops the run on any Escape nobody marked.
+      if (state.visible) event.preventDefault()
       clearTimer()
       state.dismissed = state.host
       state.dismissedText = ''

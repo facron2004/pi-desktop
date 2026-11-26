@@ -398,6 +398,9 @@ export const BranchMenu = memo(function BranchMenu({
                     onChange={(event) => setNewBranch(event.target.value)}
                     onKeyDown={(event) => {
                       if (event.key === 'Escape') {
+                        // The field owns Escape while it is open: mark it, or
+                        // another handler that closes on Escape would also act.
+                        event.preventDefault()
                         event.stopPropagation()
                         setShowNew(false)
                         setNewBranch('')

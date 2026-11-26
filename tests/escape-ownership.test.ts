@@ -67,3 +67,21 @@ test('the side-chat selection bar consumes Escape only while it is up', () => {
     'the selection bar swallows Escape when it has nothing to close'
   )
 })
+
+test('the in-thread hover card consumes Escape only while it is showing', () => {
+  const tip = read('src/renderer/src/components/HoverTip.tsx')
+  assert.match(
+    tip,
+    /if \(state\.visible\) event\.preventDefault\(\)/,
+    'the hover card hides without marking Escape as handled while it is on screen'
+  )
+})
+
+test('a branch rename marks its Escape as handled', () => {
+  const menu = read('src/renderer/src/components/BranchMenu.tsx')
+  assert.match(
+    menu,
+    /event\.key === 'Escape'\) \{[\s\S]{0,200}?event\.preventDefault\(\)[\s\S]{0,120}?event\.stopPropagation\(\)/,
+    'cancelling a branch name stops the event but leaves it unmarked'
+  )
+})
