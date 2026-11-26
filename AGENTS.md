@@ -1774,6 +1774,17 @@ comes from `git status --porcelain` in `GitStatus.files`. `git:patch` returns a
 unified HEAD→worktree patch (all files or one) with untracked files synthesized as
 `new file` patches; it is meant to be pasted into `git apply`.
 
+**The changed-file lists are one keyboard column.** The Review page and the tool
+panel's File changes page draw their files as `.change-file` buttons carrying
+`data-change-file`; Tab reaches every one, and Up/Down/Home/End walk them and
+show each file's diff, exactly as a click does. `rowIndexAfterKey` in
+[`lib/row-nav.ts`](src/renderer/src/lib/row-nav.ts) owns the bounded move — no
+wrap, because an arrow at the end must not jump the preview back to the top —
+and the scheduled-task list uses the same rule instead of its own copy of it.
+`tests/row-nav.test.ts` pins the rule and the wiring;
+`output/audit/check-change-files-nav.mjs` drives a two-file repository through
+ArrowDown, End and Home and reads the preview each time.
+
 **The working tree is read while a run is going, not only when it settles.** The
 agent edits files in the middle of a run, so waiting for `agent_settled` left the
 Review list showing the previous batch for the rest of it. `tool_execution_end`

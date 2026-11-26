@@ -23,6 +23,7 @@ import { buildWorkingTreeDiff, CONTEXT_LINES, type DiffBlock, type DiffRow } fro
 import { relativePath, resolveAgainst } from '../lib/path'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
+import { rowIndexAfterKey } from '../lib/row-nav'
 import { ConfirmDialog } from './ConfirmDialog'
 import { DiffView } from './DiffView'
 import { FileIcon } from './FileIcon'
@@ -513,7 +514,24 @@ export function ReviewView({
                 </div>
               </div>
             ) : null}
-            <div className="change-files__list">
+            <div
+              className="change-files__list"
+              onKeyDown={(event) => {
+                // The file list is one keyboard column: the arrows walk the rows
+                // and show each file's diff, exactly as a click does.
+                if (event.altKey || event.ctrlKey || event.metaKey) return
+                const target = event.target
+                if (!(target instanceof HTMLElement) || !target.matches('[data-change-file]')) return
+                const rows = [
+                  ...event.currentTarget.querySelectorAll<HTMLElement>('[data-change-file]')
+                ]
+                const next = rowIndexAfterKey(event.key, rows.indexOf(target), rows.length)
+                if (next === undefined) return
+                event.preventDefault()
+                rows[next].focus()
+                rows[next].click()
+              }}
+            >
               {visible.map((file) => {
                 const status = statusOf(file)
                 const name = file.path.split(/[\\/]/).pop() ?? file.path
@@ -524,6 +542,7 @@ export function ReviewView({
                     className="change-file"
                     data-active={selectedFile?.path === file.path || undefined}
                     data-staged={file.staged || undefined}
+                    data-change-file={file.path}
                     title={`${t(status.key)} · ${file.oldPath ? `${file.oldPath} → ${file.path}` : file.path}`}
                     onClick={() => setSelectedPath(file.path)}
                   >

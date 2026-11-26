@@ -26,6 +26,7 @@ import { Popover } from './Popover'
 import { SettingsSelect, type SettingsSelectOption } from './settings/SettingsShared'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
+import { rowIndexAfterKey } from '../lib/row-nav'
 import { DEFAULT_THINKING_LEVELS } from '../lib/thinking'
 import '../styles/scheduled-tasks.css'
 
@@ -602,7 +603,6 @@ export function ScheduledTasksDialog() {
                   // The list is one keyboard column: the arrows walk the rows
                   // and select each one, which is what a click on it does.
                   if (event.altKey || event.ctrlKey || event.metaKey) return
-                  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
                   const target = event.target
                   if (
                     !(target instanceof HTMLElement) ||
@@ -611,17 +611,9 @@ export function ScheduledTasksDialog() {
                   const rows = [
                     ...event.currentTarget.querySelectorAll<HTMLElement>('[data-scheduled-task]')
                   ]
-                  const index = rows.indexOf(target)
-                  if (index < 0) return
+                  const next = rowIndexAfterKey(event.key, rows.indexOf(target), rows.length)
+                  if (next === undefined) return
                   event.preventDefault()
-                  const next =
-                    event.key === 'Home'
-                      ? 0
-                      : event.key === 'End'
-                        ? rows.length - 1
-                        : event.key === 'ArrowDown'
-                          ? Math.min(rows.length - 1, index + 1)
-                          : Math.max(0, index - 1)
                   const row = rows[next]
                   row.focus()
                   row.click()

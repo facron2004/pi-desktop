@@ -43,6 +43,7 @@ import { TextSearch } from './TextSearch'
 import { BrowserView } from './BrowserView'
 import { ImageViewer } from './ImageViewer'
 import { useT } from '../lib/i18n'
+import { rowIndexAfterKey } from '../lib/row-nav'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import '../styles/browser-and-images.css'
 
@@ -667,7 +668,24 @@ export function InspectorPanel({
                       </div>
                     </div>
                   ) : null}
-                  <div className="change-files__list">
+                  <div
+                    className="change-files__list"
+                    onKeyDown={(event) => {
+                      // The same keyboard column as the Review page's list: the
+                      // arrows walk the changed files and show each diff.
+                      if (event.altKey || event.ctrlKey || event.metaKey) return
+                      const target = event.target
+                      if (!(target instanceof HTMLElement) || !target.matches('[data-change-file]')) return
+                      const rows = [
+                        ...event.currentTarget.querySelectorAll<HTMLElement>('[data-change-file]')
+                      ]
+                      const next = rowIndexAfterKey(event.key, rows.indexOf(target), rows.length)
+                      if (next === undefined) return
+                      event.preventDefault()
+                      rows[next].focus()
+                      rows[next].click()
+                    }}
+                  >
                     {entries.map(({ change, stat: one, path }) => {
                       const name = basename(change.path)
                       return (
@@ -676,6 +694,7 @@ export function InspectorPanel({
                           type="button"
                           className="change-file"
                           data-active={selectedChange?.path === change.path || undefined}
+                          data-change-file={change.path}
                           title={path}
                           onClick={() => setSelectedChangePath(change.path)}
                         >
