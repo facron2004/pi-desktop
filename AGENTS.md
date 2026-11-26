@@ -651,6 +651,14 @@ notice anchored to an edge reads as something sliding in from the side).
 success mark, carries a close button, and must not change the composer's
 geometry. A message about the app is not part of writing a message.
 
+A message with a value in it (a path, a model name) must be translated
+**before** the value is interpolated:
+`translate('Exported {file}', language).replace('{file}', …)`. `AppToast`
+translates its text through `t()` too, but that can only match an exact key, and
+a string with a path in it is no longer one — which is how `Exported {file}`
+stayed English in the Chinese interface while `Conversation deleted` did not.
+`tests/i18n.test.ts` pins the placeholder templates.
+
 ### The usage line under the composer
 
 `UsageBar` is one compact line **centred** under the input after a run, and it

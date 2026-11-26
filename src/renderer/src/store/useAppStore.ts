@@ -1722,12 +1722,18 @@ async function createWorktreeForSessionStart(get: GetState, source: string): Pro
     return
   }
 
-  get().showToast(`Worktree created at ${target}`)
+  get().showToast(
+    translate('Worktree created at {path}', get().settings.language ?? 'en').replace('{path}', () => target)
+  )
   if (epoch !== workspaceEpoch) return
   try {
     return await get().switchProject(target, { allowWhileRunning: true })
   } catch (error) {
-    get().showToast(`Could not open the new worktree (${messageOf(error)})`, 'error')
+    get().showToast(
+      translate('Could not open the new worktree ({message})', get().settings.language ?? 'en')
+        .replace('{message}', () => messageOf(error)),
+      'error'
+    )
     return
   }
 }
@@ -3037,8 +3043,17 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       const key = await get().ensureRuntime(owner, 'session-export')
       const result = await window.pi.sessions.exportHtml(key)
       if (result.cancelled) return
-      const saved = `Exported ${basename(result.path)}`
-      get().showToast(result.openError ? `${saved}. ${result.openError}` : saved, result.openError ? 'warning' : 'info')
+      const language = get().settings.language ?? 'en'
+      const saved = translate('Exported {file}', language)
+        .replace('{file}', () => basename(result.path))
+      const openError = result.openError
+      if (openError) {
+        const reason = translate('Could not open the exported file: {message}', language)
+          .replace('{message}', () => openError)
+        get().showToast(`${saved}. ${reason}`, 'warning')
+        return
+      }
+      get().showToast(saved)
     } catch (error) {
       bindSet(set, get, owner)({ error: messageOf(error) })
     }
@@ -3063,7 +3078,9 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     try {
       const result = await window.pi.sessions.exportMarkdown(owner, markdown)
       if (result.cancelled) return
-      get().showToast(`Exported ${basename(result.path)}`)
+      get().showToast(
+        translate('Exported {file}', get().settings.language ?? 'en').replace('{file}', () => basename(result.path))
+      )
     } catch (error) {
       bindSet(set, get, owner)({ error: messageOf(error) })
     }
@@ -5022,7 +5039,11 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       return
     }
     if (models.length === 1) {
-      get().showToast(`Only ${models[0].name || models[0].id} is available`, 'warning')
+      get().showToast(
+        translate('Only {model} is available', state.settings.language ?? 'en')
+          .replace('{model}', () => models[0].name || models[0].id),
+        'warning'
+      )
       return
     }
     const selected = isSide
@@ -5038,7 +5059,9 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       rememberDefaults: !isSide
     })
     if (changed && !pendingModelSelections.get(threadKey(key))?.duringStartup) {
-      get().showToast(`Model: ${next.name || next.id}`)
+      get().showToast(
+        translate('Model: {model}', state.settings.language ?? 'en').replace('{model}', () => next.name || next.id)
+      )
     }
   },
 
@@ -5068,7 +5091,10 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       return
     }
     if (levels.length === 1) {
-      get().showToast(`Reasoning effort: ${levels[0]}`, 'warning')
+      get().showToast(
+        translate('Reasoning effort: {level}', state.settings.language ?? 'en').replace('{level}', () => levels[0]),
+        'warning'
+      )
       return
     }
     const currentLevel = isSide
@@ -5081,7 +5107,9 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       sessionKey: key || undefined,
       rememberDefaults: !isSide
     })
-    get().showToast(`Reasoning effort: ${next}`)
+    get().showToast(
+      translate('Reasoning effort: {level}', state.settings.language ?? 'en').replace('{level}', () => next)
+    )
   },
 
   async compact(instructions, sessionKey) {

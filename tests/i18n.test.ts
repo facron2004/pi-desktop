@@ -16,3 +16,22 @@ test('subagent token count omits the Chinese classifier', () => {
 test('the thinking disclosure has a short Chinese label', () => {
   assert.equal(translate('Thinking content', 'zh-CN'), '思考内容')
 })
+
+test('dynamic toasts translate their template and keep the placeholder', () => {
+  const templates: Array<[string, string]> = [
+    ['Worktree created at {path}', '工作树已创建：{path}'],
+    ['Could not open the new worktree ({message})', '无法打开新的工作树（{message}）'],
+    ['Exported {file}', '已导出 {file}'],
+    ['Could not open the exported file: {message}', '无法打开导出的文件：{message}'],
+    ['Only {model} is available', '只有 {model} 可用'],
+    ['Model: {model}', '模型：{model}'],
+    ['Reasoning effort: {level}', '推理强度：{level}']
+  ]
+  for (const [key, expected] of templates) {
+    assert.equal(translate(key, 'zh-CN'), expected)
+    // The store fills the placeholder after translating, so it has to survive.
+    const placeholder = /\{(\w+)\}/.exec(key)?.[1]
+    assert.ok(placeholder, `${key} has no placeholder`)
+    assert.equal(translate(key, 'zh-CN').replace(`{${placeholder}}`, 'VALUE').includes('VALUE'), true)
+  }
+})

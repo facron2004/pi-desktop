@@ -851,7 +851,10 @@ test('session export reports a saved file and a viewer failure separately from c
     return { cancelled: false, path: 'C:/exports/conversation.html', openError: 'No associated HTML viewer' }
   })
   await useAppStore.getState().exportSession()
-  assert.equal(useAppStore.getState().toast?.text, 'Exported conversation.html. No associated HTML viewer')
+  assert.equal(
+    useAppStore.getState().toast?.text,
+    'Exported conversation.html. Could not open the exported file: No associated HTML viewer'
+  )
   assert.equal(useAppStore.getState().toast?.level, 'warning')
 })
 
