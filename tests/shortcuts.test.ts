@@ -213,4 +213,10 @@ test('the app-wide chord guard keeps fields and exempts the composer', () => {
     /if \(isEditingField\(document\.activeElement\)\) return/,
     'the conversation search no longer checks whether a field owns the keyboard'
   )
+  // And so are the turn jumps: `Alt+Up/Down` must not scroll from a field.
+  assert.match(
+    thread,
+    /Turn jumps scroll the reading surface[\s\S]{0,240}?if \(isEditingField\(document\.activeElement\)\) return/,
+    'the turn jumps no longer check whether a field owns the keyboard'
+  )
 })

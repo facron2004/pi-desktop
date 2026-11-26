@@ -710,10 +710,12 @@ same kind of field: writing a scheduled task's prompt and pressing `Ctrl+N` used
 to leave the page for a new chat and drop the draft. The composer keeps its
 chords (`.composer__input` is the one textarea exempted), because there they are
 part of writing a prompt and the draft survives a focus move.
-`Thread.tsx` uses the same predicate for `Ctrl+F`: without it, pressing it in a
-rename field opened the conversation search and took the focus with it
-(reproduced in the UI suite with the guard removed, which is why the suite opens
-a transcript before checking).
+`Thread.tsx` uses the same predicate for `Ctrl+F` and for the `Alt+Up/Down`
+turn jumps: without it, pressing either in a rename field opened the
+conversation search or scrolled the reading surface away from the caret
+(reproduced in the UI suite with each guard removed, which is why the suite
+opens a transcript before checking, and why it also checks that the composer
+still answers the jump).
 `tests/ui-regressions.mjs` renames a project and sends `Ctrl+N` and `Ctrl+F`,
 then writes a task prompt and sends `Ctrl+N` again, failing if the field or the
 page disappears or the conversation switches; `tests/shortcuts.test.ts` asserts

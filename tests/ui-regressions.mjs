@@ -3138,8 +3138,33 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     document.querySelector('.project__rename-input') === renameField,
     'Ctrl+F tore down the field that was being edited'
   )
+  // The turn jumps are Alt+Up/Down, from another window listener: a field keeps
+  // those too, or reading away from the caret is one keystroke.
+  const turnChord = new KeyboardEvent('keydown', {
+    key: 'ArrowDown',
+    altKey: true,
+    bubbles: true,
+    cancelable: true
+  })
+  renameField.dispatchEvent(turnChord)
+  await pause(150)
+  check(!turnChord.defaultPrevented, 'Alt+ArrowDown jumped the conversation from a rename field')
   renameField.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
   await until(() => !document.querySelector('.project__rename-input'), 'Escape did not cancel the project rename')
+  // The other side: in the composer the jump is part of reading while you
+  // write, so the app still answers the chord there.
+  const composerBox = document.querySelector('.composer__input')
+  check(composerBox, 'The composer box is not on screen for the turn-jump check')
+  composerBox.focus()
+  const composerJump = new KeyboardEvent('keydown', {
+    key: 'ArrowDown',
+    altKey: true,
+    bubbles: true,
+    cancelable: true
+  })
+  composerBox.dispatchEvent(composerJump)
+  await pause(150)
+  check(composerJump.defaultPrevented, 'The composer stopped answering the turn-jump chord')
   passed.push('an app-wide shortcut stays out of a field being typed in')
 
   // Opening a conversation from search or a shortcut reveals its row: a folded

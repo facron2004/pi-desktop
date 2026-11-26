@@ -909,6 +909,10 @@ export const Thread = memo(function Thread() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (document.querySelector('[aria-modal="true"]')) return
       if (focusIsInSideSurface() !== isSideSurface) return
+      // Turn jumps scroll the reading surface; a field the reader is typing in
+      // keeps the chord for itself (the composer is exempt through the same
+      // predicate, where the jump is part of reading while you write).
+      if (isEditingField(document.activeElement)) return
       if (matchesAnyShortcut(event, 'previous-turn', shortcutBindings)) {
         event.preventDefault()
         jumpTurn(-1)
