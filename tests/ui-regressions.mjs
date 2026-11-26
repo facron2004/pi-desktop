@@ -2778,6 +2778,31 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   )
   passed.push('the sidebar list walks with the arrow keys')
 
+  // The search dialog is keyboard-complete: ArrowDown moves into the results,
+  // ArrowUp returns to the field, and Enter takes the top result.
+  const searchTrigger = [...document.querySelectorAll('.sidebar__head-btn')]
+    .find((button) => button.getAttribute('aria-label') === 'Search projects and conversations')
+  searchTrigger?.click()
+  const searchField = await until(
+    () => document.querySelector('.search-dialog input'),
+    'The search dialog did not open'
+  )
+  setInput.call(searchField, 'workspace')
+  searchField.dispatchEvent(new Event('input', { bubbles: true }))
+  const firstResult = await until(
+    () => document.querySelector('[data-search-result]'),
+    'The search dialog found no result for the workspace'
+  )
+  searchField.focus()
+  searchField.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+  await until(() => document.activeElement === firstResult, 'ArrowDown did not enter the search results')
+  firstResult.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+  await until(() => document.activeElement === searchField, 'ArrowUp did not return to the search field')
+  searchField.focus()
+  searchField.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  await until(() => !document.querySelector('.search-dialog'), 'Enter did not open the top search result')
+  passed.push('the conversation search opens its top result with Enter')
+
   // switch back so the harness screenshot stays in English for visual review.
   await store.getState().updateSettings({ language: 'zh-CN' })
   const chineseLabel = await until(() => {
@@ -2832,7 +2857,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 53 : 49)
+  assert.equal(passed.length, process.platform === 'win32' ? 54 : 50)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

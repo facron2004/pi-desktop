@@ -352,6 +352,14 @@ the rename input keep their own keys, and rows without a client rect (folded
 away) are skipped. It is an addition to Tab order, not a roving tabindex: every
 row is still reachable by Tab.
 
+**The search dialog is keyboard-complete.** Enter in the field opens the top
+result — projects first, then conversations, then message hits, in the order
+they are drawn — and ArrowDown moves into the results. Inside them the arrows
+walk the rows and ArrowUp at the first returns to the field; Escape closes from
+either place. Rows carry `data-search-result`, and the dialog's arrow handler
+acts only when the event starts on such a row, so the field keeps its own
+combobox keys (recents use the same Up/Down when the query is empty).
+
 Opening a conversation does not start Pi. A conversation that stays on screen
 for a moment prewarms its own process in the background (`schedulePrewarm`),
 and focusing the composer starts a cold runtime; the prompt itself is still sent

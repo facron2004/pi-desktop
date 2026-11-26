@@ -1191,6 +1191,7 @@ export const Sidebar = memo(function Sidebar({
           key={`${hit.file}:${hit.messageIndex}`}
           className="session-search__hit"
           data-active={hit.file === activeSessionFile}
+          data-search-result
           role="button"
           tabIndex={0}
           title={hit.name || hit.preview || hit.file}
@@ -2098,10 +2099,31 @@ export const Sidebar = memo(function Sidebar({
           onKeyDown={(event) => {
             // Escape has to work from a result row or the close button too,
             // not only from the input (which handles its own key first).
-            if (event.key !== 'Escape') return
+            if (event.key === 'Escape') {
+              event.preventDefault()
+              event.stopPropagation()
+              closeSearch(true)
+              return
+            }
+            // The results are one keyboard column once focus is in them: the
+            // arrows walk the rows and the first one hands focus back to the
+            // field. Enter on a row is its own activation.
+            if (event.altKey || event.ctrlKey || event.metaKey) return
+            if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+            const target = event.target
+            if (!(target instanceof HTMLElement) || !target.matches('[data-search-result]')) return
+            const rows = [...event.currentTarget.querySelectorAll<HTMLElement>('[data-search-result]')]
+              .filter((row) => row.getClientRects().length > 0)
+            const index = rows.indexOf(target)
+            if (index < 0) return
             event.preventDefault()
-            event.stopPropagation()
-            closeSearch(true)
+            if (event.key === 'ArrowDown') {
+              if (index < rows.length - 1) rows[index + 1].focus()
+            } else if (index === 0) {
+              searchInputRef.current?.focus()
+            } else {
+              rows[index - 1].focus()
+            }
           }}
         >
           <header className="search-dialog__head">
@@ -2157,20 +2179,42 @@ export const Sidebar = memo(function Sidebar({
                   }
                   return
                 }
-                if (!recentsVisible) return
+                if (recentsVisible) {
+                  if (event.key === 'ArrowDown') {
+                    event.preventDefault()
+                    setRecentIndex((current) => (current + 1) % recents.length)
+                    return
+                  }
+                  if (event.key === 'ArrowUp') {
+                    event.preventDefault()
+                    setRecentIndex((current) => (current <= 0 ? recents.length - 1 : current - 1))
+                    return
+                  }
+                  if (event.key === 'Enter' && recentIndex >= 0) {
+                    event.preventDefault()
+                    pickRecent(recents[recentIndex])
+                  }
+                  return
+                }
+                if (!trimmedQuery) return
+                const firstResult = () =>
+                  searchDialogRef.current?.querySelector<HTMLElement>('[data-search-result]')
                 if (event.key === 'ArrowDown') {
-                  event.preventDefault()
-                  setRecentIndex((current) => (current + 1) % recents.length)
+                  const first = firstResult()
+                  if (first) {
+                    event.preventDefault()
+                    first.focus()
+                  }
                   return
                 }
-                if (event.key === 'ArrowUp') {
-                  event.preventDefault()
-                  setRecentIndex((current) => (current <= 0 ? recents.length - 1 : current - 1))
-                  return
-                }
-                if (event.key === 'Enter' && recentIndex >= 0) {
-                  event.preventDefault()
-                  pickRecent(recents[recentIndex])
+                // Enter takes the top result, so typing a search and pressing
+                // Enter is one action; the rows themselves keep their clicks.
+                if (event.key === 'Enter') {
+                  const first = firstResult()
+                  if (first) {
+                    event.preventDefault()
+                    first.click()
+                  }
                 }
               }}
             />
@@ -2239,6 +2283,7 @@ export const Sidebar = memo(function Sidebar({
                     key={normalisePathKey(project.path)}
                     type="button"
                     className="search-dialog__result"
+                    data-search-result
                     onClick={() => openProjectResult(project)}
                     title={project.path}
                   >
@@ -2264,6 +2309,7 @@ export const Sidebar = memo(function Sidebar({
                     key={session.file}
                     type="button"
                     className="search-dialog__result"
+                    data-search-result
                     onClick={() => openConversationResult(session)}
                     title={session.name || session.preview || session.file}
                   >
