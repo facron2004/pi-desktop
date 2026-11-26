@@ -2081,6 +2081,53 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   )
   passed.push('the usage line shares one height and centre on the composer axis')
 
+  // Queued prompts are not a read-only list: while the run keeps going, the
+  // reader can take them back to the editor or discard them. A queue that can
+  // only be emptied by stopping the turn makes the reader throw work away.
+  const queueBefore = store.getState().queue
+  store.setState({ queue: { steering: ['UI_QUEUED_STEER_610'], followUp: ['UI_QUEUED_FOLLOW_UP_610'] } })
+  await until(
+    () => document.querySelectorAll('.composer__queue-item').length === 2,
+    'Queued prompts did not render'
+  )
+  const queueActions = [...document.querySelectorAll('.composer__queue-action')]
+  check(queueActions.length === 2, 'The queued prompts have no recall or discard control')
+  check(
+    queueActions[0]?.getAttribute('title') === 'Recall queued messages to editor',
+    'The recall control does not say what it does'
+  )
+  check(
+    queueActions[1]?.getAttribute('title') === 'Clear queued messages',
+    'The discard control does not say what it does'
+  )
+  // The icon sits on the first row's own 20px line, so it does not inflate the
+  // row it belongs to.
+  const queueRowBox = document.querySelector('.composer__queue-item')?.getBoundingClientRect()
+  const queueActionBox = queueActions[1]?.getBoundingClientRect()
+  check(
+    queueRowBox && queueRowBox.height <= 24,
+    `The queue controls made their row taller than its text (${queueRowBox?.height}px)`
+  )
+  check(
+    queueActionBox && queueActionBox.height <= 20,
+    `The queue controls are larger than their 20px line (${queueActionBox?.height}px)`
+  )
+  queueActions[1].click()
+  const discardBody = await until(
+    () => document.querySelector('.modal-layer .confirm__body'),
+    'Discarding the queue asked nothing'
+  )
+  check(
+    discardBody.textContent === 'They will not be sent and will not return to the editor.',
+    'The discard confirmation does not say the prompts are lost'
+  )
+  const cancelDiscard = [...document.querySelectorAll('.modal-layer .modal__foot .btn')]
+    .find((button) => !button.classList.contains('btn--danger'))
+  cancelDiscard?.click()
+  await until(() => !document.querySelector('.modal-layer'), 'Cancelling the discard left the dialog open')
+  store.setState({ queue: queueBefore })
+  passed.push('queued prompts can be taken back or discarded without stopping the run')
+
   // A sidebar row explains itself in a card, not in the native tooltip: the
   // card carries a label column and the details the row cannot show, and it
   // sits beside the row instead of covering it.
@@ -2540,7 +2587,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 47 : 43)
+  assert.equal(passed.length, process.platform === 'win32' ? 48 : 44)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

@@ -552,6 +552,17 @@ and `session-bar__stop` remains available under the box. Both stop controls call
 Acceptance clears the draft that was submitted if it still matches the editor,
 so an edit made while waiting survives.
 
+**A queued prompt can be taken back without stopping the run.** The rows above
+the box are Pi's queue, and the first one carries two 20px controls: recall
+(`clearQueue(true)`, the prompts go back into the editor) and discard
+(`clearQueue(false)`, after the inline confirmation in `ConfirmDialog`). Both
+call `clear_queue`, so they never abort the turn. `clearQueue` takes the
+conversation key, because the side chat reuses this composer with its own
+session — clearing "the queue" from the visible box must not empty whichever
+conversation the main view happens to show. The actions live on the first row
+rather than in a header so the queued block keeps its own height; do not put
+them in the flow of every row, where they would repeat for each prompt.
+
 If a draft snapshot exceeds browser storage quota, drop sent-prompt history
 before removing any unsent images. If the images still exceed the quota,
 retry with still-attached images from the last saved snapshot before falling

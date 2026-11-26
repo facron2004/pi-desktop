@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, 
 import {
   ArrowUp,
   Check,
+  CornerDownLeft,
   Image as ImageIcon,
   ListChecks,
   Loader2,
@@ -9,6 +10,7 @@ import {
   Plus,
   Sparkles,
   Square,
+  Trash2,
   Wrench,
   X
 } from 'lucide-react'
@@ -57,6 +59,7 @@ import { filterCommands } from '../lib/commands'
 import { relativePath } from '../lib/path'
 import { useT } from '../lib/i18n'
 import { CommandPalette } from './CommandPalette'
+import { ConfirmDialog } from './ConfirmDialog'
 import { FileIcon } from './FileIcon'
 import { FileMention } from './FileMention'
 import { ModelPicker } from './TopBar'
@@ -257,6 +260,7 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
   const language = useAppStore((state) => state.settings.language ?? 'en')
   const clientKey = slice.clientKey
   const submitting = useAppStore((state) => Boolean(state.submittingDrafts[clientKey]))
+  const clearQueue = useAppStore((state) => state.clearQueue)
   // A message edit can be taken back until something is sent from here.
   const undoEdit = useAppStore((state) => state.rewindUndo === true)
   const undoRewind = useAppStore((state) => state.undoRewind)
@@ -305,6 +309,11 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
   })
   const fallbackDraftRef = useRef(fallbackDraft)
   fallbackDraftRef.current = fallbackDraft
+
+  // Clearing the queue is an RPC. Both controls stay disabled until it answers,
+  // so a second click cannot race the first one's restore.
+  const [clearingQueue, setClearingQueue] = useState(false)
+  const [discardQueueOpen, setDiscardQueueOpen] = useState(false)
 
   const draft = draftKey ? draftEntry : fallbackDraft
   const text = draft?.text ?? ''
@@ -1512,6 +1521,21 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
     ...queue.followUp.map((value) => ({ kind: 'followUp' as const, text: value }))
   ]
 
+  /**
+   * Take back or discard what is waiting in Pi's queue without stopping the
+   * run. The queue belongs to this box's conversation, not to the view: the
+   * side chat reuses this composer with its own session key.
+   */
+  const clearPendingQueue = useCallback(
+    (restore: boolean) => {
+      if (clearingQueue) return
+      setClearingQueue(true)
+      setDiscardQueueOpen(false)
+      void clearQueue(restore, slice.sessionKey || undefined).finally(() => setClearingQueue(false))
+    },
+    [clearQueue, clearingQueue, slice.sessionKey]
+  )
+
   const openChangesInspector = useCallback(() => {
     window.dispatchEvent(
       new CustomEvent('pi:open-inspector', { detail: { tab: 'changes' } })
@@ -1598,9 +1622,45 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
                     {entry.kind === 'steer' ? t('Steer') : t('Queue')}
                   </span>
                   <span className="composer__queue-text">{entry.text}</span>
+                  {index === 0 ? (
+                    <div className="composer__queue-actions">
+                      <button
+                        type="button"
+                        className="composer__queue-action"
+                        disabled={clearingQueue}
+                        onClick={() => clearPendingQueue(true)}
+                        title={t('Recall queued messages to editor')}
+                        aria-label={t('Recall queued messages to editor')}
+                      >
+                        <CornerDownLeft size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        className="composer__queue-action"
+                        data-tone="danger"
+                        disabled={clearingQueue}
+                        onClick={() => setDiscardQueueOpen(true)}
+                        title={t('Clear queued messages')}
+                        aria-label={t('Clear queued messages')}
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>
+          ) : null}
+
+          {discardQueueOpen && pendingQueue.length > 0 ? (
+            <ConfirmDialog
+              title={t('Discard queued messages?')}
+              body={t('They will not be sent and will not return to the editor.')}
+              confirmLabel={t('Discard')}
+              tone="danger"
+              onCancel={() => setDiscardQueueOpen(false)}
+              onConfirm={() => clearPendingQueue(false)}
+            />
           ) : null}
 
           {images.length > 0 && !image ? (

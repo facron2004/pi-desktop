@@ -370,6 +370,33 @@ test('cancelling a queued composer submission restores a single copy', async () 
   assert.equal(useAppStore.getState().drafts[key]?.text, 'Still in the composer\nEarlier queued message')
 })
 
+test('clearing a background queue restores its own draft and leaves the chat on screen alone', async () => {
+  // The side chat and the main chat share one Composer, so "clear the queue"
+  // on the visible box must name its conversation. Without the key it cleared
+  // whichever conversation the view happened to show.
+  const shown = session('clear-queue-shown.jsonl')
+  const background = session('clear-queue-background.jsonl')
+  await useAppStore.getState().selectSession(shown)
+  const shownKey = useAppStore.getState().activeSessionFile!
+  useAppStore.getState().updateDraft(shownKey, { text: 'Shown draft' })
+  useAppStore.getState().updateDraft(background.file, { text: 'Background draft' })
+  bridge.runtime.request = async (command, payload, timeout, trace, key) => {
+    if (command === 'clear_queue') {
+      calls.push({ command, key, payload })
+      return { steering: ['Background queued'], followUp: [] }
+    }
+    return originalRequest(command, payload, timeout, trace, key)
+  }
+
+  await useAppStore.getState().clearQueue(true, background.file)
+
+  const clearCall = calls.find(({ command }) => command === 'clear_queue')
+  assert.equal(clearCall?.key, background.file, 'the queue was cleared on the wrong conversation')
+  assert.equal(useAppStore.getState().drafts[background.file]?.text, 'Background draft\nBackground queued')
+  assert.equal(useAppStore.getState().drafts[shownKey]?.text, 'Shown draft')
+  assert.equal(useAppStore.getState().error, undefined)
+})
+
 test('stopping restores an image-only directory prompt to its owner even if Pi could not clear its queue', async () => {
   const key = 'restore-queued-image.jsonl'
   const other = 'viewing-other-chat.jsonl'

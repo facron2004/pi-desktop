@@ -1649,6 +1649,8 @@ const zhCN: Record<string, string> = {
   'no context': '无上下文',
   'Recall queued messages to editor': '将排队消息取回输入框',
   'Clear queued messages': '清空排队消息',
+  'Discard queued messages?': '放弃排队中的消息？',
+  'They will not be sent and will not return to the editor.': '这些消息不会发送，也不会回到输入框。',
   'Insert selected lines into composer': '将所选行插入输入框',
   'Show source code': '显示源代码',
   'Preview rendered output': '预览渲染效果',

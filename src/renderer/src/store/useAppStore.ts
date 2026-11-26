@@ -1038,8 +1038,12 @@ export interface AppStore {
   stop: () => Promise<void>
   /** Abort one conversation by its id. Does not abort any other, and does not change the view. */
   stopSession: (sessionKey: string) => Promise<void>
-  /** Clear queued steering / follow-up messages, optionally restoring them to the editor. */
-  clearQueue: (restoreToEditor?: boolean) => Promise<void>
+  /**
+   * Clear queued steering / follow-up messages, optionally restoring them to
+   * the editor. A session key clears a conversation that is not on screen —
+   * the side chat shares this composer, so the default view is not its queue.
+   */
+  clearQueue: (restoreToEditor?: boolean, sessionKey?: string) => Promise<void>
   setModel: (
     model: ModelInfo,
     options?: { sessionKey?: string; rememberDefaults?: boolean }
@@ -4673,10 +4677,11 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     }
   },
 
-  async clearQueue(restoreToEditor = false) {
+  async clearQueue(restoreToEditor = false, sessionKey) {
     const state = get()
-    const key = viewKeyOf(state)
-    const submission = state.submittingDrafts[composerClientKey(state, threadKey(key))]
+    const owner = sessionKey?.trim() || viewKeyOf(state)
+    const key = threadKey(owner)
+    const submission = state.submittingDrafts[composerClientKey(state, key)]
     const update = bindSet(set, get, key)
     try {
       const removed = await tracedRpc<ClearedRuntimeQueue>(
@@ -4690,7 +4695,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         ...(removed?.queueError === undefined ? { queue: { steering: [], followUp: [] } } : { error: removed.queueError }),
         items: clearPendingPrompts(state.items)
       }))
-      if (key) queuedPromptDrafts.delete(threadKey(key))
+      queuedPromptDrafts.delete(key)
       if (restoreToEditor) {
         restoreCancelledPrompts(get(), key, removed, submission)
       }

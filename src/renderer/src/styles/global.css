@@ -9400,6 +9400,37 @@ button:focus-visible,
   flex: 0 0 auto;
 }
 
+/* The queue's own controls are 20px: they sit on a 20px text row and must not
+   make the queued block taller than the message it describes. */
+.composer__queue-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.composer__queue-action:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.composer__queue-action[data-tone='danger']:hover:not(:disabled) {
+  background: var(--status-danger-soft);
+  color: var(--status-danger);
+}
+
+.composer__queue-action:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
 .md-file-link {
   display: inline-flex;
   align-items: center;
