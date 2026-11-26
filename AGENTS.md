@@ -677,16 +677,21 @@ so an edit made while waiting survives.
 **Escape is the stop key, and only a key nobody took stops anything.** `Composer`
 stops the run from a window-level Escape whose `defaultPrevented` is false.
 Every control that closes itself on Escape — a rename field, a hover card, the
-update tip, the tab menu, the side-chat selection bar, a new branch name — must
-`preventDefault()`, or cancelling it also aborts the agent's run. Both card
+update tip, the tab menu, the side-chat selection bar, a new branch name, the
+tool panel's restored or closed state — must `preventDefault()`, or cancelling
+it also aborts the agent's run. Both card
 systems count: `SidebarTip` (sidebar and title-bar rows) and `HoverTip` (any
 `[title]` control), and the in-thread card only takes the key while it is
 actually on screen, so a pending hover never swallows a stop. A global handler
 that only acts while something it owns is up (the selection bar) checks that
 first, so an Escape with nothing to close still reaches the stop.
-`tests/escape-ownership.test.ts` pins the rule and
-`output/audit/check-escape-ownership.mjs` drives the project rename field and a
-hover card, printing `defaultPrevented` (false before, true after, for both).
+`tests/escape-ownership.test.ts` pins the individual cases and also walks every
+`.ts`/`.tsx` under `src/renderer/src`: an `'Escape'` the nearby code never marks
+fails the suite (only the tray window and the shortcut-label table are exempt),
+so a new handler cannot quietly reintroduce the bug.
+`output/audit/check-escape-ownership.mjs` drives the project rename field, a
+hover card and the maximized panel, printing `defaultPrevented` (false before,
+true after, for each).
 
 **Both lists in the box are one keyboard walk.** The command palette and the
 `@` file list take Up/Down (wrapping), Home/End and PageUp/PageDown; the page

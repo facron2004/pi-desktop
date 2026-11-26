@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 
 /**
@@ -83,5 +83,43 @@ test('a branch rename marks its Escape as handled', () => {
     menu,
     /event\.key === 'Escape'\) \{[\s\S]{0,200}?event\.preventDefault\(\)[\s\S]{0,120}?event\.stopPropagation\(\)/,
     'cancelling a branch name stops the event but leaves it unmarked'
+  )
+})
+
+/**
+ * The net under the rule: any handler that reacts to Escape has to say so.
+ *
+ * This is a coarse check — a marking call within one screenful of the branch is
+ * enough — but it catches the shape that caused the last three bugs, where a
+ * new handler closes something and lets the key travel on to the stop handler.
+ * Two files are exempt by nature: `TrayPopup` runs in its own window, and
+ * `lib/shortcuts.ts` only turns a key into a label.
+ */
+test('every Escape handler marks the key', () => {
+  const exempt = new Set(['TrayPopup.tsx', 'shortcuts.ts'])
+  const misses: string[] = []
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir)) {
+      const full = path.join(dir, entry)
+      if (statSync(full).isDirectory()) {
+        walk(full)
+        continue
+      }
+      if (!/\.(ts|tsx)$/.test(entry) || exempt.has(entry)) continue
+      const source = readFileSync(full, 'utf8')
+      for (const match of source.matchAll(/'Escape'/g)) {
+        const at = match.index ?? 0
+        const tail = source.slice(at, at + 1800)
+        if (/preventDefault|stopPropagation|stopImmediatePropagation/.test(tail)) continue
+        const line = source.slice(0, at).split('\n').length
+        misses.push(`${path.relative(process.cwd(), full)}:${line}`)
+      }
+    }
+  }
+  walk(path.resolve(process.cwd(), 'src/renderer/src'))
+  assert.deepEqual(
+    misses,
+    [],
+    `these handlers react to Escape without marking the key: ${misses.join(', ')}`
   )
 })

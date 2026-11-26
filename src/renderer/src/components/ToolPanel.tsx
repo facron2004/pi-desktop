@@ -224,6 +224,9 @@ export const ToolPanel = memo(function ToolPanel({
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return
       if (document.querySelector('.modal-layer, .popover, .tool-tab-menu, .lightbox-layer')) return
+      // Leaving the maximized state consumes the key: the composer stops a run
+      // on any Escape that nobody marked, and both listeners sit on the window.
+      event.preventDefault()
       setMaximized(false)
     }
     window.addEventListener('keydown', onKey)
@@ -245,6 +248,9 @@ export const ToolPanel = memo(function ToolPanel({
         (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))
       ) return
       if (document.querySelector('.modal-layer, .popover, .tool-tab-menu, .lightbox-layer')) return
+      // Closing the drawer consumes the key too; without this the composer's
+      // stop handler would also fire on the same press.
+      event.preventDefault()
       closeRef.current()
     }
     window.addEventListener('keydown', onKey)
