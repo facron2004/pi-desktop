@@ -1563,6 +1563,20 @@ shares a name, and the path still on the row's `title`.
 `output/audit/rail-check.mjs` prints those numbers for a shape you can look at and
 captures the rail.
 
+**The rail's toggle is a preference, not a loan for the panel episode.** A
+docked tool panel that narrows the main stage below 760px folds the rail on its
+own (`narrowMainStage`), and `narrowTaskOverride` is the reader's word about
+that episode (`null`: no word). A press in that state used to write only the
+override, so closing the panel widened the stage, dropped the override, and the
+rail fell back to the old preference — the control undid itself one click later.
+`toggleTaskRail` in [`lib/task-rail.ts`](src/renderer/src/lib/task-rail.ts)
+moves the base preference and the override together, so the rail stays where the
+reader put it when the panel closes; the override still resets when the stage
+widens, so the next narrow episode starts from the same auto-fold every other
+reader gets. `tests/task-rail.test.ts` pins the rule, and
+`output/audit/check-task-rail-press.mjs` drives the whole sequence in the real
+app.
+
 The rail keeps no state of its own. A section title is plain text with the caret
 on the right, and the body folds
 on a grid row (180ms) instead of snapping shut. The comparison with the

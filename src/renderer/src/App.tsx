@@ -52,6 +52,7 @@ import { activeConversationTitle } from './lib/live-sessions'
 import { OPEN_SIDE_CHAT_EVENT, type SideChatOpenRequest } from './lib/side-chat-context'
 import { useT } from './lib/i18n'
 import { dismissStartupScreen } from './lib/startup-screen'
+import { toggleTaskRail } from './lib/task-rail'
 import './styles/side-chat.css'
 
 const InspectorPanel = lazy(() => import('./components/InspectorPanel').then((m) => ({ default: m.InspectorPanel })))
@@ -461,12 +462,17 @@ export default function App() {
 
   const toggleSidebar = useCallback(() => setSidebarOpen((value) => !value), [])
   const toggleTaskPanel = useCallback(() => {
-    if (narrowMainStage) {
-      setNarrowTaskOverride((value) => !(value ?? false))
-      return
-    }
-    setTaskRailOpen((value) => !value)
-  }, [narrowMainStage])
+    // A narrow-stage press is also the reader's preference: syncing the base
+    // value keeps the rail where they just put it when the panel closes and the
+    // stage widens again. See `lib/task-rail.ts`.
+    const next = toggleTaskRail({
+      narrow: narrowMainStage,
+      narrowOverride: narrowTaskOverride,
+      base: taskRailOpen
+    })
+    setNarrowTaskOverride(next.narrowOverride)
+    setTaskRailOpen(next.base)
+  }, [narrowMainStage, narrowTaskOverride, taskRailOpen])
   const handleNewChat = useCallback(() => void newChat(), [newChat])
   const handleNewProject = useCallback(
     () => openProjectDialog({ mode: 'create' }),
