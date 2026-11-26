@@ -2167,6 +2167,33 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   check(document.querySelector('.tree__results-head')?.textContent === 'Searching…', 'The updated file search did not show its pending state')
   check(!flatFileNames().includes('old-only-result.txt'), 'The previous file search results stayed visible under a new query')
   await until(() => flatFileNames().includes('new-only-result.txt'), 'The updated file search did not find its fixture')
+
+  // Enter in the file search opens the top result; the arrows walk the flat
+  // results and return to the field.
+  fileSearch.focus()
+  fileSearch.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+  const firstFileResult = await until(
+    () => document.querySelector('[data-tree-result]'),
+    'The file search rendered no keyboard-visible result'
+  )
+  await until(() => document.activeElement === firstFileResult, 'ArrowDown did not enter the file search results')
+  firstFileResult.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+  await until(() => document.activeElement === fileSearch, 'ArrowUp did not return to the file search field')
+  fileSearch.focus()
+  fileSearch.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  await until(
+    () => document.querySelector('.file-workspace')?.textContent?.includes('new query result'),
+    'Enter in the file search did not open the top result'
+  )
+  passed.push('the file search opens its top result with Enter')
+  // The opened file occupies the preview; the Files page's empty state is what
+  // the full-text-search check below expects, so put it back through the same
+  // door the app uses for "show the Changes/Files page".
+  window.dispatchEvent(new CustomEvent('pi:open-inspector', { detail: { tab: 'files' } }))
+  await until(
+    () => document.querySelector('.file-workspace__text-search'),
+    'The Files page did not return to its empty preview'
+  )
   passed.push('file search clears stale matches while the next query is running')
 
   setInputValue(fileSearch, '')
@@ -2867,7 +2894,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 55 : 51)
+  assert.equal(passed.length, process.platform === 'win32' ? 56 : 52)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

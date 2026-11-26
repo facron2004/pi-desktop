@@ -1512,6 +1512,12 @@ maximize, stays there whether the tree is open or folded, and is tinted while
 the tree is showing. `App` owns `fileTreeOpen` and passes it down; `ToolPanel`'s
 `actions` slot is where page-specific header controls go.
 
+**The filter is one keyboard column with its results.** Enter opens the top flat
+result, ArrowDown moves into the results, Up/Down walk them, and ArrowUp at the
+first returns to the field. Only the flat search results carry
+`data-tree-result`; the nested tree keeps its own buttons, so the handler never
+steals an arrow from a folder row.
+
 The marks come from `lib/file-status.ts`, a projection of the same `git` the
 task rail reads. `changeKind` folds git's two-letter porcelain codes onto one
 mark per file (`modified`, `added`, `deleted`, `renamed`, `conflicted`);

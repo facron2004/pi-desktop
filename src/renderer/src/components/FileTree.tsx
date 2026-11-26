@@ -112,6 +112,7 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
   const [searching, setSearching] = useState(false)
   const [searchError, setSearchError] = useState(false)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const treeRef = useRef<HTMLDivElement>(null)
   const activeRoot = useRef(root)
   const searchVersion = useRef(0)
   activeRoot.current = root
@@ -294,7 +295,31 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
   }
 
   return (
-    <div className="tree" data-mode={mode}>
+    <div
+      className="tree"
+      data-mode={mode}
+      ref={treeRef}
+      onKeyDown={(event) => {
+        // The flat search results are one keyboard column; the tree proper
+        // keeps its nested buttons. Enter on the field takes the top result.
+        if (event.altKey || event.ctrlKey || event.metaKey) return
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+        const target = event.target
+        if (!(target instanceof HTMLElement) || !target.matches('[data-tree-result]')) return
+        const results = [...event.currentTarget.querySelectorAll<HTMLElement>('[data-tree-result]')]
+          .filter((row) => row.getClientRects().length > 0)
+        const index = results.indexOf(target)
+        if (index < 0) return
+        event.preventDefault()
+        if (event.key === 'ArrowDown') {
+          if (index < results.length - 1) results[index + 1].focus()
+        } else if (index === 0) {
+          searchInputRef.current?.focus()
+        } else {
+          results[index - 1].focus()
+        }
+      }}
+    >
       <div className="tree__search">
         <Search size={13} />
         <input
@@ -304,6 +329,25 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
           aria-label={t('Find files')}
           placeholder={placeholder}
           onChange={(event) => updateQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.altKey || event.ctrlKey || event.metaKey) return
+            const firstResult = () => treeRef.current?.querySelector<HTMLElement>('[data-tree-result]')
+            if (event.key === 'Enter') {
+              const first = firstResult()
+              if (first) {
+                event.preventDefault()
+                first.click()
+              }
+              return
+            }
+            if (event.key === 'ArrowDown') {
+              const first = firstResult()
+              if (first) {
+                event.preventDefault()
+                first.focus()
+              }
+            }
+          }}
         />
         {query ? (
           <button
@@ -378,6 +422,7 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
                     <button
                       key={entry.path}
                       className="tree__item tree__item--flat"
+                      data-tree-result
                       data-status={change}
                       draggable
                       onDragStart={(event) => {
