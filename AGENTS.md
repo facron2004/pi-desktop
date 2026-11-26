@@ -621,6 +621,12 @@ menu) on the left and the round send button on the right. Nothing about the
 composer is conditional on a run — the model, reasoning and session controls
 used to live in this bar, which is why starting or sending used to rearrange it.
 
+**A new chat puts the caret in the box.** `newChat` dispatches
+`pi:focus-composer` after the branch has rendered; the main composer focuses and
+puts the caret at the end. It skips the request while a dialog, menu, lightbox or
+covering tool panel owns the keyboard, so a New chat command cannot pull focus
+out of a layer that is waiting on an answer.
+
 The round button stops an active run while the composer is empty or a submission
 is awaiting confirmation. Otherwise it sends the current draft (steer or queue),
 and `session-bar__stop` remains available under the box. Both stop controls call

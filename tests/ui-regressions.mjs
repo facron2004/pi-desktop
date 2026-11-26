@@ -3024,6 +3024,19 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   await until(() => document.querySelector('.btn-new-chat')?.textContent?.includes('New chat'), 'The English interface did not return')
   passed.push('the Chinese interface translates labels and the messages the main process sends')
 
+  // A new chat is a box to type in: creating one puts the caret there.
+  document.querySelector('.sidebar__head-btn')?.focus()
+  await store.getState().newChat()
+  const composerInput = await until(
+    () => document.querySelector('.main__body .composer__input'),
+    'The new chat did not render its composer'
+  )
+  await until(
+    () => document.activeElement === composerInput,
+    'A new chat left the caret outside the composer'
+  )
+  passed.push('a new chat puts the caret in the composer')
+
   return passed
 }
 
@@ -3054,7 +3067,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 62 : 57)
+  assert.equal(passed.length, process.platform === 'win32' ? 63 : 58)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

@@ -3329,6 +3329,17 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       status: { phase: 'ready', cwd: get().workspace?.path }
     })
     if (get().sideChatOpen) void get().ensureSideChatForActiveMain()
+    // A new chat is a box to type in: once the branch has rendered, put the
+    // caret in it. A dialog, a menu, the lightbox or a covering panel owns the
+    // keyboard at that moment, and a desk page had no composer to focus.
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+      setTimeout(() => {
+        if (typeof document !== 'undefined' && document.querySelector(
+          '.modal-layer, .lightbox-layer, .popover, .tool-tab-menu, .tool-panel--overlay, .tool-panel--maximized'
+        )) return
+        window.dispatchEvent(new CustomEvent('pi:focus-composer', { detail: { target: 'main' } }))
+      }, 0)
+    }
   },
 
   async ensureRuntime(sessionKey = viewKeyOf(get()), sourceAction = 'ensure') {
