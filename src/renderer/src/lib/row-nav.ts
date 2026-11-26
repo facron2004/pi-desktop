@@ -2,11 +2,11 @@
  * Where a row-list key moves the keyboard.
  *
  * Several columns in the app are "one keyboard stop per row plus the arrows":
- * the scheduled-task list, the two changed-file lists and the commit dialog's
- * recent commits keep every row reachable by Tab and add bounded Up/Down plus
- * Home/End on top, so a reading of twenty rows does not mean twenty presses of
- * Down. The rule is the same each time, and it lives here so the column that is
- * added next does not write it a fifth way.
+ * the scheduled-task list, the two changed-file lists, the commit dialog's
+ * recent commits and its detail dialog's file list keep every row reachable by
+ * Tab and add bounded Up/Down plus Home/End on top, so a reading of twenty rows
+ * does not mean twenty presses of Down. The rule is the same each time, and it
+ * lives here so the column that is added next does not write it a fifth way.
  *
  * Returns `undefined` for a key the list does not own, so a caller can leave it
  * to the row's own button behaviour. The move is bounded, never wrapping: an

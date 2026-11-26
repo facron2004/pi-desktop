@@ -14,6 +14,7 @@ import {
 import type { GitCommitDetail, GitCommitFile, GitCommitFileDiff } from '@shared/types'
 import { buildDiff } from '../lib/diff-fold'
 import { formatRelativeTime } from '../lib/format'
+import { rowIndexAfterKey } from '../lib/row-nav'
 import { useAppStore } from '../store/useAppStore'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { useT } from '../lib/i18n'
@@ -370,7 +371,28 @@ export function CommitDetailDialog({ hash, onClose }: { hash: string; onClose: (
               ) : visibleFiles.length === 0 ? (
                 <div className="commit-detail__empty">{t('No file matches')}</div>
               ) : (
-                <ul className="commit-detail__files">
+                <ul
+                  className="commit-detail__files"
+                  onKeyDown={(event) => {
+                    // The files are one keyboard column: the arrows walk them so a
+                    // review does not need one Tab per row. Moving the focus does
+                    // not expand a diff — Enter on the row still does, because the
+                    // row is its own button.
+                    if (event.altKey || event.ctrlKey || event.metaKey) return
+                    const target = event.target
+                    if (
+                      !(target instanceof HTMLElement) ||
+                      !target.matches('[data-commit-detail-row]')
+                    ) return
+                    const rows = [
+                      ...event.currentTarget.querySelectorAll<HTMLElement>('[data-commit-detail-row]')
+                    ]
+                    const next = rowIndexAfterKey(event.key, rows.indexOf(target), rows.length)
+                    if (next === undefined) return
+                    event.preventDefault()
+                    rows[next].focus()
+                  }}
+                >
                   {visibleFiles.map((file) => {
                     const isOpen = open === file.path
                     const diff = diffs[file.path]
@@ -378,6 +400,7 @@ export function CommitDetailDialog({ hash, onClose }: { hash: string; onClose: (
                       <li key={file.path} className="commit-detail__file" data-open={isOpen || undefined}>
                         <button
                           className="commit-detail__toggle"
+                          data-commit-detail-row={file.path}
                           onClick={() => void expand(file)}
                           aria-expanded={isOpen}
                         >

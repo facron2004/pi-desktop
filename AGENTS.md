@@ -1800,6 +1800,14 @@ not a pick. `tests/row-nav.test.ts` pins the wiring (including that the handler
 never calls `click()`), and `output/audit/check-commit-history-nav.mjs` walks a
 three-commit repository and prints the focused index after each key.
 
+**The commit detail's file list is the same column.** Every row expands that
+file's diff, so a review of ten files used to mean ten Tab presses.
+`data-commit-detail-row` marks each expander and Up/Down/Home/End move between
+them with the same rule; an arrow only moves the focus, because expanding a row
+reads the two sides of that file from git.
+`output/audit/check-commit-detail-nav.mjs` opens a three-file commit and prints
+the focused index with `expanded: 0`.
+
 The Review tab reads the same status through `git:fileDiff`: old side from
 `git show HEAD:path` (or `HEAD:oldPath` for a rename — `parsePorcelain` keeps the
 old path), new side from disk, then the renderer rebuilds a line diff with
