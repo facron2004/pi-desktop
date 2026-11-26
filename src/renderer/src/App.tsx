@@ -812,7 +812,27 @@ export default function App() {
       const matches = (id: ShortcutId) =>
         matchesAnyShortcut(event, id, shortcutBindings)
       const launcherToggle = launcherOpen && matches('command-palette')
-      if (document.querySelector('[aria-modal="true"]') && !launcherToggle) return
+      if (document.querySelector('[aria-modal="true"]') && !launcherToggle) {
+        // The chord that opened a layer closes it again, from anywhere inside
+        // it: a modal used to swallow every chord but the launcher's, so
+        // `Ctrl+,` could open Settings and never close it.
+        if (shortcutsOpen && matches('shortcut-list')) {
+          event.preventDefault()
+          closeShortcuts()
+          return
+        }
+        if (sessionTreeOpen && matches('session-tree')) {
+          event.preventDefault()
+          closeSessionTree()
+          return
+        }
+        if (settingsOpen && matches('open-settings')) {
+          event.preventDefault()
+          closeSettings()
+          return
+        }
+        return
+      }
       // The palette has the keyboard while it is open — only the chord that
       // closes it again stays alive.
       if (launcherOpen && !launcherToggle) return
@@ -1032,7 +1052,13 @@ export default function App() {
     toggleTerminal,
     openSideChat,
     toggleSideChat,
-    setDeskPage
+    setDeskPage,
+    shortcutsOpen,
+    sessionTreeOpen,
+    settingsOpen,
+    closeShortcuts,
+    closeSessionTree,
+    closeSettings
   ])
 
   // An extension can rename the session window through `setTitle`.

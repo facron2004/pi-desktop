@@ -218,6 +218,11 @@ test('the app-wide chord guard keeps fields and exempts the composer', () => {
   // the panel's door takes the keyboard back instead of <body>.
   assert.match(app, /requestAnimationFrame\(\(\) => panelToggleRef\.current\?\.focus\(\)\)/)
   assert.match(app, /if \(changesOpen && panelView === 'terminal'\) \{[\s\S]{0,160}?closeChanges\(\)/)
+  // A modal swallowed every chord but the launcher's, so the chord that opened
+  // Settings, the shortcut list or the session tree could not close it again.
+  assert.match(app, /shortcutsOpen && matches\('shortcut-list'\)/)
+  assert.match(app, /sessionTreeOpen && matches\('session-tree'\)/)
+  assert.match(app, /settingsOpen && matches\('open-settings'\)/)
   // `Ctrl+F` is a view change too: a find box or a rename keeps it.
   assert.match(
     thread,

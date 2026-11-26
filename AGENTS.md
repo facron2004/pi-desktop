@@ -560,6 +560,8 @@ element, because a React handler never sees a window-level synthetic key.
 `tests/ui-regressions.mjs` computes the launcher hint's rendered colours against
 its row and fails below 4.5:1.
 
+**The chord that opened a layer closes it again.** A modal used to swallow every chord but the launcher's: `Ctrl+,` could open Settings and never close it, and `Ctrl+/` and `Ctrl+Shift+T` were the same story for the shortcut list and the session tree. The modal branch now recognises the open layer's own chord (`shortcutsOpen`/`sessionTreeOpen`/`settingsOpen`) and closes it before falling through, so each layer's toggle is a real toggle from anywhere inside it; other view chords stay blocked meanwhile (`Ctrl+N` does not start a chat behind the layer). `output/audit/check-layer-chords.mjs` measures all four — launcher, shortcut list, session tree, Settings — each opens as a modal, closes on its own chord and hands focus back to the composer, while `Ctrl+N` leaves the conversation alone. `tests/shortcuts.test.ts` pins the three new branches.
+
 **Closing from the button that opened a layer hands the keyboard back.** The
 search button toggled `searchOpen` directly and reset the query, so closing from
 it unmounted a focused dialog and left focus on `<body>`: the next Tab started
