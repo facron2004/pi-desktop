@@ -477,7 +477,11 @@ export function ResourceManager({ onBack }: { onBack: () => void }) {
   const [removeTarget, setRemoveTarget] = useState<RemoveTarget | null>(null)
   const [filter, setFilter] = useState<ManageFilter>('plugin')
   const settings = useAppStore((state) => state.settings)
-  const items = useAppStore((state) => state.items)
+  // Only the tool nodes matter here, and a text delta gives `items` a new
+  // identity on every frame — this page is open while a background run
+  // streams, so subscribing to it would repaint the whole page per frame.
+  // The revision moves only when a tool does; same read as the task rail.
+  const activeToolsRevision = useAppStore((state) => state.activeToolsRevision)
 
   const load = useCallback(
     async (mode: 'initial' | 'refresh' = 'initial') => {
@@ -648,8 +652,8 @@ export function ResourceManager({ onBack }: { onBack: () => void }) {
     [packages]
   )
   const subagentTasks = useMemo(
-    () => subagentCalls(items).flatMap((call) => call.tasks),
-    [items]
+    () => subagentCalls(useAppStore.getState().items).flatMap((call) => call.tasks),
+    [activeToolsRevision]
   )
   const packageRows = filter === 'skill' ? skillPackages : pluginPackages
 
