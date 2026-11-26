@@ -1023,6 +1023,8 @@ const zhCN: Record<string, string> = {
   'Copy the path of the file': '复制文件路径',
   'Ask Pi about this file': '询问 Pi 关于此文件的问题',
   'No file matches that name.': '没有找到匹配名称的文件。',
+  'Searching files…': '正在搜索文件…',
+  'Open a project to reference its files.': '打开项目后才能引用其中的文件。',
   'Open a project folder to browse its files.': '打开项目文件夹以浏览文件。',
   'Open a project folder to see its pictures.': '打开项目文件夹以查看图片。',
   'to move': '移动',

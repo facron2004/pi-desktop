@@ -533,6 +533,9 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
   const [mention, setMention] = useState<MentionMatch | null>(null)
   const [mentionFiles, setMentionFiles] = useState<FileEntry[]>([])
   const [mentionIndex, setMentionIndex] = useState(0)
+  // The `@` search for this query is still in flight. The list says so instead
+  // of claiming no file matches before a search has even run.
+  const [mentionSearching, setMentionSearching] = useState(false)
   const [paletteIndex, setPaletteIndex] = useState(0)
   const [commandSelected, setCommandSelected] = useState(false)
   const [imageSelected, setImageSelected] = useState(false)
@@ -913,19 +916,24 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
     if (!mention || !workspace?.path || mention.query.length > MAX_SEARCH_QUERY_LENGTH) {
       setMentionFiles([])
       setMentionIndex(0)
+      setMentionSearching(false)
       return
     }
     setMentionFiles([])
     setMentionIndex(0)
+    setMentionSearching(true)
     let cancelled = false
     let requestStarted = false
     const onResult = (result: { entries: FileEntry[] }) => {
       if (cancelled) return
       setMentionFiles(result.entries)
       setMentionIndex(0)
+      setMentionSearching(false)
     }
     const onFailure = () => {
-      if (!cancelled) setMentionFiles([])
+      if (cancelled) return
+      setMentionFiles([])
+      setMentionSearching(false)
     }
     const timer = window.setTimeout(() => {
       requestStarted = true
@@ -940,6 +948,7 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
     }, 110)
     return () => {
       cancelled = true
+      setMentionSearching(false)
       window.clearTimeout(timer)
       if (isMainSurface) {
         if (requestStarted) void window.pi.fs.search('', 0, 'composer-mention').catch(() => undefined)
@@ -1589,6 +1598,8 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
             files={mentionFiles}
             root={workspace?.path}
             activeIndex={mentionIndex}
+            searching={mentionSearching}
+            noProject={!workspace?.path}
             onActiveChange={setMentionIndex}
             onSelect={insertMention}
           />

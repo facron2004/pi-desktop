@@ -2,6 +2,7 @@ import { File as FileIcon } from 'lucide-react'
 import type { FileEntry } from '@shared/types'
 import type { RefObject } from 'react'
 import { relativePath } from '../lib/path'
+import { mentionEmptyLine } from '../lib/composer-files'
 import { useT } from '../lib/i18n'
 
 /**
@@ -17,7 +18,9 @@ export function FileMention({
   activeIndex,
   onActiveChange,
   onSelect,
-  listRef
+  listRef,
+  searching = false,
+  noProject = false
 }: {
   id?: string
   files: FileEntry[]
@@ -26,6 +29,10 @@ export function FileMention({
   onActiveChange: (index: number) => void
   onSelect: (file: FileEntry) => void
   listRef: RefObject<HTMLDivElement | null>
+  /** The search for this query is still in flight. */
+  searching?: boolean
+  /** No project is open, so there is nothing to search. */
+  noProject?: boolean
 }) {
   const t = useT()
   return (
@@ -38,7 +45,7 @@ export function FileMention({
       </div>
 
       {files.length === 0 ? (
-        <div className="mention__empty">{t('No file matches that name.')}</div>
+        <div className="mention__empty">{t(mentionEmptyLine({ searching, noProject }))}</div>
       ) : (
         <div className="mention__list" ref={listRef} data-list-rows>
           {files.map((file, index) => {

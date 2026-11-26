@@ -118,3 +118,18 @@ export function extractFilePathMentions(text: string): {
     files
   }
 }
+
+/**
+ * What the `@` list says when it has no rows to show.
+ *
+ * "No file matches that name." was printed for three different situations: a
+ * search still running, a name that really matched nothing, and a chat with no
+ * project — where no search happened at all and the file name was never the
+ * problem. The line names the reason instead. The project case comes first
+ * because a projectless chat is never searching.
+ */
+export function mentionEmptyLine(state: { noProject: boolean; searching: boolean }): string {
+  if (state.noProject) return 'Open a project to reference its files.'
+  if (state.searching) return 'Searching files…'
+  return 'No file matches that name.'
+}

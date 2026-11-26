@@ -688,6 +688,15 @@ rows are not Tab stops at all — the box is the `combobox` and names the active
 row with `aria-activedescendant` — so a passed-through Shift+Tab lands on the
 control before the box instead of on a command.
 
+**An empty `@` list says why.** It has three empty states, not one: with no
+project open it says *Open a project to reference its files.*, while the search
+for the current query is in flight it says *Searching files…*, and only a
+finished search with no hit says *No file matches that name.*
+`mentionEmptyLine` in `lib/composer-files.ts` picks the line, and a projectless
+chat comes first because it is never searching. Before this a projectless chat
+was told its file name was wrong, and every keystroke flashed that line during
+the search debounce.
+
 **A queued prompt can be taken back without stopping the run.** The rows above
 the box are Pi's queue, and the first one carries two 20px controls: recall
 (`clearQueue(true)`, the prompts go back into the editor) and discard

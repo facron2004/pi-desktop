@@ -5,6 +5,7 @@ import {
   extractFilePathMentions,
   fileNameFromPath,
   makeComposerFile,
+  mentionEmptyLine,
   mergeComposerFiles
 } from '../src/renderer/src/lib/composer-files'
 import {
@@ -17,8 +18,7 @@ import {
   saveComposerDrafts
 } from '../src/renderer/src/lib/composer-drafts'
 
-test('an absolute path line becomes a file attachment, not visible text', () => {
-  const result = extractFilePathMentions(
+test('an absolute path line becomes a file attachment, not visible text', () => {  const result = extractFilePathMentions(
     '@"C:/Users/Facron/Downloads/AgentBench_Studio_%E5%BC%80%E5%8F%91%E9%9C%80%E6%B1%82.md"\n请阅读并总结'
   )
   assert.equal(result.text, '请阅读并总结')
@@ -333,4 +333,20 @@ test('saveComposerDrafts skips redundant setItem writes and drops history on quo
   const restored = loadComposerDrafts(tight)
   assert.equal(restored.drafts['draft:live']?.text, 'Save me')
   assert.equal(restored.drafts['old-history.jsonl'], undefined)
+})
+
+test('the @ list names why it has no rows instead of always blaming the name', () => {
+  // A chat with no project never searched at all; the file name was not wrong.
+  assert.equal(
+    mentionEmptyLine({ noProject: true, searching: false }),
+    'Open a project to reference its files.'
+  )
+  assert.equal(
+    mentionEmptyLine({ noProject: true, searching: true }),
+    'Open a project to reference its files.',
+    'a projectless chat is never searching'
+  )
+  // Inside a project: a request in flight must not read as "no match".
+  assert.equal(mentionEmptyLine({ noProject: false, searching: true }), 'Searching files…')
+  assert.equal(mentionEmptyLine({ noProject: false, searching: false }), 'No file matches that name.')
 })

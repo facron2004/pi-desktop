@@ -3465,6 +3465,35 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   typeIntoBox('')
   passed.push('the command palette walks with Home, End and the page keys, and Shift+Tab leaves the box')
 
+  // The `@` list did not search at all when no project is open; the old line
+  // blamed the file name anyway.
+  const workspaceBeforeMention = store.getState().workspace
+  store.setState({ workspace: undefined })
+  await pause(80)
+  // A workspace change can remount the box, so this block types into whichever
+  // input is on screen rather than the node captured above.
+  const liveComposerInput = () => document.querySelector('.composer__input')
+  const typeMention = (value) => {
+    const input = liveComposerInput()
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, value)
+    input.setSelectionRange(value.length, value.length)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  }
+  typeMention('@')
+  const mentionList = await until(() => document.querySelector('.mention'), 'The file list did not open')
+  const mentionEmpty = await until(
+    () => mentionList.querySelector('.mention__empty'),
+    'The projectless file list has no explanation'
+  )
+  check(
+    (mentionEmpty.textContent ?? '').includes('Open a project'),
+    `The projectless @ list blames the file name: ${JSON.stringify(mentionEmpty.textContent)}`
+  )
+  store.setState({ workspace: workspaceBeforeMention })
+  await pause(80)
+  typeMention('')
+  passed.push('the @ list names the missing project instead of blaming the file name')
+
   return passed
 }
 
@@ -3495,7 +3524,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 76 : 70)
+  assert.equal(passed.length, process.platform === 'win32' ? 77 : 71)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })
