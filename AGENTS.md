@@ -200,6 +200,12 @@ reason a run failed stays below its summary, including when the process is
 folded. With auto-fold enabled, opening a failed run shows its group summaries
 first. Each group can then be expanded to inspect the individual tool results.
 
+**An error can be copied.** Both the inline error row and the thread error banner
+carry a `CopyButton`; it writes the full error (`title` when the visible line is
+a friendlier summary) so the reader can paste it into a report without selecting
+a row by hand. The action is visible at rest — it does not use a tool row's
+hover reveal — and only the label is translated, never the error text itself.
+
 **A reply is copied from its own row, as Markdown.** The response actions under
 a settled answer carry one 20px copy control (`assistant__copy`), revealed on
 hover or keyboard focus like the user message's actions. It writes

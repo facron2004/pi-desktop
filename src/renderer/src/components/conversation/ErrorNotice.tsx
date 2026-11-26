@@ -1,5 +1,6 @@
 import { CircleAlert, MessagesSquare, X } from 'lucide-react'
 import { useT } from '../../lib/i18n'
+import { CopyButton } from './CopyButton'
 
 export interface ErrorNoticeProps {
   /** The error text shown to the reader. */
@@ -23,6 +24,11 @@ export function ErrorNotice({ message, title, onAskSideChat }: ErrorNoticeProps)
     <div className="notice" data-level="error" role="alert" title={title}>
       <CircleAlert size={14} className="notice__icon" aria-hidden="true" />
       <span>{message}</span>
+      <CopyButton
+        text={title ?? message}
+        label="Copy the error"
+        className="notice__copy"
+      />
       {onAskSideChat ? (
         <button
           type="button"
@@ -62,6 +68,11 @@ export function ThreadErrorBanner({ message, onDismiss, onAskSideChat }: ThreadE
         <span className="thread-error-banner__text">{t(message)}</span>
       </div>
       <div className="thread-error-banner__actions">
+        <CopyButton
+          text={message}
+          label="Copy the error"
+          className="thread-error-banner__copy"
+        />
         {onAskSideChat ? (
           <button
             type="button"

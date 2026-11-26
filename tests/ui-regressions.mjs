@@ -631,6 +631,20 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   await until(() => document.activeElement === threadRegion, 'The transcript did not take focus')
   passed.push('the transcript is a focusable scroll region')
 
+  // An error can be copied for a report without selecting the row by hand.
+  store.setState({ error: 'UI copyable error line' })
+  const errorCopy = await until(
+    () => document.querySelector('.thread-error-banner__copy'),
+    'The thread error banner has no copy action'
+  )
+  check(
+    errorCopy.getAttribute('aria-label') === 'Copy the error',
+    'The error copy action has no accessible label'
+  )
+  store.getState().dismissSessionError()
+  await until(() => !document.querySelector('.thread-error-banner'), 'The thread error banner did not clear')
+  passed.push('an error offers to be copied for a report')
+
     await store.getState().newChat()
     await store.getState().send(backgroundFixture.prompt, [])
     const liveCommand = await until(() => store.getState().items.find((item) =>
@@ -3178,7 +3192,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 67 : 62)
+  assert.equal(passed.length, process.platform === 'win32' ? 68 : 63)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

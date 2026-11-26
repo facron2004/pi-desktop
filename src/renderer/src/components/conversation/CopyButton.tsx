@@ -11,10 +11,13 @@ import { useT } from '../../lib/i18n'
  */
 export const CopyButton = memo(function CopyButton({
   text,
-  label
+  label,
+  className = 'tool__reuse-icon'
 }: {
   text: string | (() => string)
   label: string
+  /** A row with its own action styles can give the button its own class. */
+  className?: string
 }) {
   const [copied, setCopied] = useState(false)
   const showToast = useAppStore((state) => state.showToast)
@@ -22,7 +25,7 @@ export const CopyButton = memo(function CopyButton({
   if (!text) return null
   return (
     <button
-      className="tool__reuse-icon"
+      className={className}
       title={t(label)}
       aria-label={t(label)}
       onClick={() => {
