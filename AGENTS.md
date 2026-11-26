@@ -785,6 +785,14 @@ empty when it is promoted and the session speaks for itself.
 `output/audit/check-draft-restart.mjs` relaunches the real app (two launches, one
 profile) and reads the box back — `okAtStart` is true now, false before.
 
+The **side chat's** draft is the same composer under the side scope, so it is
+keyed by the side session and needs no new-chat pointer (the side panel is not
+the main view and a launch does not open it). Hiding the pane and bringing it
+back must keep the text: `tests/ui-regressions.mjs` types into the side composer,
+switches to the Files page and back, and fails if the value changes;
+`output/audit/check-side-draft.mjs` does the same through `Ctrl+Shift+L` and
+prints the key and the value after reopening.
+
 If a draft snapshot exceeds browser storage quota, drop sent-prompt history
 before removing any unsent images. If the images still exceed the quota,
 retry with still-attached images from the last saved snapshot before falling

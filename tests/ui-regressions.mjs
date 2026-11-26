@@ -2978,6 +2978,35 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     'Side chat must not be presented as read-only'
   )
   passed.push('side chat opens as its own working panel, built from the main chat')
+  // A side-chat draft belongs to the side session: hiding the pane and bringing
+  // it back must keep the text, or half a question disappears with the panel.
+  const sideDraftBox = document.querySelector('.side-chat .composer__input')
+  check(sideDraftBox, 'The side composer has no input to type into')
+  const sideDraftText = 'a side question not sent yet'
+  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(sideDraftBox, sideDraftText)
+  sideDraftBox.dispatchEvent(new Event('input', { bubbles: true }))
+  await pause(500)
+  const sideDraftKey = store.getState().sideSessionKey
+  check(
+    Boolean(sideDraftKey) && store.getState().drafts[sideDraftKey]?.text === sideDraftText,
+    'The side draft was not saved under its side session'
+  )
+  await openToolPage('files', 'Files')
+  await pause(200)
+  await openToolPage('side-chat', 'Side chat')
+  const sideBackBox = await until(
+    () => document.querySelector('.side-chat .composer__input'),
+    'The side composer did not come back with its panel'
+  )
+  await pause(300)
+  check(
+    sideBackBox.value === sideDraftText,
+    'The side draft did not come back with its panel'
+  )
+  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(sideBackBox, '')
+  sideBackBox.dispatchEvent(new Event('input', { bubbles: true }))
+  await pause(300)
+  passed.push('a side-chat draft comes back with its panel')
   await store.getState().updateSettings({ model: 'fixture/sidebar-test', provider: 'fixture' })
   store.setState({ models: [], catalogModels: [] })
   // The Swarm page: one situation line, a two-line roster, a filter, and the
@@ -3752,7 +3781,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 83 : 77)
+  assert.equal(passed.length, process.platform === 'win32' ? 84 : 78)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })
