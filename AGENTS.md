@@ -176,6 +176,17 @@ registry is `lib/tool-renderers.ts`; an unknown tool still gets a card,
 because an MCP server or a project extension is a normal outcome, not a
 reason to drop a call from the stream.
 
+**A diff shows many lines, but its line links are one keyboard column.** When
+`onOpenLine` is set — an edit tool card, and the Inspector's change preview —
+every line number is a link to the file. A Tab stop on each of them made an
+80-line edit cost 160 presses of Tab before the reader reached the next control;
+`output/audit/check-diff-tabs.mjs` measures it (160 gutters, 160 tabbable, the
+arrow keys do nothing). Only the first line of each block is in the Tab order;
+Up/Down/Home/End walk that block through `lib/row-nav.ts`, Enter or Space still
+opens the file, and the roving stop moves on the DOM node so a stream update does
+not reset the reader's place. The same audit now reads one tabbable gutter and
+`arrowMoved: true`.
+
 A row in the stream is a link, not a card, so it carries no surface of its
 own: the pointer must not paint a gray band across the column. The hover
 surface belongs to a card. The lock is

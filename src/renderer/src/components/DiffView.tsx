@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from 'react'
+import { memo, useMemo, useState, type KeyboardEvent } from 'react'
 import { ClipboardCopy, RotateCcw } from 'lucide-react'
 import {
   CONTEXT_LINES,
@@ -6,6 +6,7 @@ import {
   type DiffBlock,
   type DiffRow
 } from '../lib/diff-fold'
+import { rowIndexAfterKey } from '../lib/row-nav'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -190,6 +191,38 @@ function GapButton({
 const DIFF_INITIAL_ROWS = 400
 const DIFF_ROW_STEP = 500
 
+/**
+ * The line links of one block are a single keyboard column.
+ *
+ * A diff renders a link for every line number it shows, and a Tab stop on each
+ * of them turned one edited file into hundreds of presses before the reader
+ * reached anything after it (measured: 80 changed lines, 160 stops). Only the
+ * block's first line stays in the Tab order; Up/Down/Home/End walk the block
+ * (focus only — Enter or Space still opens the file), and the roving stop
+ * follows the keyboard so Tab out and back returns to the same line.
+ *
+ * The `tabIndex` is written on the DOM node rather than through React state: a
+ * re-render only rewrites a row whose `first` prop changed, so the reader's
+ * position survives the stream updating around them.
+ */
+function walkDiffGutters(event: KeyboardEvent<HTMLButtonElement>): void {
+  const current = event.currentTarget
+  const block = current.closest('.diff__block')
+  const handles = block ? Array.from(block.querySelectorAll<HTMLButtonElement>('[data-diff-line]')) : []
+  if (handles.length === 0) return
+  const index = handles.indexOf(current)
+  const next = rowIndexAfterKey(event.key, index, handles.length)
+  if (next === undefined) return
+  // Home and End belong to the column here, not to the transcript behind it.
+  event.preventDefault()
+  if (next === index) return
+  current.tabIndex = -1
+  const target = handles[next]
+  if (!target) return
+  target.tabIndex = 0
+  target.focus()
+}
+
 export const DiffView = memo(function DiffView({
   diffs,
   mode = 'unified',
@@ -314,15 +347,21 @@ export const DiffView = memo(function DiffView({
   }
 
   // A line number becomes a link to the file itself, so a diff can be
-  // followed into the code around it.
-  const gutter = (line: number | null | undefined) => {
+  // followed into the code around it. `stops` is the block's roving Tab stop:
+  // only the first line it renders takes it.
+  const gutter = (line: number | null | undefined, stops?: { first: boolean }) => {
     if (!onOpenLine || line === null || line === undefined) {
       return <span className="diff__gutter">{line ?? ''}</span>
     }
+    const first = stops?.first ?? false
+    if (stops) stops.first = false
     return (
       <button
         className="diff__gutter diff__gutter--link"
+        data-diff-line=""
+        tabIndex={first ? 0 : -1}
         onClick={() => onOpenLine(line)}
+        onKeyDown={walkDiffGutters}
         title={`${t('Open the file at line')} ${line}`}
         aria-label={`${t('Open the file at line')} ${line}`}
       >
@@ -457,37 +496,40 @@ export const DiffView = memo(function DiffView({
       <>
         {degradedNote}
         <div className="diff diff--split">
-          {visibleSplit.map(({ rows, blockIndex, sourceRows }) => (
-            <div className={blockClassName(blockIndex)} key={blockKey(sourceRows, blockIndex)}>
-              {hunkActions(blockIndex)}
-              {rows.map((row) =>
-                row.gap ? (
-                  <div className="diff__split" data-gap="true" key={`gap-${row.gap.key}`}>
-                    <GapButton
-                      count={row.gap.count}
-                      open={effective.has(row.gap.key)}
-                      onToggle={() => toggle(row.gap?.key ?? '')}
-                    />
-                  </div>
-                ) : (
-                  <div className="diff__split" key={`${row.left?.line}-${row.right?.line}`}>
-                    <div className="diff__side" data-kind={row.left?.kind ?? 'empty'}>
-                      {gutter(row.left?.line)}
-                      <span className="diff__code">
-                        {row.left ? (row.left.kind === 'del' ? '- ' : '  ') + row.left.text : ''}
-                      </span>
+          {visibleSplit.map(({ rows, blockIndex, sourceRows }) => {
+            const stops = { first: true }
+            return (
+              <div className={blockClassName(blockIndex)} key={blockKey(sourceRows, blockIndex)}>
+                {hunkActions(blockIndex)}
+                {rows.map((row) =>
+                  row.gap ? (
+                    <div className="diff__split" data-gap="true" key={`gap-${row.gap.key}`}>
+                      <GapButton
+                        count={row.gap.count}
+                        open={effective.has(row.gap.key)}
+                        onToggle={() => toggle(row.gap?.key ?? '')}
+                      />
                     </div>
-                    <div className="diff__side" data-kind={row.right?.kind ?? 'empty'}>
-                      {gutter(row.right?.line)}
-                      <span className="diff__code">
-                        {row.right ? (row.right.kind === 'add' ? '+ ' : '  ') + row.right.text : ''}
-                      </span>
+                  ) : (
+                    <div className="diff__split" key={`${row.left?.line}-${row.right?.line}`}>
+                      <div className="diff__side" data-kind={row.left?.kind ?? 'empty'}>
+                        {gutter(row.left?.line, stops)}
+                        <span className="diff__code">
+                          {row.left ? (row.left.kind === 'del' ? '- ' : '  ') + row.left.text : ''}
+                        </span>
+                      </div>
+                      <div className="diff__side" data-kind={row.right?.kind ?? 'empty'}>
+                        {gutter(row.right?.line, stops)}
+                        <span className="diff__code">
+                          {row.right ? (row.right.kind === 'add' ? '+ ' : '  ') + row.right.text : ''}
+                        </span>
+                      </div>
                     </div>
-                  </div>
-                )
-              )}
-            </div>
-          ))}
+                  )
+                )}
+              </div>
+            )
+          })}
           {hiddenRows > 0 ? (
             <button
               type="button"
@@ -528,35 +570,38 @@ export const DiffView = memo(function DiffView({
     <>
       {degradedNote}
       <div className="diff">
-        {visibleUnified.map(({ rows, blockIndex, sourceRows }) => (
-          <div className={blockClassName(blockIndex)} key={blockKey(sourceRows, blockIndex)}>
-            {hunkActions(blockIndex)}
-            {rows.map((row) =>
-              row.kind === 'gap' ? (
-                <div className="diff__row diff__row--gap" key={`gap-${row.key}`}>
-                  <GapButton
-                    count={row.hidden.length}
-                    open={effective.has(row.key)}
-                    onToggle={() => toggle(row.key)}
-                  />
-                </div>
-              ) : (
-                <div
-                  className="diff__row"
-                  data-kind={row.kind}
-                  key={`${row.oldLine}-${row.newLine}`}
-                >
-                  {gutter(row.oldLine)}
-                  {gutter(row.newLine)}
-                  <span className="diff__code">
-                    {row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ' '}
-                    {row.text}
-                  </span>
-                </div>
-              )
-            )}
-          </div>
-        ))}
+        {visibleUnified.map(({ rows, blockIndex, sourceRows }) => {
+          const stops = { first: true }
+          return (
+            <div className={blockClassName(blockIndex)} key={blockKey(sourceRows, blockIndex)}>
+              {hunkActions(blockIndex)}
+              {rows.map((row) =>
+                row.kind === 'gap' ? (
+                  <div className="diff__row diff__row--gap" key={`gap-${row.key}`}>
+                    <GapButton
+                      count={row.hidden.length}
+                      open={effective.has(row.key)}
+                      onToggle={() => toggle(row.key)}
+                    />
+                  </div>
+                ) : (
+                  <div
+                    className="diff__row"
+                    data-kind={row.kind}
+                    key={`${row.oldLine}-${row.newLine}`}
+                  >
+                    {gutter(row.oldLine, stops)}
+                    {gutter(row.newLine, stops)}
+                    <span className="diff__code">
+                      {row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ' '}
+                      {row.text}
+                    </span>
+                  </div>
+                )
+              )}
+            </div>
+          )
+        })}
         {hiddenRows > 0 ? (
           <button
             type="button"
