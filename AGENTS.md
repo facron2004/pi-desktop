@@ -220,6 +220,18 @@ same screens. The drawer now carries only Changes, Files and Review; everything
 else is the panel's page. `tests/diff-fold.test.ts` holds the tab union to those
 three and refuses a browser or picture pane in the Inspector.
 
+**A page that did not load says which page and why, and offers a retry.** The
+Browser pane used to print only "That page did not load": no URL, no reason,
+no control. `did-fail-load` now carries `validatedURL` and `errorDescription`
+(the `ERR_` prefix is dropped so the code reads as something to search for), the
+note lists both beside a `Try again` that reloads the view, and a rejected
+`loadURL` keeps the event's reason instead of overwriting it. A failed
+**subframe** (`isMainFrame === false`) and a superseded navigation
+(`errorCode === -3`) are not page failures and are ignored. Measured with
+`output/audit/check-browser-failure.mjs` against `http://127.0.0.1:1/`: the line
+reads `UNSAFE_PORT http://127.0.0.1:1/` and the retry fires a second failed
+load.
+
 A row in the stream is a link, not a card, so it carries no surface of its
 own: the pointer must not paint a gray band across the column. The hover
 surface belongs to a card. The lock is

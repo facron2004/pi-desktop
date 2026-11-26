@@ -42,7 +42,8 @@ export function BrowserView({ request }: { request?: BrowserRequest | null } = {
   const [canBack, setCanBack] = useState(false)
   const [canForward, setCanForward] = useState(false)
   const [loading, setLoading] = useState(false)
-  const [failed, setFailed] = useState(false)
+  // A failure carries what the reader needs to judge it: the page and the reason.
+  const [failure, setFailure] = useState<{ url: string; reason: string } | null>(null)
 
   // A link the reader opened inside the app lands here. The address box shows
   // it at once, and the view is remounted on `seq` so a repeated request for
@@ -51,7 +52,7 @@ export function BrowserView({ request }: { request?: BrowserRequest | null } = {
   useEffect(() => {
     if (!requestedUrl) return
     setAddress(requestedUrl)
-    setFailed(false)
+    setFailure(null)
   }, [requestedUrl, request?.seq])
 
   const syncNavigation = useCallback((view: WebviewElement) => {
@@ -78,7 +79,7 @@ export function BrowserView({ request }: { request?: BrowserRequest | null } = {
     }
     const onStart = () => {
       setLoading(true)
-      setFailed(false)
+      setFailure(null)
     }
     const onStop = () => {
       setLoading(false)
@@ -93,9 +94,22 @@ export function BrowserView({ request }: { request?: BrowserRequest | null } = {
       setAddress(url)
       syncNavigation(view)
     }
-    const onFail = () => {
+    const onFail = (event: Event) => {
+      const detail = event as unknown as {
+        errorCode?: number
+        errorDescription?: string
+        isMainFrame?: boolean
+        validatedURL?: string
+      }
+      // A failed subframe (an ad, an embedded player) is not the page failing,
+      // and -3 is a navigation another one replaced: neither is news.
+      if (detail.isMainFrame === false) return
+      if (detail.errorCode === -3) return
       setLoading(false)
-      setFailed(true)
+      setFailure({
+        url: detail.validatedURL || view.getURL?.() || '',
+        reason: (detail.errorDescription || '').replace(/^ERR_/, '')
+      })
     }
 
     view.addEventListener('dom-ready', onDomReady)
@@ -132,8 +146,11 @@ export function BrowserView({ request }: { request?: BrowserRequest | null } = {
     event.preventDefault()
     const url = resolve(address)
     if (!url) return
-    setFailed(false)
-    void viewRef.current?.loadURL(url).catch(() => setFailed(true))
+    setFailure(null)
+    void viewRef.current?.loadURL(url).catch(() => {
+      // The event carries Chromium's reason; keep it when it already arrived.
+      setFailure((current) => current ?? { url, reason: '' })
+    })
   }
 
   return (
@@ -199,9 +216,27 @@ export function BrowserView({ request }: { request?: BrowserRequest | null } = {
         />
       </div>
 
-      {failed ? (
+      {failure ? (
         <div className="browser-pane__note" role="status">
-          {t('That page did not load')}
+          <span className="browser-pane__note-title">{t('That page did not load')}</span>
+          {failure.reason ? (
+            <span className="browser-pane__note-reason">{failure.reason}</span>
+          ) : null}
+          {failure.url ? (
+            <span className="browser-pane__note-url" title={failure.url}>
+              {failure.url}
+            </span>
+          ) : null}
+          <button
+            type="button"
+            className="btn btn--ghost"
+            onClick={() => {
+              setFailure(null)
+              viewRef.current?.reload()
+            }}
+          >
+            {t('Try again')}
+          </button>
         </div>
       ) : null}
     </div>

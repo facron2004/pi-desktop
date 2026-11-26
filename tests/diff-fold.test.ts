@@ -137,6 +137,15 @@ test('DiffView/ReviewView gap toggling, BrowserView listener re-attach, ToolPane
 
   const browserView = read('src/renderer/src/components/BrowserView.tsx')
   assert.match(browserView, /\[syncNavigation,\s*requestSeq\]/)
+  // A failure names the page and why, and offers a retry; a failed subframe or
+  // a superseded navigation is not a page failure.
+  assert.match(browserView, /isMainFrame === false/)
+  assert.match(browserView, /errorCode === -3/)
+  assert.match(browserView, /errorDescription/)
+  assert.match(browserView, /browser-pane__note-reason/)
+  assert.match(browserView, /browser-pane__note-url/)
+  assert.match(browserView, /Try again/)
+  assert.match(browserView, /setFailure\(\(current\) => current \?\?/)
 
   const toolPanel = read('src/renderer/src/components/ToolPanel.tsx')
   assert.match(toolPanel, /if \(!maximized \|\| concealed\) return/)

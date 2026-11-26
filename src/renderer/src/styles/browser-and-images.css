@@ -76,11 +76,30 @@
 }
 
 .browser-pane__note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
   flex: 0 0 auto;
   padding: var(--sp-2) var(--sp-4);
   border-top: 1px solid var(--border-soft);
   color: var(--amber);
   font-size: var(--text-2xs);
+}
+
+/* The reason Chromium gives, without its ERR_ prefix, reads as a code the
+   reader can search for; the page it belongs to follows on the same line. */
+.browser-pane__note-reason {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
+.browser-pane__note-url {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-tertiary);
 }
 
 /* ------------------------------------------------------------------ *
