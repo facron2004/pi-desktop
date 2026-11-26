@@ -856,6 +856,7 @@ test('session export reports a saved file and a viewer failure separately from c
     'Exported conversation.html. Could not open the exported file: No associated HTML viewer'
   )
   assert.equal(useAppStore.getState().toast?.level, 'warning')
+  assert.equal(useAppStore.getState().toast?.openPath, 'C:/exports/conversation.html')
 })
 
 test('exporting Markdown writes the transcript on screen without starting Pi', async () => {
@@ -888,6 +889,7 @@ test('exporting Markdown writes the transcript on screen without starting Pi', a
   assert.match(call.markdown, /```sh\nnpm test\n```/)
   assert.equal(useAppStore.getState().toast?.text, 'Exported pi-session.md')
   assert.equal(useAppStore.getState().toast?.level, 'info')
+  assert.equal(useAppStore.getState().toast?.openPath, 'C:/exports/pi-session.md')
 })
 
 test('an empty conversation is not exported as Markdown', async () => {

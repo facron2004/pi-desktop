@@ -37,6 +37,23 @@ export function AppToast() {
       }
     : undefined
 
+  // A toast that names a file is also a way to it: the reader just exported
+  // something and may want to open it, or retry a viewer that failed.
+  const openFile = toast.openPath
+    ? () => {
+        const target = toast.openPath!
+        void window.pi.shell.openPath(target).then((failure) => {
+          if (!failure) {
+            clearToast()
+            return
+          }
+          useAppStore
+            .getState()
+            .showToast(t('Could not open the exported file: {message}').replace('{message}', () => failure), 'error')
+        })
+      }
+    : undefined
+
   return (
     <div className="app-toast-layer">
       <div className="app-toast" data-level={level} role={level === 'error' ? 'alert' : 'status'}>
@@ -50,6 +67,11 @@ export function AppToast() {
         ) : (
           <span className="app-toast__text">{t(toast.text)}</span>
         )}
+        {openFile ? (
+          <button type="button" className="app-toast__action" onClick={openFile}>
+            {t('Open')}
+          </button>
+        ) : null}
         <button
           type="button"
           className="app-toast__close"

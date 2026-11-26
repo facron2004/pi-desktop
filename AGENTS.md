@@ -676,6 +676,13 @@ a string with a path in it is no longer one — which is how `Exported {file}`
 stayed English in the Chinese interface while `Conversation deleted` did not.
 `tests/i18n.test.ts` pins the placeholder templates.
 
+**A toast that names a file carries `openPath`, and the card offers Open.** The
+Markdown export, and the HTML export whose viewer failed, put the destination on
+the toast; the action calls `shell.openPath` and closes on success. A failure
+from that retry replaces the toast with the translated "Could not open the
+exported file" line. The path comes from the save dialog, not from the reader's
+text, so the action cannot be used to launch an arbitrary string.
+
 ### The usage line under the composer
 
 `UsageBar` is one compact line **centred** under the input after a run, and it

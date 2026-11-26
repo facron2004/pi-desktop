@@ -3512,6 +3512,21 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   overflow-wrap: anywhere;
 }
 
+/* A file toast can be acted on where it is read: the export is over, and the
+   file is the next thing the reader wants. */
+.app-toast__action {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: var(--r-xs);
+  color: var(--accent);
+  font-size: var(--text-small);
+  font-weight: 600;
+}
+
+.app-toast__action:hover {
+  background: var(--bg-hover);
+}
+
 .app-toast__open {
   padding: 0;
   font: inherit;

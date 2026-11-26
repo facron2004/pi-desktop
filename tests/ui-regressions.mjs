@@ -2803,6 +2803,16 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   await until(() => !document.querySelector('.search-dialog'), 'Enter did not open the top search result')
   passed.push('the conversation search opens its top result with Enter')
 
+  // A toast that names an exported file also offers to open it.
+  store.getState().showToast('Exported notes.md', 'info', undefined, 'C:/tmp/notes.md')
+  const openAction = await until(
+    () => [...document.querySelectorAll('.app-toast__action')].find((button) => button.textContent?.trim() === 'Open'),
+    'An exported-file toast has no Open action'
+  )
+  check(openAction, 'An exported-file toast has no Open action')
+  store.getState().clearToast()
+  passed.push('a file toast offers to open what it names')
+
   // switch back so the harness screenshot stays in English for visual review.
   await store.getState().updateSettings({ language: 'zh-CN' })
   const chineseLabel = await until(() => {
@@ -2857,7 +2867,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 54 : 50)
+  assert.equal(passed.length, process.platform === 'win32' ? 55 : 51)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

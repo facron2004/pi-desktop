@@ -895,7 +895,7 @@ export interface AppStore {
   error?: string
   /** The mark of the conversation on screen; the sidebar reads the threads. */
   notice?: SessionNotice
-  toast?: { text: string; level: 'info' | 'warning' | 'error'; sessionKey?: string }
+  toast?: { text: string; level: 'info' | 'warning' | 'error'; sessionKey?: string; openPath?: string }
   /** Branch and working tree of the open project, when it is a git repo. */
   git?: GitStatus
   /** 1 while the app has asked the review panel to open its commit dialog. */
@@ -1104,7 +1104,7 @@ export interface AppStore {
   /** Pin a conversation to the top of the sidebar, or unpin it. */
   togglePin: (file: string) => Promise<void>
   dismissError: () => void
-  showToast: (message: string, level?: 'info' | 'warning' | 'error', sessionKey?: string) => void
+  showToast: (message: string, level?: 'info' | 'warning' | 'error', sessionKey?: string, openPath?: string) => void
   clearToast: () => void
   respondUi: (
     response: ExtensionUiResponse,
@@ -3050,7 +3050,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       if (openError) {
         const reason = translate('Could not open the exported file: {message}', language)
           .replace('{message}', () => openError)
-        get().showToast(`${saved}. ${reason}`, 'warning')
+        get().showToast(`${saved}. ${reason}`, 'warning', undefined, result.path)
         return
       }
       get().showToast(saved)
@@ -3079,7 +3079,10 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       const result = await window.pi.sessions.exportMarkdown(owner, markdown)
       if (result.cancelled) return
       get().showToast(
-        translate('Exported {file}', get().settings.language ?? 'en').replace('{file}', () => basename(result.path))
+        translate('Exported {file}', get().settings.language ?? 'en').replace('{file}', () => basename(result.path)),
+        'info',
+        undefined,
+        result.path
       )
     } catch (error) {
       bindSet(set, get, owner)({ error: messageOf(error) })
@@ -5683,8 +5686,15 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     get().dismissSessionError()
   },
 
-  showToast(message, level = 'info', sessionKey) {
-    set({ toast: { text: message, level, ...(sessionKey ? { sessionKey } : {}) } })
+  showToast(message, level = 'info', sessionKey, openPath) {
+    set({
+      toast: {
+        text: message,
+        level,
+        ...(sessionKey ? { sessionKey } : {}),
+        ...(openPath ? { openPath } : {})
+      }
+    })
     if (toastTimer) clearTimeout(toastTimer)
     toastTimer = setTimeout(() => set({ toast: undefined }), 3200)
   },
