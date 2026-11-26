@@ -776,18 +776,20 @@ conversations twice and fails if the box or either attachment changes. A launch
 still starts a new chat for real conversations (`bootstrap` reopens the project,
 not the conversation), so an unsent draft is expected to come back with the
 conversation it was written in.
-The promotion adds a copy for the case where Pi wrote a session file for the
-draft chat: focusing the composer starts a runtime, and that empty session never
-reaches the index. `promotedDraftSnapshot` keeps a copy under the draft key and
-points the workspace at it, so a launch can still show the text — **but only the
-text that existed at promotion time**. Measured with
-`output/audit/check-draft-restart.mjs`: when the prompt is typed before the
-session file appears, `okAtStart` is true; in the usual order (focus starts Pi
-first, then the reader types) the promotion sees an empty draft, the pointer is
-forgotten, and the text typed afterwards lives only under the unlisted session —
-`okAtStart` is false. Closing that needs a live mirror of the promoted draft
-(link the session key to its draft key and keep the copy current on every
-`updateDraft`), not another one-shot copy.
+The promotion keeps the draft reachable after a restart: `promotedDraftSnapshot`
+records a link from the new session key to the draft key and keeps the new-chat
+pointer on it (even before anything is typed), and `updateDraft` mirrors every
+later version of the promoted draft onto that key while it has content — so the
+usual order (focus starts Pi, then the reader types) is covered. The copy is
+what makes it survive `saveComposerDrafts`, which only accepts `draft:` pointers;
+the empty session never reaches the index. Clearing or sending the draft drops
+the copy, the link and the pointer together
+(`clearedPromotedDraftSnapshot`), so a restart cannot resurrect a sent message.
+`tests/composer-files.test.ts` covers promotion with an empty draft, the mirrored
+copy through the snapshot round trip, and that cleanup; the audit
+`output/audit/check-draft-restart.mjs` types *after* the promotion (the usual
+order) and reads back `okAtStart: true`, one file chip and one image, where it
+read an empty new chat before.
 
 The **side chat's** draft is the same composer under the side scope, so it is
 keyed by the side session and needs no new-chat pointer (the side panel is not

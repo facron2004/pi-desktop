@@ -37,6 +37,14 @@ export interface ComposerDraftSnapshot {
   drafts: Record<string, ComposerDraft>
   /** The new-chat identity to reopen for each project, never an old session. */
   lastDraftKeys: Record<string, string>
+  /**
+   * Live links from a promoted draft's session key to the draft key it came
+   * from. Focusing the composer starts Pi, which writes a session file for a
+   * draft chat while the reader is typing in it; the copy under the draft key is
+   * what keeps that text reachable when the empty session never reaches the
+   * index. `updateDraft` keeps the copy current through these links.
+   */
+  promotedDrafts?: Record<string, string>
 }
 
 export function composerDraftAfterSend(
@@ -191,9 +199,11 @@ export function loadComposerDrafts(storage = browserStorage()): ComposerDraftSna
     if (!raw) return EMPTY_SNAPSHOT
     const cached = snapshotCache.get(storage)
     if (cached && cached.raw === raw) {
+      const links = cached.snapshot.promotedDrafts ?? {}
       return {
         drafts: { ...cached.snapshot.drafts },
-        lastDraftKeys: { ...cached.snapshot.lastDraftKeys }
+        lastDraftKeys: { ...cached.snapshot.lastDraftKeys },
+        ...(Object.keys(links).length > 0 ? { promotedDrafts: { ...links } } : {})
       }
     }
     const parsed = record(JSON.parse(raw))
@@ -213,11 +223,23 @@ export function loadComposerDrafts(storage = browserStorage()): ComposerDraftSna
         !isSideSessionKey(entry[1])
       )
     )
-    const snapshot = { drafts, lastDraftKeys }
+    const promotedDrafts = Object.fromEntries(
+      Object.entries(record(parsed.promotedDrafts) ?? {}).filter(
+        (entry): entry is [string, string] =>
+          typeof entry[1] === 'string' &&
+          entry[1].startsWith('draft:') &&
+          !entry[1].startsWith(SIDE_DRAFT_PREFIX) &&
+          !isSideSessionKey(entry[1]) &&
+          entry[1] in drafts &&
+          !entry[0].startsWith('draft:')
+      )
+    )
+    const snapshot = { drafts, lastDraftKeys, promotedDrafts }
     snapshotCache.set(storage, { raw, snapshot })
     return {
       drafts: { ...drafts },
-      lastDraftKeys: { ...lastDraftKeys }
+      lastDraftKeys: { ...lastDraftKeys },
+      ...(Object.keys(promotedDrafts).length > 0 ? { promotedDrafts: { ...promotedDrafts } } : {})
     }
   } catch {
     return EMPTY_SNAPSHOT
@@ -249,11 +271,22 @@ export function saveComposerDrafts(
         !isSideSessionKey(entry[1])
     )
   )
+  const sanitizedPromotedDrafts = Object.fromEntries(
+    Object.entries(snapshot.promotedDrafts ?? {}).filter(
+      (entry): entry is [string, string] =>
+        typeof entry[1] === 'string' &&
+        entry[1].startsWith('draft:') &&
+        !entry[1].startsWith(SIDE_DRAFT_PREFIX) &&
+        !isSideSessionKey(entry[1]) &&
+        !entry[0].startsWith('draft:')
+    )
+  )
   const write = (nextDrafts: Record<string, ComposerDraft>): boolean => {
     const serialized = JSON.stringify({
       version: 1,
       drafts: nextDrafts,
-      lastDraftKeys: sanitizedLastDraftKeys
+      lastDraftKeys: sanitizedLastDraftKeys,
+      promotedDrafts: sanitizedPromotedDrafts
     })
     const cached = snapshotCache.get(storage)
     if (cached && cached.raw === serialized) return true
@@ -261,7 +294,11 @@ export function saveComposerDrafts(
       storage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, serialized)
       snapshotCache.set(storage, {
         raw: serialized,
-        snapshot: { drafts: nextDrafts, lastDraftKeys: { ...sanitizedLastDraftKeys } }
+        snapshot: {
+          drafts: nextDrafts,
+          lastDraftKeys: { ...sanitizedLastDraftKeys },
+          promotedDrafts: { ...sanitizedPromotedDrafts }
+        }
       })
       return true
     } catch {
@@ -352,16 +389,38 @@ export function forgetLastDraftKey(
 }
 
 /**
+ * The snapshot after the promoted draft was sent or cleared.
+ *
+ * The rescue copy exists for unsent work only: once the draft is empty the
+ * session speaks for itself, and a restart must not resurrect a message that was
+ * already sent. Drops the copy, the link and the new-chat pointer together.
+ */
+export function clearedPromotedDraftSnapshot(
+  snapshot: ComposerDraftSnapshot,
+  key: string,
+  workspaceKey: string
+): ComposerDraftSnapshot {
+  const promotedDrafts = snapshot.promotedDrafts ?? {}
+  const mirrorKey = promotedDrafts[key]
+  if (!mirrorKey) return snapshot
+  const drafts = { ...snapshot.drafts }
+  delete drafts[mirrorKey]
+  const nextLinks = { ...promotedDrafts }
+  delete nextLinks[key]
+  const lastDraftKeys = { ...snapshot.lastDraftKeys }
+  if (lastDraftKeys[workspaceKey] === mirrorKey) delete lastDraftKeys[workspaceKey]
+  return { drafts, lastDraftKeys, promotedDrafts: nextLinks }
+}
+
+/**
  * The snapshot after a draft chat was given a session file.
  *
  * Focusing the composer starts Pi, which writes a session file for the draft
- * chat and promotes the draft to that key. When nothing has been sent the text
- * is still the reader's unsent work, and the empty session never reaches the
- * session index — so a later launch has no row to open and would show an empty
- * new chat. Keep a copy under the draft key and point the workspace at it (the
- * new-chat pointer only accepts `draft:` keys, which is why the copy stays
- * under the old id). A sent draft is empty by the time it is promoted, and the
- * session speaks for itself.
+ * chat and promotes the draft to that key. The empty session never reaches the
+ * session index, so the copy under the draft key is what a launch can reopen;
+ * `updateDraft` keeps that copy current through the link recorded here. The
+ * new-chat pointer only accepts `draft:` keys, which is why the copy stays under
+ * the old id.
  */
 export function promotedDraftSnapshot(
   snapshot: ComposerDraftSnapshot,
@@ -370,9 +429,17 @@ export function promotedDraftSnapshot(
   workspaceKey: string
 ): ComposerDraftSnapshot {
   const promoted = snapshot.drafts[to]
-  if (!composerDraftHasContent(promoted)) return forgetLastDraftKey(snapshot, from)
+  const promotedDrafts = { ...(snapshot.promotedDrafts ?? {}), [to]: from }
+  const lastDraftKeys = { ...snapshot.lastDraftKeys, [workspaceKey]: from }
+  if (!composerDraftHasContent(promoted)) {
+    // Nothing has been typed yet: the link waits for the first keystroke, which
+    // mirrors it under the draft key. The pointer already names that draft, so a
+    // launch reopens it instead of a brand-new one.
+    return { drafts: snapshot.drafts, lastDraftKeys, promotedDrafts }
+  }
   return {
     drafts: { ...snapshot.drafts, [from]: promoted },
-    lastDraftKeys: { ...snapshot.lastDraftKeys, [workspaceKey]: from }
+    lastDraftKeys,
+    promotedDrafts
   }
 }

@@ -13,6 +13,7 @@ import {
 import {
   COMPOSER_DRAFTS_STORAGE_KEY,
   MAX_HISTORY_ONLY_DRAFTS,
+  clearedPromotedDraftSnapshot,
   composerDraftAfterSend,
   forgetLastDraftKey,
   loadComposerDrafts,
@@ -401,36 +402,40 @@ test('the @ list says when its search stopped at the limit', () => {
 
 /**
  * A draft chat is promoted to a session file when the composer starts Pi, and
- * that empty session never reaches the session index. Unsent text has to stay
- * reachable through the new-chat pointer, or the next launch opens an empty
- * new chat and the reader believes the prompt is gone.
+ * that empty session never reaches the session index. The copy under the draft
+ * key is what keeps the reader's unsent text reachable, and it has to follow the
+ * typing (the promotion usually happens before the first keystroke).
  */
-test('promoting an unsent draft keeps it reachable, a sent one does not', () => {
+test('a promoted draft keeps a live copy, and clearing drops it', () => {
   const storage = memoryStorage()
-  const draft = { text: 'still typing this', images: [] }
   const workspace = 'env-test'
-  const snapshot = {
-    drafts: { 'draft:old': draft, 'C:/sessions/a.jsonl': draft },
-    lastDraftKeys: { [workspace]: 'draft:old' }
-  }
-  // Unsent: a copy stays under the draft key and the pointer keeps it.
-  const kept = promotedDraftSnapshot(snapshot, 'draft:old', 'C:/sessions/a.jsonl', workspace)
-  assert.equal(kept.lastDraftKeys[workspace], 'draft:old')
-  assert.deepEqual(kept.drafts['draft:old'], draft)
-  // The pointer must survive the snapshot sanitizer, which only accepts
-  // draft: keys; without the copy it would be dropped and unreachable.
-  assert.equal(saveComposerDrafts(kept, storage), 'saved')
-  const reloaded = loadComposerDrafts(storage)
-  assert.equal(reloaded.lastDraftKeys[workspace], 'draft:old')
-  assert.equal(reloaded.drafts['draft:old']?.text, 'still typing this')
+  const session = 'C:/sessions/a.jsonl'
+  const draftKey = 'draft:old'
 
-  // Sent: the draft is empty, the session speaks for itself and the pointer
-  // goes away. The promotion has already moved the entry to the file key.
-  const sent = {
-    drafts: { 'C:/sessions/a.jsonl': { text: '', images: [] } },
-    lastDraftKeys: { [workspace]: 'draft:old' }
-  }
-  const forgotten = promotedDraftSnapshot(sent, 'draft:old', 'C:/sessions/a.jsonl', workspace)
-  assert.equal(forgotten.lastDraftKeys[workspace], undefined)
-  assert.equal(forgotten.drafts['draft:old'], undefined)
+  // Promotion with nothing typed yet still links and points: the first keystroke
+  // mirrors the text under the draft key.
+  const empty = { drafts: {}, lastDraftKeys: {}, promotedDrafts: {} }
+  const early = promotedDraftSnapshot(empty, draftKey, session, workspace)
+  assert.equal(early.lastDraftKeys[workspace], draftKey)
+  assert.equal(early.promotedDrafts?.[session], draftKey)
+  assert.equal(early.drafts[draftKey], undefined)
+
+  // Typed later: the store mirrors it. The round trip keeps the copy and the
+  // link, and the pointer survives the sanitizer, which only accepts draft: keys.
+  const typed = { text: 'typed after the promotion', images: [] }
+  const mirrored = { ...early, drafts: { [session]: typed, [draftKey]: typed } }
+  assert.equal(saveComposerDrafts(mirrored, storage), 'saved')
+  const reloaded = loadComposerDrafts(storage)
+  assert.equal(reloaded.lastDraftKeys[workspace], draftKey)
+  assert.equal(reloaded.drafts[draftKey]?.text, 'typed after the promotion')
+  assert.equal(reloaded.promotedDrafts?.[session], draftKey)
+
+  // Clearing (what accepting a send does) drops the copy, the link and the
+  // pointer together, so a restart cannot resurrect a message already sent.
+  const cleared = clearedPromotedDraftSnapshot(reloaded, session, workspace)
+  assert.equal(cleared.drafts[draftKey], undefined)
+  assert.equal(cleared.lastDraftKeys[workspace], undefined)
+  assert.equal(cleared.promotedDrafts?.[session], undefined)
+  // A key with no link is left alone.
+  assert.deepEqual(clearedPromotedDraftSnapshot(cleared, 'draft:other', workspace), cleared)
 })

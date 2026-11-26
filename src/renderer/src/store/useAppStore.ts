@@ -110,6 +110,8 @@ import {
 import { conversationStarted, nextWorktreeBranch } from '../lib/worktree-name'
 import {
   composerDraftAfterSend,
+  clearedPromotedDraftSnapshot,
+  composerDraftHasContent,
   forgetLastDraftKey,
   loadComposerDrafts,
   promotedDraftSnapshot,
@@ -630,11 +632,13 @@ function restoreCancelledPrompts(
 let draftPersistenceWarning: Exclude<DraftSaveResult, 'saved'> | undefined
 const DRAFT_SAVE_DEBOUNCE_MS = 350
 const cachedLastDraftKeysByStorage = new WeakMap<Storage, Record<string, string>>()
+const cachedPromotedDraftsByStorage = new WeakMap<Storage, Record<string, string>>()
 let draftSaveTimer: ReturnType<typeof setTimeout> | null = null
 let pendingDraftSnapshotWrite: {
   state: AppStore
   drafts: Record<string, ComposerDraft>
   lastDraftKeys: Record<string, string>
+  promotedDrafts: Record<string, string>
 } | null = null
 
 function cachedDraftStorage(): Storage | undefined {
@@ -663,12 +667,38 @@ function rememberCachedLastDraftKeys(lastDraftKeys: Record<string, string>): voi
   if (storage) cachedLastDraftKeysByStorage.set(storage, { ...lastDraftKeys })
 }
 
+function readCachedPromotedDrafts(): Record<string, string> {
+  const storage = cachedDraftStorage()
+  if (storage) {
+    const cached = cachedPromotedDraftsByStorage.get(storage)
+    if (cached) return { ...cached }
+  }
+  const saved = loadComposerDrafts()
+  const links = { ...(saved.promotedDrafts ?? {}) }
+  if (storage) cachedPromotedDraftsByStorage.set(storage, links)
+  return links
+}
+
+function rememberCachedPromotedDrafts(promotedDrafts: Record<string, string>): void {
+  const storage = cachedDraftStorage()
+  if (storage) cachedPromotedDraftsByStorage.set(storage, { ...promotedDrafts })
+}
+
 function writeDraftSnapshot(
   state: AppStore,
-  snapshot: { drafts: Record<string, ComposerDraft>; lastDraftKeys: Record<string, string> }
+  snapshot: {
+    drafts: Record<string, ComposerDraft>
+    lastDraftKeys: Record<string, string>
+    promotedDrafts?: Record<string, string>
+  }
 ): void {
   rememberCachedLastDraftKeys(snapshot.lastDraftKeys)
-  const result = saveComposerDrafts(snapshot)
+  if (snapshot.promotedDrafts) rememberCachedPromotedDrafts(snapshot.promotedDrafts)
+  const result = saveComposerDrafts({
+    drafts: snapshot.drafts,
+    lastDraftKeys: snapshot.lastDraftKeys,
+    promotedDrafts: readCachedPromotedDrafts()
+  })
   if (result === 'saved') {
     draftPersistenceWarning = undefined
     return
@@ -692,6 +722,42 @@ function writeDraftSnapshot(
   queueMicrotask(() => state.showToast(message, 'warning'))
 }
 
+/**
+ * Keep the rescued copy of a promoted draft current.
+ *
+ * A draft chat is promoted to a Pi session file as soon as the composer starts a
+ * runtime, while the reader is still typing. The empty session never reaches the
+ * index, so the copy under the draft key is what a launch can reopen; every
+ * update of the promoted draft therefore mirrors onto that key.
+ */
+function mirrorPromotedDraft(
+  key: string,
+  draft: ComposerDraft,
+  drafts: Record<string, ComposerDraft>
+): Record<string, ComposerDraft> {
+  const mirrorKey = readCachedPromotedDrafts()[key]
+  if (!mirrorKey || mirrorKey === key) return drafts
+  return { ...drafts, [mirrorKey]: draft }
+}
+
+/** Drop a promotion link once nothing is left to rescue (sent, or cleared). */
+function dropPromotedDraft(
+  state: AppStore,
+  key: string,
+  drafts: Record<string, ComposerDraft>
+): Record<string, ComposerDraft> {
+  const links = readCachedPromotedDrafts()
+  if (!links[key]) return drafts
+  const cleared = clearedPromotedDraftSnapshot(
+    { drafts, lastDraftKeys: readCachedLastDraftKeys(), promotedDrafts: links },
+    key,
+    draftWorkspaceKey(state.workspace)
+  )
+  rememberCachedPromotedDrafts(cleared.promotedDrafts ?? {})
+  rememberCachedLastDraftKeys(cleared.lastDraftKeys)
+  return cleared.drafts
+}
+
 function flushPendingDraftWrite(): void {
   if (draftSaveTimer !== null) {
     globalThis.clearTimeout(draftSaveTimer)
@@ -702,7 +768,8 @@ function flushPendingDraftWrite(): void {
   pendingDraftSnapshotWrite = null
   writeDraftSnapshot(pending.state, {
     drafts: pending.drafts,
-    lastDraftKeys: pending.lastDraftKeys
+    lastDraftKeys: pending.lastDraftKeys,
+    promotedDrafts: pending.promotedDrafts
   })
 }
 
@@ -719,7 +786,7 @@ function persistDraftSnapshot(
   rememberCachedLastDraftKeys(lastDraftKeys)
 
   if (options?.debounce) {
-    pendingDraftSnapshotWrite = { state, drafts, lastDraftKeys }
+    pendingDraftSnapshotWrite = { state, drafts, lastDraftKeys, promotedDrafts: readCachedPromotedDrafts() }
     if (draftSaveTimer !== null) globalThis.clearTimeout(draftSaveTimer)
     draftSaveTimer = globalThis.setTimeout(() => {
       draftSaveTimer = null
@@ -2105,16 +2172,19 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         (!nextDraft.history || nextDraft.history.length === 0)
       if (empty) {
         if (!(key in state.drafts)) return state
-        const drafts = { ...state.drafts }
+        const drafts = dropPromotedDraft(state, key, { ...state.drafts } as Record<string, ComposerDraft>)
         delete drafts[key]
         persistDraftSnapshot(state, drafts, undefined, { debounce: true })
         return { drafts }
       }
       const { [key]: _previous, ...rest } = state.drafts
-      const drafts = pruneComposerDrafts({
+      const pruned = pruneComposerDrafts({
         ...rest,
         [key]: nextDraft
       })
+      const drafts = composerDraftHasContent(nextDraft)
+        ? mirrorPromotedDraft(key, nextDraft, pruned)
+        : dropPromotedDraft(state, key, pruned)
       persistDraftSnapshot(state, drafts, undefined, { debounce: true })
       return { drafts }
     })
@@ -2127,7 +2197,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         flushPendingDraftWrite()
         return state
       }
-      const drafts = { ...state.drafts }
+      const drafts = dropPromotedDraft(state, key, { ...state.drafts })
       delete drafts[key]
       persistDraftSnapshot(state, drafts)
       return { drafts }
