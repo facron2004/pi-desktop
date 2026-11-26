@@ -249,6 +249,11 @@ every update; expanding a tool body must not move the reader's viewport.
 Per-conversation tool/file/process/history expansion lives in
 `lib/view-state.ts`, not in component-local state.
 
+**The left-edge turn rail is one keyboard column.** Its ticks carry
+`data-rail-marker`: Up/Down walk them and Home/End jump to the ends; each tick
+is a button, so Enter jumps to that turn. The rail is covered by the maximized
+panel, so the keys only act when a tick itself has focus.
+
 **A folded history opens in one action, one page per frame.** The history row
 carries *Up N messages* — one 20-turn page, unchanged — and *Load all*, which
 walks the fold to zero with the same `HISTORY_PAGE_TURNS` per step and waits

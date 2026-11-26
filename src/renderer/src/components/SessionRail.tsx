@@ -101,6 +101,7 @@ const SessionRailMarker = memo(function SessionRailMarker({
     <button
       type="button"
       className="session-rail__marker"
+      data-rail-marker
       data-active={active || undefined}
       aria-label={`${index + 1}: ${prompt}`}
       aria-current={active ? 'location' : undefined}
@@ -154,6 +155,28 @@ export const SessionRail = memo(
         className="session-rail"
         aria-label={t('Turns')}
         style={{ height: `min(${railHeight}px, 50%)` }}
+        onKeyDown={(event) => {
+          // The rail is one vertical keyboard column: the arrows walk its
+          // turn ticks, Home/End jump to the ends. Each tick is a button, so
+          // Enter still jumps to that turn.
+          if (event.altKey || event.ctrlKey || event.metaKey) return
+          if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+          const target = event.target
+          if (!(target instanceof HTMLElement) || !target.matches('[data-rail-marker]')) return
+          const markers = [...event.currentTarget.querySelectorAll<HTMLElement>('[data-rail-marker]')]
+          const index = markers.indexOf(target)
+          if (index < 0) return
+          event.preventDefault()
+          if (event.key === 'Home') {
+            markers[0]?.focus()
+          } else if (event.key === 'End') {
+            markers[markers.length - 1]?.focus()
+          } else if (event.key === 'ArrowDown') {
+            if (index < markers.length - 1) markers[index + 1].focus()
+          } else if (index > 0) {
+            markers[index - 1].focus()
+          }
+        }}
       >
         <div className="session-rail__track">
           <SessionRailHistory turns={turns} activeTurnId={activeTurnId} onSelect={onSelect} />
