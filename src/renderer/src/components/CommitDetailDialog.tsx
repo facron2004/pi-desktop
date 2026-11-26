@@ -351,7 +351,17 @@ export function CommitDetailDialog({ hash, onClose }: { hash: string; onClose: (
                     value={filter}
                     placeholder={t('Filter files')}
                     aria-label={t('Filter files')}
+                    data-escape-clears=""
                     onChange={(event) => setFilter(event.target.value)}
+                    onKeyDown={(event) => {
+                      // The dialog hook lets this field own Escape while it has
+                      // text; the first Escape clears the filter, the next one
+                      // closes the dialog like anywhere else.
+                      if (event.key !== 'Escape' || !filter) return
+                      event.preventDefault()
+                      event.stopPropagation()
+                      setFilter('')
+                    }}
                   />
                   {filter ? (
                     <button

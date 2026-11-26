@@ -91,3 +91,20 @@ test('the commit detail file list walks its rows without opening a diff', () => 
   // Expanding a file reads it from git; an arrow must not trigger that read.
   assert.doesNotMatch(source, /rows\[next\]\.click\(\)/, 'an arrow expands the file diff')
 })
+
+test('the commit detail filter clears before the dialog closes', () => {
+  const source = readFileSync(
+    path.resolve(process.cwd(), 'src/renderer/src/components/CommitDetailDialog.tsx'),
+    'utf8'
+  )
+  assert.match(
+    source,
+    /data-escape-clears=""/,
+    'the detail filter does not claim Escape from the dialog hook'
+  )
+  assert.match(
+    source,
+    /event\.key !== 'Escape' \|\| !filter/,
+    'the detail filter does not clear itself on Escape'
+  )
+})

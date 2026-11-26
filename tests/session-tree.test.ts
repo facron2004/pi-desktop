@@ -1,5 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import {
   normalizeTree,
   pathToLeaf,
@@ -263,4 +265,21 @@ test('the session tree walks visible rows and opens or closes branches', () => {
   })
   assert.equal(treeNavAction(rows, -1, 'ArrowDown'), null)
   assert.equal(treeNavAction(rows, rows.length, 'ArrowUp'), null)
+})
+
+/**
+ * The dialog's filter field clears before the dialog closes.
+ *
+ * `useDialogFocus` claims Escape in the capture phase, so a plain input could
+ * never clear itself: the filter's text stayed on screen only until the whole
+ * dialog vanished. A field marked `data-escape-clears` owns the key while it
+ * has text, and the tree filter clears itself on the same event.
+ */
+test('the tree filter clears on Escape before the dialog closes', () => {
+  const read = (file: string) => readFileSync(path.resolve(process.cwd(), file), 'utf8')
+  const hook = read('src/renderer/src/hooks/useDialogFocus.ts')
+  const dialog = read('src/renderer/src/components/SessionTreeDialog.tsx')
+  assert.match(hook, /data-escape-clears/, 'the dialog hook does not let a marked filter own Escape')
+  assert.match(dialog, /data-escape-clears=""/, 'the tree filter is not marked as clearing itself')
+  assert.match(dialog, /event\.key === 'Escape' && query/, 'the tree filter does not clear on Escape')
 })

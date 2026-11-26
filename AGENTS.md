@@ -2219,9 +2219,17 @@ navigation, and a miss says so. Every page keeps at least two rows, and
 `tests/settings-search.test.ts` asserts every row points at a real page and has
 a Chinese reading.
 
-Escape in a modal clears a non-empty `type="search"` field before it closes the
-dialog: `useDialogFocus` listens in the capture phase, so the hook has to step
-aside for that field or the key never reaches it. The next Escape closes.
+**Escape clears a filter before it closes the dialog.** `useDialogFocus` claims
+Escape in the capture phase, so a plain filter field could never clear itself:
+the reader lost the whole dialog to remove a few typed characters. A field
+marked `data-escape-clears` owns the key while it has text and clears on the
+same event; a `type="search"` field gets the browser's own clear. The next
+Escape closes the dialog. The settings search, the session-tree filter and the
+commit detail's file filter all work this way.
+`output/audit/check-filter-escape.mjs` opens a seven-file commit detail, types a
+filter and presses Escape twice, printing the dialog and filter state after each
+press (before this, the first press closed the dialog with the filter still in
+it).
 
 Choosing a result does not stop at opening the page. The page is lazy, so
 `SettingsDialog` polls for the row whose trimmed text is exactly the matched

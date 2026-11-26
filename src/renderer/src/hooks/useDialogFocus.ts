@@ -109,11 +109,19 @@ export function useDialogFocus<T extends HTMLElement>(
       if (event.isComposing || event.keyCode === 229 || topModalDialog() !== dialog) return
       if (event.key === 'Escape') {
         if (!closeOnEscape) return
-        // A search field clears before the dialog closes: the capture listener
-        // runs before any field handler, so without this exception the filter
-        // could never be cleared from the keyboard. The field clears itself on
-        // the same key, and the next Escape closes the dialog.
+        // A filter field clears before the dialog closes: this capture listener
+        // runs before any field handler, so without an exception the filter
+        // could never be cleared from the keyboard. A field marked
+        // `data-escape-clears` clears itself on the same key; a `type="search"`
+        // field gets the browser's own clear. The next Escape closes the dialog.
         const active = document.activeElement
+        if (active instanceof HTMLElement && active.hasAttribute('data-escape-clears')) {
+          const value =
+            active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
+              ? active.value
+              : ''
+          if (value.trim()) return
+        }
         if (
           active instanceof HTMLInputElement &&
           active.type === 'search' &&

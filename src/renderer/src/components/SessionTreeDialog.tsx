@@ -437,8 +437,18 @@ export function SessionTreeDialog({ onClose }: { onClose: () => void }) {
                   value={query}
                   placeholder={t('Filter the session tree')}
                   aria-label={t('Filter the session tree')}
+                  data-escape-clears=""
                   onChange={(event) => setQuery(event.target.value)}
                   onKeyDown={(event) => {
+                    // The dialog hook lets this field own Escape while it has
+                    // text: the first Escape clears the filter, the next one
+                    // closes the tree.
+                    if (event.key === 'Escape' && query) {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      setQuery('')
+                      return
+                    }
                     if (event.key !== 'ArrowDown' || event.altKey || event.ctrlKey || event.metaKey) return
                     const first = dialogRef.current?.querySelector<HTMLElement>('[data-tree-row-id]')
                     if (!first) return
