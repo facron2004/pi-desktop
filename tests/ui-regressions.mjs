@@ -1259,6 +1259,26 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     'Enter did not open the top search result'
   )
   check(settingsSearch.value === '', 'Enter left the query behind')
+  // At the minimum window height the page list scrolls. Its search field must
+  // keep the control height and stay at the top of the list; flex-shrink used
+  // to squeeze the field to 21px of its 28.
+  const settingsModal = document.querySelector('.settings-modal')
+  const settingsNavEl = document.querySelector('.settings-nav')
+  const searchFieldBox = () => document.querySelector('.settings-nav__search').getBoundingClientRect()
+  settingsModal.style.height = '420px'
+  const searchTopBefore = searchFieldBox().top
+  check(
+    Math.round(searchFieldBox().height) >= 27,
+    `The settings search field shrank to ${Math.round(searchFieldBox().height)}px at the minimum height`
+  )
+  settingsNavEl.scrollTop = settingsNavEl.scrollHeight
+  await pause(120)
+  check(
+    Math.abs(searchFieldBox().top - searchTopBefore) <= 1,
+    'The settings search scrolled away with the page list'
+  )
+  settingsModal.style.height = ''
+  await pause(80)
   // …and Escape still clears a filter before closing.
   settingsSearch.focus()
   setSettingsField.call(settingsSearch, 'font')

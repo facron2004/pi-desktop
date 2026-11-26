@@ -6539,6 +6539,13 @@ animation: fade var(--dur-fast) var(--ease);
   background: var(--bg-deep);
 }
 
+/* A column of controls that scrolls must not squeeze them first: at the
+   minimum window height the search field used to lose its 28px height to
+   flex-shrink, and its icon and placeholder crowded each other. */
+.settings-nav > * {
+  flex: 0 0 auto;
+}
+
 .settings-nav button {
   display: flex;
   align-items: center;
@@ -6587,6 +6594,12 @@ animation: fade var(--dur-fast) var(--ease);
   border-radius: var(--r-md);
   background: var(--surface-sunken);
   color: var(--text-faint);
+  /* The page list can be taller than the dialog at the minimum height; the
+     field is the way back to any page, so it stays at the top while they
+     scroll. */
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 
 .settings-nav__search input {

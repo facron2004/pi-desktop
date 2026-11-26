@@ -1967,6 +1967,14 @@ field opens the top result (the same action a row click runs). A row is a
 button, so Enter and Space on it are the browser's own activation — do not add
 another key handler for the row itself.
 
+At the minimum window height (880×572) the page list is taller than the dialog
+and scrolls. Its children keep their own height (`flex: 0 0 auto`): without it
+flex-shrink squeezed the 28px search field to 21px, and the icon crowded its
+placeholder. The field is also sticky at the top of that scroll — it is the way
+back to any page, so it must not scroll away with the list. Both are measured
+by resizing the modal in `tests/ui-regressions.mjs`, and
+`output/audit/check-min-window.mjs` captures the whole window at 880×572.
+
 ## Jumping to a search hit
 
 A conversation-search hit becomes a `pendingJump` in the store. The sidebar only
