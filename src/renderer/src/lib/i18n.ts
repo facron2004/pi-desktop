@@ -1187,6 +1187,7 @@ const zhCN: Record<string, string> = {
   Branching: '正在创建分支…',
   Branch: '创建分支',
   Copy: '复制',
+  'Copy this answer': '复制这条回答',
   Copied: '已复制',
   running: '运行中…',
   exit: '退出码',

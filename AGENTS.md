@@ -200,6 +200,19 @@ reason a run failed stays below its summary, including when the process is
 folded. With auto-fold enabled, opening a failed run shows its group summaries
 first. Each group can then be expanded to inspect the individual tool results.
 
+**A reply is copied from its own row, as Markdown.** The response actions under
+a settled answer carry one 20px copy control (`assistant__copy`), revealed on
+hover or keyboard focus like the user message's actions. It writes
+`replyMarkdownOf(turn)` from `lib/turns.ts`, which starts where `replyStartOf`
+starts: progress commentary before the last tool call is not part of the
+answer and is not copied. The painted text would lose its code fences, so copy
+the source text and never `textContent`. A turn that stopped before writing a
+reply copies what it did write, and an image-only reply has no copy control
+because its data is not a sentence — the picture is saved from its own card.
+The launcher's *Copy the last answer* / *Copy the whole conversation* commands
+remain the whole-conversation doors; they are not a second implementation of
+this button.
+
 **"Waiting for model response" describes an empty screen, not a slow request.**
 The live label is the only thing on screen while a turn has produced nothing, so
 `Thread` passes `showWaitStatus` only while the turn has no output at all —

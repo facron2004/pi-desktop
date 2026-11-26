@@ -703,6 +703,42 @@
   color: var(--text-tertiary);
 }
 
+/* The reply's copy control joins the response row only under the pointer. The
+   answer is already the reader's focus; a permanent button on every turn would
+   be a wall of repeated icons. A keyboard focus still reveals it. */
+.assistant__copy {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  margin-left: var(--sp-2);
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.turn:hover .assistant__copy,
+.turn:focus-within .assistant__copy,
+.assistant__copy:focus-visible {
+  opacity: 1;
+}
+
+.assistant__copy:hover,
+.assistant__copy:focus-visible {
+  color: var(--text-primary);
+}
+
+.assistant__copy:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
 /* The token count opens the turn's usage card on click; the card is the
    affordance, so the number stays a quiet part of the footer until the pointer
    gives it a grey bubble. */

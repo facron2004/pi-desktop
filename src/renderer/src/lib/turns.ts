@@ -98,6 +98,31 @@ export function replyStartOf(turn: Turn): AssistantBlock | undefined {
   return start
 }
 
+/**
+ * The Markdown of a turn's spoken reply, for its copy control.
+ *
+ * It starts where `replyStartOf` starts: text before the last tool call is
+ * process commentary, not the answer. A turn that never reached a reply (a
+ * stop mid-process) copies what it did write, because that is what the reader
+ * can see. Images are left out: their data is not a sentence, and a reader who
+ * wants the picture saves it from its own card.
+ */
+export function replyMarkdownOf(turn: Turn): string {
+  const start = replyStartOf(turn)
+  const parts: string[] = []
+  let inReply = !start
+  for (const assistant of turn.assistants) {
+    for (const block of assistant.blocks) {
+      if (block === start) inReply = true
+      if (!inReply) continue
+      if (block.type !== 'text') continue
+      const text = block.text.trim()
+      if (text) parts.push(text)
+    }
+  }
+  return parts.join('\n\n').trim()
+}
+
 interface TurnBuild {
   items: ThreadItem[]
   turns: Turn[]

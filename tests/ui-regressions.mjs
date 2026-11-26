@@ -1127,6 +1127,49 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   userActions.style.pointerEvents = ''
   passed.push('message copy and edit actions stay reachable under the bubble')
 
+  // A reply has its own copy control, and it copies the answer's Markdown —
+  // not the painted text and not the progress commentary above the tool calls.
+  const replyCopy = await until(
+    () => document.querySelector('.assistant__copy'),
+    'The reply has no copy control'
+  )
+  check(replyCopy.getAttribute('aria-label') === 'Copy this answer', 'The reply copy control has no name')
+  check(
+    !replyCopy.hasAttribute('title'),
+    'The reply copy control draws a native title bubble instead of the hover tip'
+  )
+  check(
+    Math.round(replyCopy.getBoundingClientRect().width) === 20,
+    'The reply copy control does not keep its 20px line'
+  )
+  const clipboardBefore = navigator.clipboard
+  let copiedReply = ''
+  const clipboardStub = {
+    writeText: async (text) => { copiedReply = text },
+    readText: async () => copiedReply
+  }
+  try {
+    Object.defineProperty(navigator, 'clipboard', { value: clipboardStub, configurable: true })
+  } catch {
+    navigator.clipboard.writeText = clipboardStub.writeText
+  }
+  replyCopy.click()
+  await until(() => copiedReply, 'Clicking the reply copy control wrote nothing')
+  check(
+    copiedReply === 'STREAM_FINAL the renderer is ready',
+    `The reply copy carried the wrong text: ${JSON.stringify(copiedReply)}`
+  )
+  await until(
+    () => document.querySelector('.assistant__copy')?.getAttribute('aria-label') === 'Copied',
+    'The reply copy control did not acknowledge the copy'
+  )
+  try {
+    Object.defineProperty(navigator, 'clipboard', { value: clipboardBefore, configurable: true })
+  } catch {
+    /* the browser kept its own clipboard; nothing to put back */
+  }
+  passed.push('a reply can be copied as Markdown from its own row')
+
   window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }))
   const streamSearch = await until(() => document.querySelector('.thread-search input'), 'Conversation search did not open')
   const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
@@ -2587,7 +2630,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 48 : 44)
+  assert.equal(passed.length, process.platform === 'win32' ? 49 : 45)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

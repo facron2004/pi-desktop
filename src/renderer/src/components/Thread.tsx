@@ -1,10 +1,10 @@
 import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ChevronUp, Database, Ellipsis, List, MessagesSquare, Search, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, ChevronUp, Copy, Database, Ellipsis, List, MessagesSquare, Search, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { useConversationScope, useSessionViewSlice } from '../lib/conversation-scope'
 import type { AssistantItem, ToolItem, UserItem } from '../lib/thread'
 import type { Turn } from '../lib/turns'
-import { buildTurns, changedTurnsFrom, roundMetadataForTurns, usageForTurn, userMetadataForTurns } from '../lib/turns'
+import { buildTurns, changedTurnsFrom, replyMarkdownOf, roundMetadataForTurns, usageForTurn, userMetadataForTurns } from '../lib/turns'
 import { MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
 import type { InspectorRequest, ModelInfo } from '@shared/types'
 import { collectChanges } from '../lib/changes'
@@ -1179,6 +1179,7 @@ export const Thread = memo(function Thread() {
           {visibleTurns.map((turn, index) => {
             const turnIndex = firstVisibleTurn + index
             const userId = turn.user?.id
+            const replyId = turn.assistants.at(-1)?.id
             const userOrdinal = turn.user ? visibleUserOrdinal++ : undefined
             const roundOrdinal = turn.roundBreak ? visibleRoundOrdinal++ : undefined
             const isLastTurn = turnIndex === turns.length - 1
@@ -1192,6 +1193,7 @@ export const Thread = memo(function Thread() {
                   t={t}
                   onCopy={copy}
                   userCopied={copied === userId}
+                  replyCopied={Boolean(replyId && copied === replyId)}
                   onEdit={isMainSurface && activeSessionFile ? editMessageFrom : undefined}
                   editing={forking}
                   run={run}
@@ -1306,6 +1308,8 @@ interface ThreadTurnViewProps {
   t: (text: string) => string
   onCopy: (id: string, text: string) => void
   userCopied: boolean
+  /** The reply's own copy control has just answered for this turn. */
+  replyCopied: boolean
   onEdit?: (item: UserItem) => void
   editing: boolean
   run: RunState
@@ -1386,6 +1390,7 @@ function equalThreadTurnViewProps(
     previous.t === next.t &&
     previous.onCopy === next.onCopy &&
     previous.userCopied === next.userCopied &&
+    previous.replyCopied === next.replyCopied &&
     previous.onEdit === next.onEdit &&
     previous.editing === next.editing &&
     previous.runDurationMs === next.runDurationMs
@@ -1400,6 +1405,7 @@ const ThreadTurnView = memo(function ThreadTurnView({
   t,
   onCopy,
   userCopied,
+  replyCopied,
   onEdit,
   editing,
   run,
@@ -1425,6 +1431,9 @@ const ThreadTurnView = memo(function ThreadTurnView({
     return turn.tools.filter((tool) => !referenced.has(tool.toolCallId))
   }, [turn.assistants, turn.tools])
   const lastAssistant = turn.assistants.at(-1)
+  // The copy control carries the reply's Markdown, not its painted text: a
+  // code block pasted from a rendered answer would lose its fences.
+  const replyText = useMemo(() => (lastAssistant ? replyMarkdownOf(turn) : ''), [lastAssistant, turn])
   const turnUsage = usageForTurn(turn)
   const incompleteTokenUsage = turn.assistants.some((assistant) => !assistant.usage)
   const incompleteCost = turn.assistants.some((assistant) => !assistant.usage?.cost)
@@ -1781,6 +1790,20 @@ const ThreadTurnView = memo(function ThreadTurnView({
                   ) : null}
                   <span>{formatClock(lastAssistant.timestamp)}</span>
                 </div>
+                ) : null}
+                {replyText ? (
+                  <button
+                    type="button"
+                    className="assistant__copy"
+                    onClick={() => onCopy(lastAssistant.id, replyText)}
+                    aria-label={t(replyCopied ? 'Copied' : 'Copy this answer')}
+                  >
+                    {replyCopied ? (
+                      <Check size={13} aria-hidden="true" />
+                    ) : (
+                      <Copy size={13} aria-hidden="true" />
+                    )}
+                  </button>
                 ) : null}
                 {askSideChat ? (
                   <button

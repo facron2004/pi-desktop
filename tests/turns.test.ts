@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { PiEvent } from '@shared/types'
-import { buildTurns, changedTurnsFrom, replyStartOf, roundMetadataForTurns, usageForTurn } from '../src/renderer/src/lib/turns'
+import { buildTurns, changedTurnsFrom, replyMarkdownOf, replyStartOf, roundMetadataForTurns, usageForTurn } from '../src/renderer/src/lib/turns'
 import type { RoundBreakItem } from '../src/renderer/src/lib/thread'
 import { applyEvent, changedThreadItemsFrom, type AssistantItem, type NoticeItem, type ThreadItem, type ToolItem, type UserItem } from '../src/renderer/src/lib/thread'
 
@@ -76,6 +76,48 @@ test('replyStartOf keeps all text in a reply without tool calls', () => {
   const reply = assistant('reply')
   const [turn] = buildTurns([user('u'), reply, { ...assistant('continuation'), order: 3 }])
   assert.equal(replyStartOf(turn), reply.blocks[0])
+})
+
+test('the copied reply starts after the process commentary', () => {
+  const progress: AssistantItem = {
+    ...assistant('progress'),
+    blocks: [
+      { type: 'text', text: 'I will inspect the file.' },
+      { type: 'toolCall', id: 'read', name: 'read', argsText: '{}' }
+    ]
+  }
+  const reply = {
+    ...assistant('reply'),
+    order: 4,
+    blocks: [{ type: 'text', text: 'The file contains **two** exports.' }]
+  } as AssistantItem
+  const [turn] = buildTurns([user('u'), progress, tool('read'), reply])
+  assert.equal(replyMarkdownOf(turn), 'The file contains **two** exports.')
+})
+
+test('a turn that stopped before its reply copies what it wrote', () => {
+  const progress: AssistantItem = {
+    ...assistant('progress'),
+    blocks: [
+      { type: 'text', text: 'Looking at the file.' },
+      { type: 'toolCall', id: 'read', name: 'read', argsText: '{}' }
+    ]
+  }
+  const [turn] = buildTurns([user('u'), progress, tool('read')])
+  assert.equal(replyMarkdownOf(turn), 'Looking at the file.')
+})
+
+test('a copied reply keeps its Markdown and joins paragraphs', () => {
+  const reply = {
+    ...assistant('reply'),
+    blocks: [
+      { type: 'text', text: '# Title\n\nSome `code`.' },
+      { type: 'text', text: '  Second paragraph.  ' }
+    ]
+  } as AssistantItem
+  const [turn] = buildTurns([user('u'), reply])
+  assert.equal(replyMarkdownOf(turn), '# Title\n\nSome `code`.\n\nSecond paragraph.')
+  assert.equal(replyMarkdownOf(buildTurns([user('u')])[0]), '')
 })
 
 test('replyStartOf respects text and tools interleaved in one assistant message', () => {
