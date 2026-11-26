@@ -366,6 +366,12 @@ the rename input keep their own keys, and rows without a client rect (folded
 away) are skipped. It is an addition to Tab order, not a roving tabindex: every
 row is still reachable by Tab.
 
+**Opening a conversation reveals its row.** A selection made by the search
+dialog, a shortcut or the launcher expands the project that holds it — the
+`collapsedProjects` set loses that path — and scrolls the row into view once it
+is rendered. The reveal is keyed by the active conversation, so a background
+session refresh does not move the column while the reader is somewhere else.
+
 **The search dialog is keyboard-complete.** Enter in the field opens the top
 result — projects first, then conversations, then message hits, in the order
 they are drawn — and ArrowDown moves into the results. Inside them the arrows

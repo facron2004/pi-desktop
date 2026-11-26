@@ -2916,6 +2916,51 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   )
   passed.push('the sidebar list walks with the arrow keys')
 
+  // Opening a conversation from search or a shortcut reveals its row: a folded
+  // project opens and the column follows the selection.
+  const activeBeforeReveal = store.getState().activeSessionFile ?? store.getState().draftId
+  const sessionByLowerFile = new Map(
+    store.getState().sessions.map((session) => [session.file.toLowerCase(), session])
+  )
+  const revealTarget = [...document.querySelectorAll('.project[data-expanded="true"]')]
+    .map((project) => {
+      const row = [...project.querySelectorAll('.session-item')].find((item) => {
+        const file = item.getAttribute('data-session-file')
+        const session = file ? sessionByLowerFile.get(file.toLowerCase()) : undefined
+        return Boolean(session && session.file !== activeBeforeReveal)
+      })
+      return row
+        ? {
+            project,
+            row,
+            file: row.getAttribute('data-session-file'),
+            session: sessionByLowerFile.get(row.getAttribute('data-session-file').toLowerCase())
+          }
+        : null
+    })
+    .find(Boolean)
+  check(Boolean(revealTarget), 'No expanded project listed a selectable conversation to reveal')
+  const revealPath = revealTarget.project.getAttribute('data-path')
+  const revealFile = revealTarget.file
+  revealTarget.project.querySelector('.project__main')?.click()
+  await until(
+    () => [...document.querySelectorAll('.project')]
+      .find((project) => project.getAttribute('data-path') === revealPath)
+      ?.getAttribute('data-expanded') === 'false',
+    'The project row did not fold'
+  )
+  await store.getState().selectSession(revealTarget.session)
+  const revealProject = () => [...document.querySelectorAll('.project')]
+    .find((project) => project.getAttribute('data-path') === revealPath)
+  await until(
+    () => revealProject()?.getAttribute('data-expanded') === 'true',
+    'Opening a conversation did not reveal its project'
+  )
+  const revealedRow = () => [...revealProject().querySelectorAll('.session-item')]
+    .find((item) => item.getAttribute('data-session-file') === revealFile)
+  await until(() => revealedRow()?.getClientRects().length > 0, 'The opened conversation row stayed hidden')
+  passed.push('opening a conversation reveals its row in the sidebar')
+
   // The search dialog is keyboard-complete: ArrowDown moves into the results,
   // ArrowUp returns to the field, and Enter takes the top result.
   const searchTrigger = [...document.querySelectorAll('.sidebar__head-btn')]
@@ -3009,7 +3054,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 61 : 56)
+  assert.equal(passed.length, process.platform === 'win32' ? 62 : 57)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

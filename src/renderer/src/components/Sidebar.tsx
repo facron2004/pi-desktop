@@ -586,6 +586,36 @@ export const Sidebar = memo(function Sidebar({
       ?.scrollIntoView({ block: 'nearest' })
   }, [recentIndex, recentsVisible])
 
+  // Opening a conversation from the search dialog or a shortcut must reveal
+  // its row, not just paint it: a folded project opens and the column follows
+  // the selection. The guard keeps background session refreshes from moving
+  // the list while the reader is somewhere else.
+  const revealedActive = useRef<string | null>(null)
+  useEffect(() => {
+    const key = activeSessionFile ?? draftId
+    if (!key || revealedActive.current === key) return
+    revealedActive.current = key
+    const projectPath =
+      sessions.find((session) => session.file === key)?.cwd ?? workspace?.path ?? null
+    if (projectPath) {
+      setCollapsedProjects((current) => {
+        const folded = [...current].find(
+          (path) => normalisePathKey(path) === normalisePathKey(projectPath)
+        )
+        if (!folded) return current
+        const next = new Set(current)
+        next.delete(folded)
+        return next
+      })
+    }
+    const frame = requestAnimationFrame(() => {
+      document
+        .querySelector<HTMLElement>(`.session-item[data-session-file="${CSS.escape(key)}"]`)
+        ?.scrollIntoView({ block: 'nearest' })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [activeSessionFile, draftId, sessions, workspace?.path])
+
   const focusSearch = () => {
     if (blurTimer.current) window.clearTimeout(blurTimer.current)
     setSearchFocused(true)
