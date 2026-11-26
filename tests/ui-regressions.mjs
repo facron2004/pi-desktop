@@ -2141,9 +2141,13 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     panelToggle()?.click()
   }
   await until(() => document.querySelector('.tool-start'), 'The panel start page did not render')
-  check(document.querySelectorAll('.tool-start .tool-menu__card').length === 8, 'The start page does not list every page')
+  check(document.querySelectorAll('.tool-start .tool-menu__card').length === 9, 'The start page does not list every page')
   const filesCard = [...document.querySelectorAll('.tool-start .tool-menu__card')].find((node) => node.textContent?.includes('Files'))
   check(filesCard, 'The start page has no Files entry')
+  check(
+    Boolean(document.querySelector('.tool-start .tool-menu__card[data-tool="review"]')),
+    'The start page has no Review entry, so the review page has no door'
+  )
   check(
     [...document.querySelectorAll('.tool-start .tool-menu__card')].some((node) => node.textContent?.includes('Images')),
     'The start page has no Images entry'

@@ -118,6 +118,15 @@ test('DiffView/ReviewView gap toggling, BrowserView listener re-attach, ToolPane
   )
   assert.match(reviewView, /state\.diff\.error[\s\S]{0,240}?Try again/)
 
+  // The embedded inspector hides its drawer header, so a drawer tab needs a
+  // panel view of its own or it has no door at all.
+  const toolPanelSource = read('src/renderer/src/components/ToolPanel.tsx')
+  assert.match(toolPanelSource, /view: 'review'/)
+  assert.match(toolPanelSource, /icon: GitCompare/)
+  const appSource = read('src/renderer/src/App.tsx')
+  assert.match(appSource, /panelView === 'review' \? 'review'/)
+  assert.match(appSource, /panelView === 'files' \|\| panelView === 'changes' \|\| panelView === 'review'/)
+
   const browserView = read('src/renderer/src/components/BrowserView.tsx')
   assert.match(browserView, /\[syncNavigation,\s*requestSeq\]/)
 

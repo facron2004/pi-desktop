@@ -217,8 +217,8 @@ export default function App() {
   const [sideChatMounted, setSideChatMounted] = useState(false)
   const [terminalMounted, setTerminalMounted] = useState(false)
   const [browserMounted, setBrowserMounted] = useState(false)
-  const inspectorTab: 'changes' | 'files' =
-    panelView === 'files' ? 'files' : 'changes'
+  const inspectorTab: 'changes' | 'files' | 'review' =
+    panelView === 'files' ? 'files' : panelView === 'review' ? 'review' : 'changes'
   const [inspectorFile, setInspectorFile] = useState<{ path: string; line?: number } | null>(null)
   const [subagentSelection, setSubagentSelection] = useState<SubagentSelection | null>(null)
   const [renaming, setRenaming] = useState(false)
@@ -1327,7 +1327,7 @@ export default function App() {
                 <SubagentPanel selected={subagentSelection} onSelectTask={setSubagentSelection} />
               ) : panelView === 'swarm' ? (
                 <SwarmPanel />
-              ) : panelView === 'files' || panelView === 'changes' ? (
+              ) : panelView === 'files' || panelView === 'changes' || panelView === 'review' ? (
                 <InspectorPanel
                   embedded
                   overlay={false}

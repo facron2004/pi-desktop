@@ -11,6 +11,7 @@ import {
   Bot,
   FileDiff,
   Files,
+  GitCompare,
   Globe,
   Images,
   List,
@@ -36,7 +37,7 @@ import { Popover } from './Popover'
  * The pages follow MCode's workspace panel: the header is a strip of
  * fixed-width page tabs, and `+` creates a new "start from here" tab.
  */
-export type ToolPanelView = 'side-chat' | 'files' | 'changes' | 'subagents' | 'swarm' | 'terminal' | 'browser' | 'images' | 'start'
+export type ToolPanelView = 'side-chat' | 'files' | 'changes' | 'review' | 'subagents' | 'swarm' | 'terminal' | 'browser' | 'images' | 'start'
 
 interface ToolTab {
   id: string
@@ -61,6 +62,12 @@ const TABS: {
   { view: 'browser', label: 'Browser', description: 'Browse a page without leaving the app', icon: Globe },
   { view: 'terminal', label: 'Terminal', description: 'Run commands in a real shell', icon: SquareTerminal, shortcut: 'Ctrl+`' },
   { view: 'changes', label: 'File changes', description: 'Review the files this conversation changed', icon: FileDiff },
+  {
+    view: 'review',
+    label: 'Review',
+    description: 'Review the uncommitted changes of the project',
+    icon: GitCompare
+  },
   { view: 'subagents', label: 'Subagents', description: 'Subagent tasks and their status', icon: Bot },
   { view: 'swarm', label: 'Swarm', description: 'The worker team of this conversation', icon: Network },
   { view: 'images', label: 'Images', description: 'Pictures in this project', icon: Images }
