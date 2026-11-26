@@ -64,3 +64,34 @@ test('both lists read their page step from their own rows, and the composer wire
     'both the command palette and the file list must move through the shared rule'
   )
 })
+
+/**
+ * The box is the combobox: `role="combobox"`, `aria-controls` the open list and
+ * `aria-activedescendant` names the highlighted row. The rows themselves are
+ * therefore not Tab stops, and Shift+Tab walks back out of the box instead of
+ * accepting whatever row it happened to point at.
+ */
+test('the rows are not Tab stops, and Shift+Tab leaves instead of accepting', () => {
+  const read = (file: string) => readFileSync(path.resolve(process.cwd(), file), 'utf8')
+  const composer = read('src/renderer/src/components/Composer.tsx')
+  const palette = read('src/renderer/src/components/CommandPalette.tsx')
+  const mention = read('src/renderer/src/components/FileMention.tsx')
+  for (const [name, source] of [['command palette', palette], ['file list', mention]]) {
+    assert.match(
+      source,
+      /role="option"[\s\S]{0,400}?tabIndex=\{-1\}/,
+      `a ${name} row is a Tab stop of its own`
+    )
+  }
+  assert.match(composer, /role="combobox"/, 'the input box is no longer the combobox')
+  assert.equal(
+    [...composer.matchAll(/event\.key === 'Tab' && event\.shiftKey/g)].length,
+    2,
+    'both lists must let Shift+Tab leave the box'
+  )
+  assert.equal(
+    [...composer.matchAll(/event\.key === 'Tab' \|\| \(event\.key === 'Enter' && !event\.shiftKey\)\)/g)].length,
+    2,
+    'plain Tab must still accept the highlighted row in both lists'
+  )
+})

@@ -82,6 +82,9 @@ export function CommandPalette({
                 role="option"
                 aria-selected={index === activeIndex}
                 data-active={index === activeIndex}
+                // The textarea is the combobox and names the active option with
+                // `aria-activedescendant`; the rows are not separate Tab stops.
+                tabIndex={-1}
                 onMouseEnter={() => onActiveChange(index)}
                 onClick={() => onSelect(command)}
                 title={tooltip}

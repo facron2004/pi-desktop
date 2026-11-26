@@ -55,6 +55,8 @@ export function FileMention({
                 role="option"
                 aria-selected={index === activeIndex}
                 data-active={index === activeIndex}
+                // The textarea is the combobox; these rows are not Tab stops.
+                tabIndex={-1}
                 onMouseEnter={() => onActiveChange(index)}
                 // The textarea keeps the focus, so the list does not vanish
                 // before the click lands.

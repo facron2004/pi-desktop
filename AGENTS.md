@@ -682,6 +682,12 @@ with no list, Home/End move the caret and PageUp/PageDown scroll the draft.
 `lib/list-keys.ts` decides the move, `tests/list-keys.test.ts` pins it, and
 `tests/ui-regressions.mjs` walks the real palette to its ends.
 
+Tab accepts the highlighted row; Shift+Tab leaves the box and closes the list,
+so it cannot insert a command or a file the reader was walking away from. The
+rows are not Tab stops at all — the box is the `combobox` and names the active
+row with `aria-activedescendant` — so a passed-through Shift+Tab lands on the
+control before the box instead of on a command.
+
 **A queued prompt can be taken back without stopping the run.** The rows above
 the box are Pi's queue, and the first one carries two 20px controls: recall
 (`clearQueue(true)`, the prompts go back into the editor) and discard

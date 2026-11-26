@@ -1171,6 +1171,13 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
           setMentionIndex(moved)
           return
         }
+        if (event.key === 'Tab' && event.shiftKey) {
+          // Shift+Tab leaves the box; it must not pick the highlighted file.
+          // The list closes with it so a popover is not left behind over the
+          // composer while the focus is somewhere else.
+          setMention(null)
+          return
+        }
         if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
           event.preventDefault()
           insertMention(mentionFiles[mentionIndex])
@@ -1189,6 +1196,12 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
       if (moved !== undefined) {
         event.preventDefault()
         setPaletteIndex(moved)
+        return
+      }
+      if (event.key === 'Tab' && event.shiftKey) {
+        // The same rule one list over: Shift+Tab walks back out of the box
+        // instead of inserting the command it happened to point at.
+        closePalette()
         return
       }
       if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {

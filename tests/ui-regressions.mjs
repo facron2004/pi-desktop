@@ -3384,8 +3384,16 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     () => document.querySelector('.composer__input'),
     'The composer input is missing'
   )
+  // A programmatic value leaves the caret at 0, which is not where a typing
+  // reader's caret is; the box reads the caret from the event it gets.
+  const typeIntoBox = (value) => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')
+      .set.call(paletteInput, value)
+    paletteInput.setSelectionRange(value.length, value.length)
+    paletteInput.dispatchEvent(new Event('input', { bubbles: true }))
+  }
   paletteInput.focus()
-  setInputValue(paletteInput, '/')
+  typeIntoBox('/')
   const palette = await until(() => document.querySelector('.palette'), 'The command palette did not open')
   const paletteOptions = () => [...palette.querySelectorAll('[role="option"]')]
   const activePalette = () => palette.querySelector('[role="option"][data-active="true"]')
@@ -3408,8 +3416,54 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   await until(() => activePalette() === paletteOptions().at(-1), 'ArrowUp did not wrap to the last command')
   pressInBox('Escape')
   await until(() => !document.querySelector('.palette'), 'Escape did not close the palette')
-  setInputValue(paletteInput, '')
-  passed.push('the command palette walks with Home, End and the page keys')
+
+  // The rows are not Tab stops: the box is the combobox and names the active
+  // row with `aria-activedescendant`. Shift+Tab leaves the box instead of
+  // accepting the row it happens to point at; plain Tab still accepts it.
+  // The palette only re-derives from a changed text, so the field goes empty
+  // before the slash goes back in.
+  typeIntoBox('')
+  await pause(40)
+  typeIntoBox('/')
+  const reopenedPalette = await until(
+    () => document.querySelector('.palette'),
+    'The palette did not reopen'
+  )
+  check(
+    [...reopenedPalette.querySelectorAll('[role="option"]')].every((option) => option.tabIndex === -1),
+    'A palette row is a Tab stop of its own'
+  )
+  paletteInput.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true })
+  )
+  await until(() => !document.querySelector('.palette'), 'Shift+Tab did not leave the palette')
+  check(
+    paletteInput.value === '/',
+    `Shift+Tab accepted the highlighted command instead of leaving: ${JSON.stringify(paletteInput.value)}`
+  )
+
+  // A partial name, not a whole one: a complete `/compact` is recognized on
+  // input and becomes a command chip before the palette can offer it.
+  typeIntoBox('/comp')
+  await until(() => document.querySelector('.palette'), 'The filtered palette did not open')
+  paletteInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }))
+  const commandChip = await until(
+    () => document.querySelector('.composer__command'),
+    'Tab did not accept the highlighted command'
+  )
+  check(
+    (commandChip.textContent ?? '').toLowerCase().includes('compact'),
+    'Tab accepted a different command'
+  )
+  await until(() => !document.querySelector('.palette'), 'Accepting a command left the palette open')
+  // The first Backspace selects the chip and the second removes it; the two
+  // presses are separate events, so the state between them has to commit.
+  pressInBox('Backspace')
+  await pause(60)
+  pressInBox('Backspace')
+  await until(() => !document.querySelector('.composer__command'), 'The command chip did not clear')
+  typeIntoBox('')
+  passed.push('the command palette walks with Home, End and the page keys, and Shift+Tab leaves the box')
 
   return passed
 }
