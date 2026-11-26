@@ -45,7 +45,7 @@ export function Welcome({ children }: { children?: ReactNode }) {
           <div className="thread-error-banner welcome__error" role="alert">
             <div className="thread-error-banner__content">
               <CircleAlert size={16} className="thread-error-banner__icon" />
-              <span className="thread-error-banner__text">{error}</span>
+              <span className="thread-error-banner__text">{t(error)}</span>
             </div>
             <button
               className="icon-btn thread-error-banner__dismiss"

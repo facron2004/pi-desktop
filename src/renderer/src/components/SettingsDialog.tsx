@@ -166,11 +166,11 @@ export function SettingsDialog({
         const result = await window.pi.app.checkUpdate()
         noteAppUpdateCheck(result)
       } else {
-        showToast(res.error ? `${t('Upgrade failed')}: ${res.error}` : t('Upgrade failed'), 'error')
+        showToast(res.error ? `${t('Upgrade failed')}: ${t(res.error)}` : t('Upgrade failed'), 'error')
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
-      showToast(`${t('Upgrade failed')}: ${msg}`, 'error')
+      showToast(`${t('Upgrade failed')}: ${t(msg)}`, 'error')
     } finally {
       setUpgradingCli(false)
       setPiCliProgress(null)

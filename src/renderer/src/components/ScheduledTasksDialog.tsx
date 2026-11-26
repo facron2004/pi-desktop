@@ -558,7 +558,7 @@ export function ScheduledTasksDialog() {
             </div>
 
             {error && !detailOpen ? (
-              <div className="scheduled-tasks__error"><AlertTriangle size={14} />{error}</div>
+              <div className="scheduled-tasks__error"><AlertTriangle size={14} />{t(error)}</div>
             ) : null}
 
             {workspaces.length === 0 && tasks.length === 0 ? (
@@ -788,7 +788,7 @@ export function ScheduledTasksDialog() {
                 ) : (
                   <h2 className="scheduled-detail__title">{t('New scheduled task')}</h2>
                 )}
-                {error ? <div className="scheduled-tasks__error"><AlertTriangle size={14} />{error}</div> : null}
+                {error ? <div className="scheduled-tasks__error"><AlertTriangle size={14} />{t(error)}</div> : null}
                 <form className="scheduled-detail__form" onSubmit={(event) => void save(event)}>
                   <label className="scheduled-detail__field">
                     <span>{t('Task name')}</span>

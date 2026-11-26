@@ -727,7 +727,7 @@ function ReviewFileDetail({
         ) : state.status === 'error' ? (
           <div className="review__state">{t('Could not read the changes of this file.')}</div>
         ) : state.diff.error ? (
-          <div className="review__state">{state.diff.error}</div>
+          <div className="review__state">{t(state.diff.error)}</div>
         ) : state.diff.binary ? (
           <div className="review__state">{t('Binary file changed.')}</div>
         ) : (

@@ -69,7 +69,7 @@ export function ProviderEditor({ controller }: { controller: ReturnType<typeof u
         ) : null}
         {probe ? <div className="provider-probe" data-ok={probe.ok} role="status">
           {probe.ok ? <Check size={13} /> : <Wifi size={13} />}
-          <span>{probe.ok ? `${t(probe.stage === 'inference' ? 'Model request succeeded' : 'Model endpoint reachable')} · ${probe.latencyMs} ms` : probe.error}</span>
+          <span>{probe.ok ? `${t(probe.stage === 'inference' ? 'Model request succeeded' : 'Model endpoint reachable')} · ${probe.latencyMs} ms` : t(probe.error ?? '')}</span>
         </div> : null}
       </section>
       <ModelList
@@ -87,7 +87,7 @@ export function ProviderEditor({ controller }: { controller: ReturnType<typeof u
         onRemove={removeModel}
         onPatch={patchModel}
       />
-      {error ? <div className="provider-error" role="alert">{error}</div> : null}
+      {error ? <div className="provider-error" role="alert">{t(error)}</div> : null}
       <div className="provider-editor__footer">
         <span className="field__hint">{t('Saves the provider. Only enabled models appear in the picker, and the default model is used for new conversations.')}</span>
         <button className="btn btn--primary" type="submit" disabled={disabled || !canSave}>

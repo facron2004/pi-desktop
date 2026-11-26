@@ -258,7 +258,7 @@ export function ImChannelSettings() {
                   <strong>{channel.kind === 'feishu' ? t('Feishu') : t('WeChat')}</strong>
                   <small>
                     {workspaceName(channel.binding.workspaceId)} · {sessionName(channel)} · {stateLabel(channel, t)}
-                    {channel.error ? ` · ${channel.error}` : ''}
+                    {channel.error ? ` · ${t(channel.error)}` : ''}
                   </small>
                   {testResult[channel.id] ? <small>{testResult[channel.id]}</small> : null}
                 </span>
@@ -451,7 +451,7 @@ export function ImChannelSettings() {
         </section>
       )}
 
-      {error ? <div className="remote-access-error">{error}</div> : null}
+      {error ? <div className="remote-access-error">{t(error)}</div> : null}
     </div>
   )
 }

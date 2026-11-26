@@ -570,7 +570,7 @@ export function CommitDialog({
                 </ul>
               ) : null}
 
-              {error ? <p className="commit__error">{error}</p> : null}
+              {error ? <p className="commit__error">{t(error)}</p> : null}
 
               <section
                 ref={historyRef}

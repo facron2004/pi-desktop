@@ -432,7 +432,7 @@ export function CreateResourceDialog({ onClose, onCreated, initialMode = 'github
             {error ? (
               <p className="marketplace-create__error" role="alert">
                 <AlertTriangle size={13} />
-                <span>{error}</span>
+                <span>{t(error)}</span>
               </p>
             ) : null}
           </div>

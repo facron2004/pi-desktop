@@ -972,7 +972,7 @@ export function Marketplace() {
       {error && !(status === 'error' && snapshot.entries.length === 0) ? (
         <div className="marketplace-banner" role="alert">
           <AlertTriangle size={14} />
-          <span>{truncateOutput(error, 240)}</span>
+          <span>{truncateOutput(t(error), 240)}</span>
           <button
             type="button"
             className="btn btn--sm"
@@ -993,7 +993,7 @@ export function Marketplace() {
         <div className="marketplace-empty marketplace-empty--error" role="alert">
           <ShieldAlert size={20} />
           <strong>{t('Could not load the marketplace.')}</strong>
-          <span>{truncateOutput(error, 240)}</span>
+          <span>{truncateOutput(t(error), 240)}</span>
           <button type="button" className="btn btn--sm" onClick={() => void loadPage(1, false)}>
             {t('Retry')}
           </button>

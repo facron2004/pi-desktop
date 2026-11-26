@@ -2322,6 +2322,115 @@ const zhCN: Record<string, string> = {
   'Previous match': '上一处匹配',
   'Next match': '下一处匹配',
   'Loading side chat…': '正在加载侧边对话…',
+
+  // Main-process messages a reader can meet in a toast, a banner or a form.
+  // They are English keys like every label above, because the main process
+  // sends its own sentences and the surface that shows them translates them.
+  'A conversation is working in this folder. Wait for it to finish before changing Git state.': '该文件夹里有对话正在工作，请等它结束后再修改 Git 状态。',
+  'Pi is not running for this conversation.': '这个对话的 Pi 进程没有在运行。',
+  'Pi is shutting down.': 'Pi 正在关闭。',
+  'The Pi CLI is updating. Try again when it finishes.': 'Pi CLI 正在更新，请等更新完成后再试。',
+  'Working folder is being closed.': '工作文件夹正在关闭。',
+  'Conversation is already bound to another working folder.': '该对话已绑定到另一个工作文件夹。',
+  'The working-folder queue is full. This request was not sent; wait for the active run or clear queued work.': '工作文件夹队列已满，这条请求没有发送。请等待当前运行结束，或先清空排队内容。',
+  'Pi did not load its tool approval controls. Restart the runtime to try again.': 'Pi 没有加载工具批准控件，请重启运行时后重试。',
+  'Pi did not load its task mode controls. Restart the runtime to try again.': 'Pi 没有加载工作模式控件，请重启运行时后重试。',
+  'Pi did not load its Side Chat controls. Restart the runtime to try again.': 'Pi 没有加载侧边对话控件，请重启运行时后重试。',
+  'Extension UI responses must use runtime:respondUi.': '扩展界面应答必须通过 runtime:respondUi 发送。',
+  'Pi is not running. Open a workspace to start a session.': 'Pi 没有在运行，请打开一个项目以开始会话。',
+  'The active project is not inside a Git worktree.': '当前项目不在 Git 工作树中。',
+  'npm returned an invalid Pi CLI version': 'npm 返回了无效的 Pi CLI 版本',
+  'An export to this file is already in progress.': '正在导出到这个文件，请稍候。',
+  'The export destination changed while Pi was exporting. Choose the destination again.': '导出过程中目标路径发生了变化，请重新选择导出位置。',
+  'Session switching must go through runtime:start/ensure': '会话切换必须通过 runtime:start/ensure 进行',
+  'Conversation export must go through sessions:exportHtml': '对话导出必须通过 sessions:exportHtml 进行',
+  'Unknown task mode': '未知的工作模式',
+  'No goal to pause': '没有可暂停的目标',
+  'No goal to resume': '没有可继续的目标',
+  'Stop the current run before resuming the goal': '请先停止当前运行，再继续目标',
+  'No goal to complete': '没有可完成的目标',
+  'Stop the current run before clearing the goal': '请先停止当前运行，再清除目标',
+  'No goal to edit': '没有可编辑的目标',
+  'Usage: /desktop-goal edit <text>': '用法：/desktop-goal edit <text>',
+  'Usage: /desktop-goal pause|resume|complete|clear|edit <text>': '用法：/desktop-goal pause|resume|complete|clear|edit <text>',
+  'Usage: /desktop-image <json>': '用法：/desktop-image <json>',
+  'Image request must be valid JSON': '图片请求必须是合法的 JSON',
+  'Usage: /desktop-computer on|off': '用法：/desktop-computer on|off',
+  'Usage: /desktop-rewind <entryId>': '用法：/desktop-rewind <entryId>',
+  'Wait for the current turn to finish before editing': '请等待当前回合结束后再编辑',
+  'Editing was cancelled': '已取消编辑',
+  'Could not move before this message': '无法回到这条消息之前的位置',
+  'Wait for the user to answer the question before calling other tools.': '请等待用户回答问题后再调用其他工具。',
+  'Plan Mode only allows read-only file tools, user questions, and exit_plan_mode': '计划模式只允许只读文件工具、用户提问和 exit_plan_mode',
+  'A question is required': '需要提供问题',
+  'Provide distinct nonempty options': '请提供互不相同的非空选项',
+  'exit_plan_mode is only available in Plan Mode': 'exit_plan_mode 只能在计划模式中使用',
+  'Plan text is required': '需要提供计划内容',
+  'No active goal': '当前没有进行中的目标',
+  'The goal was edited during this request. Use the current goal before reporting an outcome.': '本次请求期间目标已被编辑，请以当前目标为准再汇报结果。',
+  'Unsupported API format': '不支持的接口格式',
+  'Base URL must be an HTTP(S) API address without credentials or query parameters': 'Base URL 必须是 HTTP(S) 接口地址，且不能包含账号密码或查询参数',
+  'The provider model catalogue exceeds the 16 MB limit': '提供商的模型目录超过 16 MB 上限',
+  'The endpoint did not return a model list': '该接口没有返回模型列表',
+  'The upstream model list exceeds 10,000 entries': '上游模型列表超过 10,000 条',
+  'The upstream omitted its next-page cursor': '上游没有返回下一页游标',
+  'The upstream returned a repeated pagination cursor': '上游返回了重复的翻页游标',
+  'The upstream model list exceeds the pagination limit': '上游模型列表超过了分页上限',
+  'The endpoint did not return a Responses result': '该接口没有返回 Responses 结果',
+  'The endpoint did not return an Anthropic message': '该接口没有返回 Anthropic 消息',
+  'The endpoint did not return a Gemini candidate': '该接口没有返回 Gemini 候选结果',
+  'The endpoint did not return a chat completion': '该接口没有返回聊天补全结果',
+  'Invalid provider ID': '无效的提供商 ID',
+  'GitHub closed the connection while the marketplace was refreshing. Try again.': '刷新插件市场时 GitHub 断开了连接，请重试。',
+  'GitHub returned an unexpected response while refreshing the marketplace.': '刷新插件市场时 GitHub 返回了意外的响应。',
+  'GitHub returned an unexpected search result while refreshing the marketplace.': '刷新插件市场时 GitHub 返回了意外的搜索结果。',
+  'Invalid marketplace entry id.': '无效的插件条目 ID。',
+  'GitHub did not redirect to the latest release': 'GitHub 没有跳转到最新版本',
+  'GitHub redirected to an unexpected release host': 'GitHub 跳转到了意外的发布地址',
+  'GitHub redirected to an invalid latest release tag': 'GitHub 跳转到了无效的最新版本标签',
+  'Image generation returned an invalid response': '图片生成返回了无效响应',
+  'Image generation returned an invalid image entry': '图片生成返回了无效的图片条目',
+  'Image generation returned an empty image': '图片生成返回了空图片',
+  'Image generation returned an image that is too large': '图片生成返回的图片过大',
+  'Image output directory is required': '需要指定图片输出目录',
+  'Pi CLI maintenance is already in progress.': 'Pi CLI 维护已在进行中。',
+  'Maximum number of terminals reached': '已达到终端数量上限',
+  'The terminal view was replaced before the shell could open.': '在终端启动前视图已被替换。',
+  'Could not close a previous terminal. Try again.': '无法关闭之前的终端，请重试。',
+  'All scheduled task run slots are busy. Try again when one finishes.': '定时任务的运行槽位已全部占用，请等其中一个结束后再试。',
+  'Choose a future date and time.': '请选择将来的日期和时间。',
+  'Choose a project that is still in the sidebar.': '请选择仍在侧栏中的项目。',
+  'Choose a project.': '请选择项目。',
+  'Choose a valid date and time.': '请选择有效的日期和时间。',
+  'Choose a valid day of the week.': '请选择有效的星期。',
+  'Choose a valid local time.': '请选择有效的本地时间。',
+  'Choose a valid model.': '请选择有效的模型。',
+  'Choose a valid reasoning effort.': '请选择有效的推理强度。',
+  'Choose a valid schedule.': '请选择有效的计划。',
+  'Could not record the Pi process for this scheduled task.': '无法记录这个定时任务的 Pi 进程。',
+  'Edit this one-time task to choose a future date before enabling it.': '请先编辑这个一次性任务并选择将来的日期，再启用它。',
+  'Enter a task name.': '请输入任务名称。',
+  'Enter the prompt to run.': '请输入要运行的提示词。',
+  'Scheduled task not found.': '找不到该定时任务。',
+  'Scheduled tasks are shutting down.': '定时任务正在关闭。',
+  'Scheduled tasks exceed the storage size limit.': '定时任务数据超过存储大小上限。',
+  'The previous run result is still being saved. Try again shortly.': '上一次运行结果还在保存中，请稍后再试。',
+  'The scheduled task file exceeds the size limit.': '定时任务文件超过大小上限。',
+  'The scheduled task file is not a regular file.': '定时任务文件不是普通文件。',
+  'The selected project is no longer available.': '所选项目已不可用。',
+  'This task is already running.': '这个任务正在运行。',
+  'This task is still running or saving its result. Wait for it to finish before deleting it.': '这个任务仍在运行或正在保存结果，请等它结束后再删除。',
+  'Could not write the search index.': '无法写入搜索索引。',
+  'The chat folder cannot be a filesystem root.': '对话文件夹不能是文件系统根目录。',
+  'Could not clear the side chat.': '无法清空侧边对话。',
+  'Side chat bindings exceed maximum size.': '侧边对话绑定数据超过大小上限。',
+  'The project opens when this run is done — stop it first to switch right away': '本次运行结束后会打开该项目——要立即切换请先停止运行',
+  'A model or reasoning change is already in progress': '正在切换模型或推理强度，请稍候',
+  'There is no answer to copy yet': '还没有可复制的回答',
+  'Wait for the current turn to finish before duplicating': '请等待当前回合结束后再复制',
+  'A channel config object is required.': '需要提供通道配置。',
+  'Feishu app credentials are required.': '请填写飞书应用凭据。',
+  'The project MCP config changed while it was being updated.': '项目 MCP 配置在更新过程中发生了变化。',
 }
 
 export function translate(text: string, language: AppLanguage): string {
@@ -2406,6 +2515,37 @@ export function translate(text: string, language: AppLanguage): string {
   if (sessionChangesCount) return `本次对话改动（${sessionChangesCount[1]}）`
   const workingTreeCount = /^Working tree \((\d+)\)$/.exec(text)
   if (workingTreeCount) return `工作区未提交变更（${workingTreeCount[1]}）`
+  // Main-process messages built around a value. A key cannot hold these, so
+  // each one is a shape — the same way the readings above are handled.
+  const invalidChatFolder = /^The chat folder must be an absolute path:\s*(.+)$/.exec(text)
+  if (invalidChatFolder) return `对话文件夹必须是绝对路径：${invalidChatFolder[1]}`
+  const invalidCliPath = /^The Pi CLI path must be an absolute path:\s*(.+)$/.exec(text)
+  if (invalidCliPath) return `Pi CLI 路径必须是绝对路径：${invalidCliPath[1]}`
+  const promptTooLong = /^Task prompts must be at most (.+) characters\.$/.exec(text)
+  if (promptTooLong) return `任务提示词最多 ${promptTooLong[1]} 个字符。`
+  const tooManyTasks = /^You can create up to (.+) scheduled tasks\.$/.exec(text)
+  if (tooManyTasks) return `最多只能创建 ${tooManyTasks[1]} 个定时任务。`
+  const tooManyChannels = /^At most (.+) channels can be bound\. Remove one before adding another\.$/.exec(text)
+  if (tooManyChannels) return `最多只能绑定 ${tooManyChannels[1]} 个通道，请先移除一个再添加。`
+  const largeMarketplace = /^GitHub returned a marketplace response larger than (.+) MB\.$/.exec(text)
+  if (largeMarketplace) return `GitHub 返回的插件市场响应超过 ${largeMarketplace[1]} MB。`
+  const unknownMarketplaceEntry = /^Unknown marketplace entry:\s*(.+)$/.exec(text)
+  if (unknownMarketplaceEntry) return `未知的插件条目：${unknownMarketplaceEntry[1]}`
+  const unsupportedInstallSource = /^Marketplace entry (.+) has an unsupported install source\.$/.exec(text)
+  if (unsupportedInstallSource) return `插件条目 ${unsupportedInstallSource[1]} 使用了不支持的安装来源。`
+  const releaseCheckFailed = /^GitHub release check failed \(HTTP (\d+)\)$/.exec(text)
+  if (releaseCheckFailed) return `GitHub 版本检查失败（HTTP ${releaseCheckFailed[1]}）`
+  const unsupportedImageType = /^Unsupported image type:\s*(.+)$/.exec(text)
+  if (unsupportedImageType) return `不支持的图片类型：${unsupportedImageType[1]}`
+  const imageGenerationFailed = /^Image generation failed \(HTTP (\d+)\):\s*(.*)$/s.exec(text)
+  if (imageGenerationFailed) {
+    const detail = imageGenerationFailed[2].trim()
+    return `图片生成失败（HTTP ${imageGenerationFailed[1]}）${detail ? `：${translate(detail, language)}` : ''}`
+  }
+  const expectedCli = /^Expected Pi CLI (.+) after installation, but found (.+)\.$/.exec(text)
+  if (expectedCli) return `安装后应为 Pi CLI ${expectedCli[1]}，实际为 ${expectedCli[2]}。`
+  const couldNotLock = /^Could not lock this conversation:\s*(.+)$/.exec(text)
+  if (couldNotLock) return `无法锁定这个对话：${couldNotLock[1]}`
   return text
 }
 

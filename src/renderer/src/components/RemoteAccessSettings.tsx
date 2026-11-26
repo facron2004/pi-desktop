@@ -187,8 +187,8 @@ export function RemoteAccessSettings() {
         </>
       ) : null}
 
-      {status?.error ? <div className="remote-access-error">{status.error}</div> : null}
-      {error ? <div className="remote-access-error">{error}</div> : null}
+      {status?.error ? <div className="remote-access-error">{t(status.error)}</div> : null}
+      {error ? <div className="remote-access-error">{t(error)}</div> : null}
     </div>
   )
 }

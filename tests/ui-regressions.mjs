@@ -2498,6 +2498,13 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     () => document.querySelector('.app-toast__text')?.textContent === '没有已暂存的更改。请先暂存文件，或勾选包含未暂存更改。',
     'A main-process message stayed English in the Chinese interface'
   )
+  // A supervisor guard is the other half: it is thrown from the main process,
+  // painted by the toast, and has no literal `t()` call behind it.
+  store.getState().showToast('Pi is not running for this conversation.', 'error')
+  await until(
+    () => document.querySelector('.app-toast__text')?.textContent === '这个对话的 Pi 进程没有在运行。',
+    'A supervisor message stayed English in the Chinese interface'
+  )
   store.getState().clearToast()
   await store.getState().updateSettings({ language: 'en' })
   await until(() => document.querySelector('.btn-new-chat')?.textContent?.includes('New chat'), 'The English interface did not return')

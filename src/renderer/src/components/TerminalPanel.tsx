@@ -353,7 +353,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       {error ? (
         <div className="terminal__overlay" role="status">
           <span className="terminal__notice-title">{t('Could not start the terminal')}</span>
-          <span className="terminal__notice-text">{error}</span>
+          <span className="terminal__notice-text">{t(error)}</span>
           <button type="button" className="btn btn--sm" onClick={() => setRestartKey((v) => v + 1)}>
             {t('Restart the terminal')}
           </button>

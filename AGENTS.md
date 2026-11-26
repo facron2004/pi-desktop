@@ -1939,6 +1939,30 @@ sidebar — a conversation that is not mounted has nothing to scroll.
 - Prefer small, focused components. Keep protocol knowledge out of the React tree.
 - Comments explain *why*, not *what*.
 
+## The interface language
+
+The UI is authored in English and translated at paint time by exact lookup
+(`translate` / `useT` in `src/renderer/src/lib/i18n.ts`). **A key that is
+missing does not fail; it leaves English on a Chinese screen**, which is why
+`tests/i18n-coverage.test.ts` is a gate and not a nicety. It scans the
+renderer's literal `t('…')` calls, `showToast('<sentence>')` literals (those
+are translated where the toast paints, not at the call site), and the messages
+the main process throws from the files whose text reaches a toast, a banner or
+a form (`MAIN_DOORS` in the test). Add a key when a scan finds one missing —
+the failure names the string and its file.
+
+- A message built around a value (`Image generation failed (HTTP 502): …`,
+  `The chat folder must be an absolute path: …`) cannot be a key. Give it a
+  shape in `translate` next to the other readings, and translate the detail
+  recursively rather than pasting it English into a Chinese sentence.
+- An error surface paints `t(error)`, never the bare `error`: unknown text
+  (git, Pi, a provider) passes through unchanged, while the app's own messages
+  are translated. The form pages, the marketplace, the MCP dialog, the terminal
+  overlay and the welcome screen already do.
+- Model-facing tool protocol text (`pi/subagent.ts`, `pi/computer-use.ts`,
+  `channels/wechat.ts` replies) is not a sentence for a reader and stays out of
+  `MAIN_DOORS`; a message the renderer can meet belongs in it.
+
 ## Screenshot harness
 
 The main process can capture itself for visual checks. It only activates when the

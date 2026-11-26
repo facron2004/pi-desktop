@@ -121,3 +121,115 @@ test('every status reading the main process reports has a Chinese translation', 
   const missing = [...readings].filter((reading) => !translated.has(reading))
   assert.deepEqual(missing, [], `status readings with no Chinese translation:\n  ${missing.join('\n  ')}`)
 })
+
+/**
+ * The files whose thrown messages are shown on screen: a handler the renderer
+ * calls, a control on the composer, the settings pages, a panel. Their errors
+ * reach a toast, a banner or a form through `messageOf(error)` and are
+ * translated where they are painted, so a missing key is English text in the
+ * middle of a Chinese screen.
+ *
+ * Model-facing tool protocol messages live in `pi/computer-use.ts`,
+ * `pi/subagent.ts`, `pi/swarm.ts`'s schema paths and `channels/wechat.ts`'s
+ * HTTP replies; those are not sentences for a reader and stay out of this
+ * scan. `task-modes.ts` is here because the Goal and Plan controls call it
+ * directly.
+ */
+const MAIN_DOORS = [
+  'ipc.ts',
+  'settings.ts',
+  'sessions.ts',
+  'side-chats.ts',
+  'scheduled-tasks.ts',
+  'mcp.ts',
+  'terminal.ts',
+  'marketplace.ts',
+  'app-updates.ts',
+  'image-generation.ts',
+  'providers/network.ts',
+  'providers/ipc.ts',
+  'channels/im-channel-service.ts',
+  'pi/supervisor.ts',
+  'pi/runtime.ts',
+  'pi/task-modes.ts',
+  'pi/cli.ts'
+]
+
+function mainDoorMessages(): Map<string, string> {
+  const messages = new Map<string, string>()
+  const record = (raw: string, file: string): void => {
+    const key = raw.replace(/\\(['"\\])/g, '$1')
+    // A bare token is a guard, not a sentence a reader meets.
+    if (!key.includes(' ')) return
+    if (!messages.has(key)) messages.set(key, file)
+  }
+  for (const rel of MAIN_DOORS) {
+    const source = readFileSync(path.join(mainProcess, rel), 'utf8')
+    for (const match of source.matchAll(/\bthrow new Error\(\s*'((?:\\.|[^'\\])+)'/g)) record(match[1], rel)
+    // Scheduled runs report their failure through `finish(...)`.
+    for (const match of source.matchAll(/\bfinish\([^,]+,\s*'error',\s*'((?:\\.|[^'\\])+)'/g)) record(match[1], rel)
+    // Channel validation answers with a result object instead of throwing.
+    for (const match of source.matchAll(/\breturn\s+\{\s*ok:\s*false\s*,\s*error:\s*'((?:\\.|[^'\\])+)'\s*\}/g)) {
+      record(match[1], rel)
+    }
+  }
+  return messages
+}
+
+test('a message the main process can put on screen has a Chinese reading', () => {
+  const messages = mainDoorMessages()
+  assert.ok(messages.size >= 60, `the scan found ${messages.size} messages; it is looking at the wrong tree`)
+  const translated = translationKeys()
+  const missing = [...messages].filter(([message]) => !translated.has(message))
+  assert.deepEqual(
+    missing,
+    [],
+    `main-process messages with no Chinese translation:\n${missing
+      .map(([message, file]) => `  ${JSON.stringify(message)} (${file})`)
+      .join('\n')}`
+  )
+})
+
+/** A message a main process builds around a value cannot be a key. */
+test('a main-process message with a value keeps its reading', () => {
+  assert.equal(
+    translate('The chat folder must be an absolute path: C:\\work', 'zh-CN'),
+    '对话文件夹必须是绝对路径：C:\\work'
+  )
+  assert.equal(
+    translate('You can create up to 200 scheduled tasks.', 'zh-CN'),
+    '最多只能创建 200 个定时任务。'
+  )
+  assert.equal(
+    translate('Image generation failed (HTTP 502): upstream is down', 'zh-CN'),
+    '图片生成失败（HTTP 502）：upstream is down'
+  )
+  // The wording this project does not own still passes through untouched.
+  assert.equal(translate('fatal: not a git repository', 'zh-CN'), 'fatal: not a git repository')
+})
+
+test('a toast built from a literal cannot stay English', () => {
+  // `showToast` is the one door that translates at paint time rather than at
+  // the call site, so the literal-`t()` scan above cannot see these. A tone
+  // passes first in the marketplace's own helper; that argument is not a
+  // message.
+  const TONES = new Set(['success', 'error', 'warning', 'info'])
+  const toasts = new Map<string, string>()
+  for (const file of sourceFiles(renderer)) {
+    for (const match of readFileSync(file, 'utf8').matchAll(/\bshowToast\(\s*'((?:\\.|[^'\\])+)'/g)) {
+      const key = match[1].replace(/\\(['"\\])/g, '$1')
+      if (TONES.has(key)) continue
+      if (!toasts.has(key)) toasts.set(key, path.relative(renderer, file))
+    }
+  }
+  assert.ok(toasts.size >= 20, `the scan found ${toasts.size} toast messages; it is looking at the wrong tree`)
+  const translated = translationKeys()
+  const missing = [...toasts].filter(([message]) => !translated.has(message))
+  assert.deepEqual(
+    missing,
+    [],
+    `toast messages with no Chinese translation:\n${missing
+      .map(([message, file]) => `  ${JSON.stringify(message)} (${file})`)
+      .join('\n')}`
+  )
+})

@@ -60,7 +60,7 @@ export function ModelsSettings() {
           </article>
         })}
       </div>
-      {controller.error ? <div className="provider-error" role="alert">{controller.error}</div> : null}
+      {controller.error ? <div className="provider-error" role="alert">{t(controller.error)}</div> : null}
       {pendingRemove ? (
         <ConfirmDialog
           title={t('Delete this provider?')}

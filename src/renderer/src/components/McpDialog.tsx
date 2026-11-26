@@ -118,7 +118,7 @@ export function McpDialog({ onClose }: { onClose: () => void }) {
               {config.errors.map((error) => (
                 <p className="mcp__error" key={error}>
                   <AlertTriangle size={12} />
-                  {error}
+                  {t(error)}
                 </p>
               ))}
 

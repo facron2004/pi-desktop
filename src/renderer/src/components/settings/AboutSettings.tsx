@@ -88,7 +88,7 @@ export function AboutSettings({
           </div>
           {piCliError ? (
             <div className="settings-about-error" role="status" title={piCliError}>
-              {t('Update check failed')}: {piCliError}
+              {t('Update check failed')}: {t(piCliError)}
             </div>
           ) : null}
           {upgradingCli && piCliProgress ? (
