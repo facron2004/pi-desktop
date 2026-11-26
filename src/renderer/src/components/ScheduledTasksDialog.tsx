@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
   AlertTriangle,
   Clock,
@@ -193,6 +193,7 @@ export function ScheduledTasksDialog() {
   const [detailTab, setDetailTab] = useState<DetailTab>('rule')
   const [draft, setDraft] = useState<TaskForm | null>(null)
   const [draftBase, setDraftBase] = useState('')
+  const titleRef = useRef<HTMLInputElement>(null)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('active')
   const [search, setSearch] = useState('')
   const [saving, setSaving] = useState(false)
@@ -306,6 +307,9 @@ export function ScheduledTasksDialog() {
     setDraftBase(formKey(base))
     setConfirmingDelete(false)
     setError('')
+    // The pane mounts after this state commits; the next keystroke belongs in
+    // the name field, not on the button that opened the form.
+    requestAnimationFrame(() => titleRef.current?.focus())
   }
 
   const closeDetail = () => {
@@ -825,6 +829,7 @@ export function ScheduledTasksDialog() {
                   <label className="scheduled-detail__field">
                     <span>{t('Task name')}</span>
                     <input
+                      ref={titleRef}
                       className="input"
                       value={draft.title}
                       maxLength={120}

@@ -585,6 +585,10 @@ Up/Down walk them and Home/End jump to the ends, and moving focus selects the
 row so the detail pane follows, exactly as a click does. Each row is still a
 button, so Enter and Space keep their native activation.
 
+**The New task form starts at its name.** `openNewTask` focuses the title input
+on the next frame, after the detail pane mounts, so the next keystrokes name the
+task instead of activating the button that opened the form again.
+
 **A running task must be stoppable from that pane.** The run owns a Pi process
 under a draft session key, and the pane disables pause, more and delete while it
 goes — so without a stop action a hung run (a prompt response that timed out

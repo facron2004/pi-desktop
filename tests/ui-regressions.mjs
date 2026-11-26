@@ -3128,6 +3128,20 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     () => document.querySelectorAll('.scheduled-task').length === 2,
     'The scheduled page did not list both tasks'
   )
+  // The New task form starts at its name field, not on the button that opened it.
+  document.querySelector('.scheduled-tasks__new')?.click()
+  const taskTitleInput = await until(
+    () => document.querySelector('.scheduled-detail__field input'),
+    'The new task form did not open'
+  )
+  await until(
+    () => document.activeElement === taskTitleInput,
+    'The new task form did not focus its name field'
+  )
+  passed.push('a new scheduled task starts at its name')
+  ;[...document.querySelectorAll('.scheduled-detail__icon')]
+    .find((button) => button.getAttribute('aria-label') === 'Close details')?.click()
+  await until(() => !document.querySelector('.scheduled-detail'), 'The new task form did not close')
   const scheduledRows = [...document.querySelectorAll('.scheduled-task')]
   scheduledRows[0].focus()
   scheduledRows[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
@@ -3192,7 +3206,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 68 : 63)
+  assert.equal(passed.length, process.platform === 'win32' ? 69 : 64)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })
