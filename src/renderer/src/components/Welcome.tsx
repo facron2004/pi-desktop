@@ -20,6 +20,7 @@ export function Welcome({ children }: { children?: ReactNode }) {
   const cwdWait = useAppStore((state) => state.cwdWait)
   const error = useAppStore((state) => state.error)
   const dismissError = useAppStore((state) => state.dismissError)
+  const bootstrap = useAppStore((state) => state.bootstrap)
   const t = useT()
   const greeting = workspace
     ? t('What would you like to do in {project} today?')
@@ -47,14 +48,19 @@ export function Welcome({ children }: { children?: ReactNode }) {
               <CircleAlert size={16} className="thread-error-banner__icon" />
               <span className="thread-error-banner__text">{t(error)}</span>
             </div>
-            <button
-              className="icon-btn thread-error-banner__dismiss"
-              onClick={dismissError}
-              aria-label={t('Dismiss')}
-              title={t('Dismiss')}
-            >
-              <X size={14} />
-            </button>
+            <div className="thread-error-banner__actions">
+              <button type="button" className="btn btn--sm" onClick={() => void bootstrap()}>
+                {t('Try again')}
+              </button>
+              <button
+                className="icon-btn thread-error-banner__dismiss"
+                onClick={dismissError}
+                aria-label={t('Dismiss')}
+                title={t('Dismiss')}
+              >
+                <X size={14} />
+              </button>
+            </div>
           </div>
         ) : null}
 

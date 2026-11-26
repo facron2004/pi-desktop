@@ -2039,19 +2039,28 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   // the popover layer so its tooltip can cross into it. The maximized panel owns
   // the whole work area, so the rail must be covered by it instead of printing
   // its ticks over the panel's edge.
-  const railItemsBefore = store.getState().items
-  const seededRailItems = [
-    ...railItemsBefore,
-    { id: 'ui-rail-second-user', kind: 'user', text: 'A second turn', images: [], timestamp: 10, order: 10 },
+  // The rail's turns are seeded on a fresh draft: switching away first drains
+  // any pending paint from the fixture conversation, so nothing can replace the
+  // seeded items while the rail checks run.
+  await store.getState().newChat()
+  const seededRailItems = Array.from({ length: 3 }, (_, index) => [
     {
-      id: 'ui-rail-second-assistant',
+      id: `ui-rail-user-${index}`,
+      kind: 'user',
+      text: `Seeded turn ${index + 1}`,
+      images: [],
+      timestamp: 10 + index * 2,
+      order: 10 + index * 2
+    },
+    {
+      id: `ui-rail-assistant-${index}`,
       kind: 'assistant',
-      blocks: [{ type: 'text', text: 'A second answer' }],
+      blocks: [{ type: 'text', text: `Seeded answer ${index + 1}` }],
       streaming: false,
-      timestamp: 11,
-      order: 11
+      timestamp: 11 + index * 2,
+      order: 11 + index * 2
     }
-  ]
+  ]).flat()
   // A late paint from the fixture can replace `items`; seed until the rail is
   // on screen rather than assert against a frame that has already been rebuilt.
   await until(() => {
@@ -2139,7 +2148,6 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   railMarkers[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
   await until(() => document.activeElement === railMarkers[0], 'ArrowUp did not move back to the previous rail tick')
   passed.push('the session rail walks with the arrow keys')
-  store.setState({ items: railItemsBefore })
   passed.push('the maximized panel keeps its own escape routes on top of it')
   passed.push('the workspace panel uses MCode page tabs, start page, maximize and the file split view')
 
@@ -3262,6 +3270,21 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   store.setState(sidebarState)
   passed.push('the first-run project list offers the door')
 
+  // A failed startup must not leave only Dismiss.
+  await store.getState().newChat()
+  store.setState({ error: 'UI bootstrap retry line' })
+  const welcomeRetry = await until(
+    () => document.querySelector('.welcome__error .btn'),
+    'The welcome error lost its retry action'
+  )
+  check(
+    welcomeRetry.textContent?.includes('Try again'),
+    'The welcome retry action has no label'
+  )
+  store.getState().dismissError()
+  await until(() => !document.querySelector('.welcome__error'), 'The welcome error did not dismiss')
+  passed.push('a failed startup offers to be tried again')
+
   return passed
 }
 
@@ -3292,7 +3315,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 72 : 67)
+  assert.equal(passed.length, process.platform === 'win32' ? 73 : 68)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

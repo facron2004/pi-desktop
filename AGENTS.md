@@ -206,6 +206,12 @@ a friendlier summary) so the reader can paste it into a report without selecting
 a row by hand. The action is visible at rest — it does not use a tool row's
 hover reveal — and only the label is translated, never the error text itself.
 
+**A failed startup offers Try again.** The welcome screen's error banner carries
+a `Try again` button beside Dismiss; it calls `bootstrap()` again. A retry clears
+the old error before the new attempt, and the startup's existing
+`unsubscribeRuntime` cleanup runs before the new runtime listeners are installed,
+so a half-built start cannot stack a second set of subscriptions.
+
 **A reply is copied from its own row, as Markdown.** The response actions under
 a settled answer carry one 20px copy control (`assistant__copy`), revealed on
 hover or keyboard focus like the user message's actions. It writes

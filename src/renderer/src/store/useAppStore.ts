@@ -2306,6 +2306,11 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
   bootstrap() {
     if (bootstrapPromise) return bootstrapPromise
     const work = (async () => {
+      // The failure being retried should not stay on screen while the new
+      // attempt runs. The subscription cleanup below runs before the new
+      // listeners are installed, so a half-built start cannot stack a second
+      // set either.
+      set({ error: undefined })
       const startupTheme = new URLSearchParams(window.location.search).get('piDesktopTheme')
       const startupForcedTheme =
         startupTheme === 'light' || startupTheme === 'dark' ? startupTheme : undefined
