@@ -1324,7 +1324,9 @@ export const Sidebar = memo(function Sidebar({
             aria-label={t('Search projects and conversations')}
             title={t('Search projects and conversations')}
             aria-expanded={searchOpen}
-            aria-controls="conversation-search-dialog"
+            // The dialog is mounted only while it is open; a reference to an
+            // absent id is a dangling ARIA relation, so it goes with the dialog.
+            aria-controls={searchOpen ? 'conversation-search-dialog' : undefined}
             onClick={() => {
               setSearchOpen((open) => !open)
               setQuery('')

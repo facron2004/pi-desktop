@@ -278,6 +278,81 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   check(!document.getElementById('root').hasAttribute('aria-hidden'), 'The interface stayed hidden from assistive technology')
   passed.push('the startup screen reveals the interactive interface after bootstrap')
 
+  // A surface a screen reader can describe: every control carries a name, every
+  // field a label, and every ARIA reference resolves. A dangling `aria-controls`
+  // is what the sidebar search button had while its dialog was closed.
+  const a11yProbe = () => {
+    const visible = (el) => {
+      const rect = el.getBoundingClientRect()
+      if (rect.width < 1 || rect.height < 1) return false
+      const style = getComputedStyle(el)
+      return style.visibility !== 'hidden' && style.display !== 'none' && Number(style.opacity) > 0.05
+    }
+    const nameOf = (el) => [
+      el.getAttribute('aria-label'),
+      el.getAttribute('aria-labelledby'),
+      el.getAttribute('title'),
+      el.textContent
+    ].filter((value) => typeof value === 'string' && value.trim().length > 0).join(' ')
+    const labelOf = (el) => {
+      const id = el.getAttribute('id')
+      const explicit = id ? document.querySelector('label[for="' + CSS.escape(id) + '"]') : null
+      if (explicit && explicit.textContent.trim()) return true
+      const wrapping = el.closest('label')
+      if (wrapping && wrapping.textContent.trim()) return true
+      return Boolean(el.getAttribute('aria-label') || el.getAttribute('aria-labelledby'))
+    }
+    const unnamed = [...document.querySelectorAll('button, [role="button"], a[href]')]
+      .filter((el) => visible(el) && !nameOf(el).trim())
+      .map((el) => el.className || el.tagName)
+    const unlabeled = [...document.querySelectorAll('input, textarea, select')]
+      .filter((el) => visible(el) && el.type !== 'hidden' && !labelOf(el))
+      .map((el) => el.className || el.tagName)
+    const broken = []
+    for (const attr of ['aria-labelledby', 'aria-describedby', 'aria-controls', 'aria-activedescendant']) {
+      for (const el of document.querySelectorAll('[' + attr + ']')) {
+        for (const id of (el.getAttribute(attr) || '').split(/\s+/).filter(Boolean)) {
+          if (!document.getElementById(id)) broken.push(attr + '=' + id)
+        }
+      }
+    }
+    const counts = new Map()
+    for (const el of document.querySelectorAll('[id]')) {
+      const id = el.getAttribute('id')
+      counts.set(id, (counts.get(id) ?? 0) + 1)
+    }
+    const duplicateIds = [...counts.entries()].filter(([, count]) => count > 1).map(([id]) => id)
+    return { unnamed, unlabeled, broken, duplicateIds }
+  }
+  const mainA11y = a11yProbe()
+  check(mainA11y.unnamed.length === 0, `Controls with no accessible name: ${mainA11y.unnamed.join(', ')}`)
+  check(mainA11y.unlabeled.length === 0, `Fields with no label: ${mainA11y.unlabeled.join(', ')}`)
+  check(mainA11y.broken.length === 0, `Dangling ARIA references: ${mainA11y.broken.join(', ')}`)
+  check(mainA11y.duplicateIds.length === 0, `Duplicate ids: ${mainA11y.duplicateIds.join(', ')}`)
+  const searchToggle = document.querySelector('.sidebar__head-btn')
+  check(searchToggle, 'The sidebar has no search button to probe')
+  check(
+    !searchToggle.hasAttribute('aria-controls'),
+    'The closed search dialog is still referenced by the search button'
+  )
+  searchToggle.click()
+  const searchDialog = await until(
+    () => document.getElementById('conversation-search-dialog'),
+    'The conversation search dialog did not open'
+  )
+  check(
+    searchToggle.getAttribute('aria-controls') === 'conversation-search-dialog',
+    'The open search dialog is not referenced by its button'
+  )
+  check(searchDialog.getAttribute('role') === 'dialog', 'The conversation search surface is not a dialog')
+  searchToggle.click()
+  await pause(200)
+  check(
+    !document.getElementById('conversation-search-dialog'),
+    'The conversation search dialog did not close'
+  )
+  passed.push('every control is named and every ARIA reference resolves')
+
   // The OS font registry can point at nothing even when the emoji file exists;
   // the bridge hands the renderer the bytes and App registers a real FontFace.
   await until(
@@ -3853,7 +3928,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 84 : 78)
+  assert.equal(passed.length, process.platform === 'win32' ? 85 : 79)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

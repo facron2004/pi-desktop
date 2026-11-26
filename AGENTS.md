@@ -494,6 +494,18 @@ because a match hidden inside it is the one thing a search must not do.
 
 ### The name in the sidebar head
 
+**The search button names its dialog only while the dialog exists.** The
+conversation search surface is mounted only while it is open, so the button
+carries `aria-controls={searchOpen ? 'conversation-search-dialog' : undefined}`
+— a reference to an absent id is a dangling ARIA relation that a screen reader
+reports (and an accessibility audit flags). `GoalBar` and `MessageItem` already
+use the same conditional pattern for their disclosures. The main surface is
+probed for that whole class of defect: controls with no accessible name, fields
+with no label, dangling `aria-*` id references and duplicate ids, plus the search
+dialog's reference in both states (`tests/ui-regressions.mjs`, and the same probe
+over the main surface, the palette and Settings in
+`output/audit/check-a11y.mjs`, which reads zero on all three).
+
 The app's name is a **drawing, not text**. `PiWordmark`
 (`components/PiWordmark.tsx`) fills "Pi Desktop" one pixel at a time on a
 5-column cell, so it reads like a terminal (TUI) font: no pixel font ships with
