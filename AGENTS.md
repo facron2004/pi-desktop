@@ -799,6 +799,18 @@ switches to the Files page and back, and fails if the value changes;
 `output/audit/check-side-draft.mjs` does the same through `Ctrl+Shift+L` and
 prints the key and the value after reopening.
 
+**A side draft is not kept across a restart yet.** Measured with
+`output/audit/check-side-draft-restart.mjs` (a fixture main conversation, two
+launches): the side composer is keyed `draft:side:<uuid>`, and the main process
+mints and remembers that key in memory only — it reaches disk once the side
+runtime writes a real side session, which opening or focusing the box does not
+do. After a relaunch the same main conversation gets a brand-new side draft key,
+the box is empty, and the text sits in localStorage under the old key. Closing
+that needs the pending side binding persisted in `side-chats.json` (under the
+parent conversation) and reused by `resolve`, with Clear minting a fresh key; it
+is not a renderer-only change, which is why the main composer's link/mirror
+trick does not cover this one.
+
 If a draft snapshot exceeds browser storage quota, drop sent-prompt history
 before removing any unsent images. If the images still exceed the quota,
 retry with still-attached images from the last saved snapshot before falling
