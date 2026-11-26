@@ -3693,6 +3693,29 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   const draftBox = await openDraftBox(draftTargets[0])
   setDraft(draftBox, draftText)
   await pause(250)
+  // Attachments belong to the draft too: a chip and a picture have to come back
+  // with the text, or a draft silently loses half of what was attached.
+  const draftKeyNow = store.getState().draftId ?? store.getState().activeSessionFile
+  store.getState().updateDraft(draftKeyNow, (draft) => ({
+    ...draft,
+    files: [{ id: 'draft-file', path: 'C:/workspace/draft-file.md', name: 'draft-file.md' }],
+    images: [{
+      id: 'draft-image',
+      type: 'image',
+      name: 'draft.png',
+      bytes: 3,
+      data: 'YWJj',
+      mimeType: 'image/png'
+    }]
+  }))
+  await until(
+    () => document.querySelector('.composer__file-name')?.textContent === 'draft-file.md',
+    'The draft file chip did not render'
+  )
+  check(
+    document.querySelectorAll('.composer__attachment').length === 1,
+    'The draft image did not render'
+  )
   await openDraftBox(draftTargets[1])
   await pause(250)
   check(
@@ -3707,7 +3730,16 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     },
     'The draft did not come back with its conversation'
   )
+  await until(
+    () => document.querySelector('.composer__file-name')?.textContent === 'draft-file.md',
+    'The draft file chip did not come back with its conversation'
+  )
+  check(
+    document.querySelectorAll('.composer__attachment').length === 1,
+    'The draft image did not come back with its conversation'
+  )
   setDraft(restoredDraftBox, '')
+  store.getState().updateDraft(draftKeyNow, { files: [], images: [] })
   await pause(250)
   passed.push('a draft belongs to its conversation and comes back with it')
 

@@ -770,20 +770,24 @@ them in the flow of every row, where they would repeat for each prompt.
 
 **A draft belongs to its conversation, and only to it.** The composer's text and
 attachments are saved per conversation key, so switching away and back brings
-them back; `tests/ui-regressions.mjs` types a draft, switches conversations
-twice and fails if the box changes. A launch still starts a new chat for real
-conversations (`bootstrap` reopens the project, not the conversation), but an
-**unsent** draft that Pi gave a session file to stays reachable: focusing the
-composer starts a runtime, Pi writes a session for the draft chat, and the
-promotion keeps a copy under the draft key while pointing the workspace at that
-draft again (`promotedDraftSnapshot` in `lib/composer-drafts.ts`). The copy is
-what makes it survive `saveComposerDrafts`, which only accepts `draft:` pointers;
-the empty session never reaches the index, so without it the next launch showed
-an empty new chat and the text sat under a key no row pointed at. A sent draft is
-empty when it is promoted and the session speaks for itself.
-`tests/composer-files.test.ts` pins both sides, and
-`output/audit/check-draft-restart.mjs` relaunches the real app (two launches, one
-profile) and reads the box back — `okAtStart` is true now, false before.
+them back — text, file chips and pictures alike; `tests/ui-regressions.mjs` types
+a draft, attaches a chip and an image through `updateDraft`, switches
+conversations twice and fails if the box or either attachment changes. A launch
+still starts a new chat for real conversations (`bootstrap` reopens the project,
+not the conversation), so an unsent draft is expected to come back with the
+conversation it was written in.
+The promotion adds a copy for the case where Pi wrote a session file for the
+draft chat: focusing the composer starts a runtime, and that empty session never
+reaches the index. `promotedDraftSnapshot` keeps a copy under the draft key and
+points the workspace at it, so a launch can still show the text — **but only the
+text that existed at promotion time**. Measured with
+`output/audit/check-draft-restart.mjs`: when the prompt is typed before the
+session file appears, `okAtStart` is true; in the usual order (focus starts Pi
+first, then the reader types) the promotion sees an empty draft, the pointer is
+forgotten, and the text typed afterwards lives only under the unlisted session —
+`okAtStart` is false. Closing that needs a live mirror of the promoted draft
+(link the session key to its draft key and keep the copy current on every
+`updateDraft`), not another one-shot copy.
 
 The **side chat's** draft is the same composer under the side scope, so it is
 keyed by the side session and needs no new-chat pointer (the side panel is not
