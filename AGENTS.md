@@ -532,6 +532,18 @@ and all of them now end on the control that opened them; the toggle path was the
 only one on `<body>`. The UI suite closes the search from its own button and
 requires the trigger to hold focus again.
 
+**A combobox controls only its popup.** The conversation search field's
+`aria-controls` named the results region — static content — together with the
+recents listbox, so the control relation pointed at something that is not a
+popup. It now names `session-search-recents` only while that listbox is open and
+nothing when it is closed, which matches its `aria-activedescendant` (set only
+while a recent is highlighted). The launcher is the reference case: one named
+listbox, every option carries `aria-selected`, and the active descendant
+resolves to an option inside that listbox. The UI suite asserts the search
+field's relation and the launcher's listbox/options/active descendant, and
+`output/audit/check-a11y.mjs` reports listbox and combobox semantics for every
+layer (all ten read zero).
+
 The app's name is a **drawing, not text**. `PiWordmark`
 (`components/PiWordmark.tsx`) fills "Pi Desktop" one pixel at a time on a
 5-column cell, so it reads like a terminal (TUI) font: no pixel font ships with

@@ -345,6 +345,22 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     'The open search dialog is not referenced by its button'
   )
   check(searchDialog.getAttribute('role') === 'dialog', 'The conversation search surface is not a dialog')
+  // A combobox names the widget it actually pops. This one only pops the
+  // recents listbox, so a closed dialog leaves nothing to name.
+  const searchCombo = searchDialog.querySelector('input[role="combobox"]')
+  check(searchCombo, 'The conversation search field is not a combobox')
+  check(
+    !searchCombo.hasAttribute('aria-controls') ||
+      Boolean(document.getElementById(searchCombo.getAttribute('aria-controls'))),
+    'The search field controls an element that does not exist'
+  )
+  const searchControls = searchCombo.getAttribute('aria-controls')
+  if (searchControls) {
+    check(
+      searchControls.split(/\s+/).every((id) => document.getElementById(id)?.getAttribute('role') === 'listbox'),
+      'The search combobox controls something that is not its listbox popup'
+    )
+  }
   searchToggle.click()
   await pause(200)
   check(
@@ -3834,6 +3850,30 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   check(hintFg && hintBg, 'The launcher hint colours could not be read')
   const hintRatio = hintFg && hintBg ? contrastRatio(hintFg, hintBg) : 0
   check(hintRatio >= 4.5, 'The highlighted launcher hint reads ' + hintRatio.toFixed(2) + ':1')
+  // The launcher is one combobox over one listbox: the listbox is named, every
+  // option says whether it is selected, and the active descendant is an option
+  // inside that same listbox.
+  const launcherList = launcher.querySelector('[role="listbox"]')
+  check(launcherList, 'The launcher does not expose a listbox')
+  check(
+    Boolean(launcherList.getAttribute('aria-label') || launcherList.getAttribute('aria-labelledby')),
+    'The launcher listbox has no accessible name'
+  )
+  const launcherOptions = [...launcherList.querySelectorAll('[role="option"]')]
+  check(launcherOptions.length > 0, 'The launcher listbox has no options')
+  check(
+    launcherOptions.every((option) => option.hasAttribute('aria-selected')),
+    'A launcher option does not say whether it is selected'
+  )
+  const launcherField = launcher.querySelector('[role="combobox"]')
+  const launcherActiveId = launcherField?.getAttribute('aria-activedescendant')
+  if (launcherActiveId) {
+    const activeOption = document.getElementById(launcherActiveId)
+    check(
+      activeOption && launcherList.contains(activeOption) && activeOption.getAttribute('role') === 'option',
+      'The launcher active descendant is not an option in its listbox'
+    )
+  }
   document.activeElement?.dispatchEvent(
     new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
   )

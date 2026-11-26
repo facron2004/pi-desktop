@@ -2215,9 +2215,10 @@ export const Sidebar = memo(function Sidebar({
               role="combobox"
               aria-autocomplete="list"
               aria-expanded={recentsVisible}
-              aria-controls={recentsVisible
-                ? 'session-search-recents conversation-search-results'
-                : 'conversation-search-results'}
+              // The popup this combobox opens is the recents listbox; the
+              // results region below is static content, not a popup, so it is
+              // not named here (a combobox may only control its popup).
+              aria-controls={recentsVisible ? 'session-search-recents' : undefined}
               aria-activedescendant={
                 recentsVisible && recentIndex >= 0
                   ? `session-search-recent-${recentIndex}`
