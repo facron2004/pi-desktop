@@ -1170,6 +1170,25 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   }
   passed.push('a reply can be copied as Markdown from its own row')
 
+  // The File menu carries the Markdown export beside the HTML one, so the
+  // capability is not launcher-only.
+  const fileMenu = [...document.querySelectorAll('.app-menu__trigger')]
+    .find((node) => node.textContent?.trim() === 'File')
+  fileMenu?.click()
+  const fileItems = await until(() => {
+    const menu = document.querySelector('[role="menu"][aria-label="File"]')
+    return menu ? [...menu.querySelectorAll('[role="menuitem"]')] : null
+  }, 'The File menu did not open')
+  const markdownExport = fileItems.find((node) => node.textContent?.includes('Export as Markdown'))
+  check(Boolean(markdownExport), 'The File menu has no Markdown export')
+  check(markdownExport && !markdownExport.disabled, 'The Markdown export is disabled with a conversation on screen')
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  await until(
+    () => !document.querySelector('[role="menu"][aria-label="File"]'),
+    'The File menu did not close'
+  )
+  passed.push('the File menu offers the Markdown export beside the HTML one')
+
   window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }))
   const streamSearch = await until(() => document.querySelector('.thread-search input'), 'Conversation search did not open')
   const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
@@ -2630,7 +2649,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 49 : 45)
+  assert.equal(passed.length, process.platform === 'win32' ? 50 : 46)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

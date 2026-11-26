@@ -200,6 +200,8 @@ const bridge: PiDesktopBridge = {
     list: (cwd?: string): Promise<SessionMeta[]> => ipcRenderer.invoke('sessions:list', cwd),
     exportHtml: (sessionKey: string): Promise<SessionExportResult> =>
       ipcRenderer.invoke('sessions:exportHtml', sessionKey),
+    exportMarkdown: (sessionKey: string, markdown: string): Promise<SessionExportResult> =>
+      ipcRenderer.invoke('sessions:exportMarkdown', sessionKey, markdown),
     remove: (file: string): Promise<boolean> => ipcRenderer.invoke('sessions:remove', file),
     hydrate: (file: string, scope?: 'branch' | 'side'): Promise<SessionHydrationResult> =>
       ipcRenderer.invoke('sessions:hydrate', file, scope),

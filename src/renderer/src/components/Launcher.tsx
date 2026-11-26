@@ -6,6 +6,7 @@ import {
   Cpu,
   FileDiff,
   FileDown,
+  FileText,
   Files,
   FolderOpen,
   GitBranch,
@@ -239,6 +240,13 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
       group: 'Conversation',
       icon: FileDown,
       run: () => runAppCommand('export')
+    },
+    {
+      id: 'export-markdown',
+      title: 'Export this conversation as Markdown',
+      group: 'Conversation',
+      icon: FileText,
+      run: () => runAppCommand('export-md')
     },
     {
       id: 'compact',

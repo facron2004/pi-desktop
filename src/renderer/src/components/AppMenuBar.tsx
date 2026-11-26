@@ -84,6 +84,7 @@ export const AppMenuBar = memo(function AppMenuBar({
   onNewChat,
   onNewProject,
   onExportConversation,
+  onExportMarkdown,
   onOpenChanges,
   onOpenFiles,
   onOpenBrowser,
@@ -107,6 +108,7 @@ export const AppMenuBar = memo(function AppMenuBar({
   onNewChat: () => void
   onNewProject: () => void
   onExportConversation: () => void
+  onExportMarkdown: () => void
   onOpenChanges: () => void
   onOpenFiles: () => void
   onOpenBrowser: () => void
@@ -188,6 +190,11 @@ export const AppMenuBar = memo(function AppMenuBar({
             {
               label: `${t('Export conversation')}…`,
               onSelect: onExportConversation,
+              disabled: !hasItems
+            },
+            {
+              label: `${t('Export as Markdown')}…`,
+              onSelect: onExportMarkdown,
               disabled: !hasItems
             }
           ]}

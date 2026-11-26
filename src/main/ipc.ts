@@ -330,6 +330,8 @@ export async function readBoundedHandle(
 }
 const MAX_SEARCH_RESULTS = 200
 const MAX_SEARCH_DEPTH = 12
+/** The Markdown transcript comes from the renderer; cap what it can write. */
+const MAX_SESSION_MARKDOWN_BYTES = 16 * 1024 * 1024
 /** Bound one directory page so a single folder cannot render an unbounded tree. */
 const MAX_DIRECTORY_LIST_ENTRIES = 1_000
 /** Bound directory iteration even when most names are intentionally hidden. */
@@ -1859,6 +1861,50 @@ export function registerIpc(context: IpcContext): void {
     )
     return { cancelled: false, path: target, ...(openError ? { openError } : {}) }
   })
+
+  ipcMain.handle(
+    'sessions:exportMarkdown',
+    async (_event, sessionKey: unknown, markdown: unknown): Promise<SessionExportResult> => {
+      if (typeof sessionKey !== 'string' || !sessionKey) throw new Error('No conversation is open.')
+      if (typeof markdown !== 'string' || !markdown.trim()) {
+        throw new Error('There is nothing to export yet.')
+      }
+      if (Buffer.byteLength(markdown, 'utf8') > MAX_SESSION_MARKDOWN_BYTES) {
+        throw new Error('The conversation is too large to export as Markdown.')
+      }
+      const options: Electron.SaveDialogOptions = {
+        title: 'Export conversation as Markdown',
+        defaultPath: sessionKey.startsWith('draft:')
+          ? 'pi-session.md'
+          : `pi-session-${path.basename(sessionKey, '.jsonl')}.md`,
+        filters: [{ name: 'Markdown', extensions: ['md', 'markdown'] }],
+        properties: ['showOverwriteConfirmation']
+      }
+      const window = getWindow()
+      const selection = window && !window.isDestroyed()
+        ? await dialog.showSaveDialog(window, options)
+        : await dialog.showSaveDialog(options)
+      if (selection.canceled || !selection.filePath) return { cancelled: true }
+      const target = selection.filePath
+      if (!/\.(md|markdown)$/i.test(target)) throw new Error('Choose a Markdown file for the export.')
+      const targetKey = workspacePathKey(target)
+      if (exportingPaths.has(targetKey)) throw new Error('An export to this file is already in progress.')
+
+      // Stage beside the destination so a failed write never leaves half a
+      // conversation in the file the reader picked.
+      exportingPaths.add(targetKey)
+      const directory = path.dirname(target)
+      const temporary = path.join(directory, `.${path.basename(target)}.${randomUUID()}.tmp`)
+      try {
+        await writeFile(temporary, markdown, { encoding: 'utf8', mode: 0o666 })
+        await rename(temporary, target)
+      } finally {
+        await unlink(temporary).catch(() => {})
+        exportingPaths.delete(targetKey)
+      }
+      return { cancelled: false, path: target }
+    }
+  )
 
   ipcMain.handle('sessions:hydrate', async (event, file: string, scope?: unknown): Promise<SessionHydrationResult> => {
     const empty = (): SessionHydrationResult => ({ messages: [], historyTruncated: false })

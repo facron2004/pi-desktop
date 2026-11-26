@@ -102,6 +102,7 @@ export default function App() {
   const openWorkspace = useAppStore((state) => state.openWorkspace)
   const renameSession = useAppStore((state) => state.renameSession)
   const exportSession = useAppStore((state) => state.exportSession)
+  const exportSessionMarkdown = useAppStore((state) => state.exportSessionMarkdown)
   const workspace = useAppStore((state) => state.workspace)
   const uiWidgets = useAppStore((state) => state.uiWidgets)
   const uiTitle = useAppStore((state) => state.uiTitle)
@@ -467,6 +468,7 @@ export default function App() {
     [openProjectDialog]
   )
   const handleExportConversation = useCallback(() => void exportSession(), [exportSession])
+  const handleExportMarkdown = useCallback(() => void exportSessionMarkdown(), [exportSessionMarkdown])
   const handleOpenSessionTree = useCallback(() => setSessionTreeOpen(true), [])
   const handleCompact = useCallback(() => void compact(), [compact])
   const handleOpenLauncher = useCallback(() => setLauncherOpen(true), [])
@@ -1019,6 +1021,7 @@ export default function App() {
         onNewChat={handleNewChat}
         onNewProject={handleNewProject}
         onExportConversation={handleExportConversation}
+        onExportMarkdown={handleExportMarkdown}
         onOpenChanges={openChanges}
         onOpenFiles={openFiles}
         onOpenBrowser={openBrowser}

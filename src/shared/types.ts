@@ -1488,6 +1488,8 @@ export interface PiDesktopBridge {
   sessions: {
     list(cwd?: string): Promise<SessionMeta[]>
     exportHtml(sessionKey: string): Promise<SessionExportResult>
+    /** Write a Markdown export the renderer built from its transcript. */
+    exportMarkdown(sessionKey: string, markdown: string): Promise<SessionExportResult>
     /** Move a session file to the OS trash. Returns false when it fails. */
     remove(file: string): Promise<boolean>
     /** Active-branch messages and whether disk history was bounded. Does not start Pi. */

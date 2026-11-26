@@ -420,6 +420,8 @@ const zhCN: Record<string, string> = {
     '所有快捷键集中在这里，任意位置按 Ctrl+/ 也能打开。',
   'Duplicate this conversation': '复制此对话',
   'Export this conversation as HTML': '将此对话导出为 HTML',
+  'Export this conversation as Markdown': '将此对话导出为 Markdown',
+  'Export as Markdown': '导出为 Markdown',
   'Restart the Pi runtime': '重启 Pi 运行时',
   'New chat': '新聊天',
   'What should we build?': '你想构建什么？',
@@ -2434,6 +2436,11 @@ const zhCN: Record<string, string> = {
   'A channel config object is required.': '需要提供通道配置。',
   'Feishu app credentials are required.': '请填写飞书应用凭据。',
   'The project MCP config changed while it was being updated.': '项目 MCP 配置在更新过程中发生了变化。',
+  'No conversation is open.': '当前没有打开的对话。',
+  'There is nothing to export yet.': '还没有可导出的内容。',
+  'There is nothing to export yet': '还没有可导出的内容',
+  'The conversation is too large to export as Markdown.': '对话内容过大，无法导出为 Markdown。',
+  'Choose a Markdown file for the export.': '请选择用于导出的 Markdown 文件。',
 }
 
 export function translate(text: string, language: AppLanguage): string {

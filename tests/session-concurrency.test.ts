@@ -22,6 +22,7 @@ import {
 } from '@shared/types'
 import { SettingsStore } from '../src/main/settings'
 import { lastAssistantText } from '../src/renderer/src/lib/thread'
+import type { ThreadItem } from '../src/renderer/src/lib/thread'
 import {
   listPendingUiSessions,
   liveConversationRows,
@@ -48,6 +49,7 @@ const ensureCalls: RuntimeEnsureOptions[] = []
 const respondUiCalls: { requestId: string; response: ExtensionUiResponse; key?: string }[] = []
 let customRespondUi: ((requestId: string, response: ExtensionUiResponse, key?: string) => Promise<void>) | undefined
 const stopped: string[] = []
+const exportMarkdownCalls: { owner: string; markdown: string }[] = []
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve))
 const bridge = {
   app: {
@@ -78,6 +80,10 @@ const bridge = {
   sessions: {
     list: async () => [],
     exportHtml: async (_owner: string): Promise<SessionExportResult> => ({ cancelled: true }),
+    exportMarkdown: async (owner: string, markdown: string): Promise<SessionExportResult> => {
+      exportMarkdownCalls.push({ owner, markdown })
+      return { cancelled: false, path: 'C:/exports/pi-session.md' }
+    },
     hydrate: async () => ({ messages: [], historyTruncated: false }),
     remove: async (_file?: string) => true
   },
@@ -150,6 +156,7 @@ afterEach(async () => {
   ensureCalls.length = 0
   respondUiCalls.length = 0
   stopped.length = 0
+  exportMarkdownCalls.length = 0
   useAppStore.setState(initial, true)
   Reflect.deleteProperty(globalThis, 'requestAnimationFrame')
   Reflect.deleteProperty(globalThis, 'cancelAnimationFrame')
@@ -845,6 +852,46 @@ test('session export reports a saved file and a viewer failure separately from c
   })
   await useAppStore.getState().exportSession()
   assert.equal(useAppStore.getState().toast?.text, 'Exported conversation.html. No associated HTML viewer')
+  assert.equal(useAppStore.getState().toast?.level, 'warning')
+})
+
+test('exporting Markdown writes the transcript on screen without starting Pi', async () => {
+  await useAppStore.getState().newChat()
+  const owner = useAppStore.getState().draftId!
+  const thread = useAppStore.getState().threads[owner]
+  const items: ThreadItem[] = [
+    { id: 'export-user', kind: 'user', text: 'Write it down', images: [], timestamp: 1, order: 1 },
+    {
+      id: 'export-reply',
+      kind: 'assistant',
+      streaming: false,
+      timestamp: 2,
+      order: 2,
+      blocks: [{ type: 'text', text: '## Already Markdown\n\n```sh\nnpm test\n```' }]
+    }
+  ]
+  useAppStore.setState({ threads: { ...useAppStore.getState().threads, [owner]: { ...thread, items } } })
+  const ensuresBefore = ensureCalls.length
+
+  await useAppStore.getState().exportSessionMarkdown()
+
+  assert.equal(ensureCalls.length, ensuresBefore, 'exporting Markdown started Pi')
+  assert.equal(exportMarkdownCalls.length, 1)
+  const [call] = exportMarkdownCalls
+  assert.equal(call.owner, owner)
+  assert.match(call.markdown, /^# /)
+  assert.match(call.markdown, /## You\n\nWrite it down/)
+  assert.match(call.markdown, /## Pi\n\n## Already Markdown/)
+  assert.match(call.markdown, /```sh\nnpm test\n```/)
+  assert.equal(useAppStore.getState().toast?.text, 'Exported pi-session.md')
+  assert.equal(useAppStore.getState().toast?.level, 'info')
+})
+
+test('an empty conversation is not exported as Markdown', async () => {
+  await useAppStore.getState().newChat()
+  await useAppStore.getState().exportSessionMarkdown()
+  assert.equal(exportMarkdownCalls.length, 0)
+  assert.equal(useAppStore.getState().toast?.text, 'There is nothing to export yet')
   assert.equal(useAppStore.getState().toast?.level, 'warning')
 })
 

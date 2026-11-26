@@ -9,6 +9,7 @@ export const APP_COMMAND_ZH_NAMES: Record<string, string> = {
   plugin: '插件',
   image: '图片',
   export: '导出对话',
+  'export-md': '导出为 Markdown',
   duplicate: '复制对话',
   branch: '创建分支',
   tree: '会话树',
@@ -85,6 +86,11 @@ export const APP_COMMANDS: PiCommand[] = [
   {
     name: 'export',
     description: 'Export this conversation as HTML',
+    source: 'app'
+  },
+  {
+    name: 'export-md',
+    description: 'Export this conversation as Markdown',
     source: 'app'
   },
   {

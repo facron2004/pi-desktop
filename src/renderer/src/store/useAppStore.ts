@@ -81,6 +81,7 @@ import {
   type PendingUiSession
 } from '../lib/live-sessions'
 import { stripAnsi } from '../lib/ansi'
+import { sessionMarkdown } from '../lib/session-markdown'
 import { accentInk } from '../lib/accent-ink'
 import { trayConversations } from '../lib/tray-conversations'
 import { translate } from '../lib/i18n'
@@ -971,6 +972,11 @@ export interface AppStore {
   /** Copy the current conversation into a new one. */
   duplicateSession: () => Promise<void>
   exportSession: () => Promise<void>
+  /**
+   * Write the conversation on screen as Markdown. Works without a running
+   * process: the transcript the reader sees is the document.
+   */
+  exportSessionMarkdown: () => Promise<void>
   deleteSession: (file: string) => Promise<void>
   /** Hide a conversation from the sidebar. Its file stays on disk, and Settings lists it. */
   archiveSession: (file: string) => Promise<void>
@@ -3033,6 +3039,31 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       if (result.cancelled) return
       const saved = `Exported ${basename(result.path)}`
       get().showToast(result.openError ? `${saved}. ${result.openError}` : saved, result.openError ? 'warning' : 'info')
+    } catch (error) {
+      bindSet(set, get, owner)({ error: messageOf(error) })
+    }
+  },
+
+  async exportSessionMarkdown() {
+    const state = get()
+    const owner = viewKeyOf(state)
+    const key = threadKey(owner)
+    const items = state.threads[key]?.items ?? state.items
+    if (!items.some((item) => item.kind === 'user' || item.kind === 'assistant')) {
+      get().showToast('There is nothing to export yet', 'warning')
+      return
+    }
+    const markdown = sessionMarkdown(items, {
+      title:
+        activeConversationTitle(state.sessions, state.threads, owner) ||
+        translate('Conversation', state.settings.language),
+      project: state.workspace?.path,
+      exportedAt: Date.now()
+    })
+    try {
+      const result = await window.pi.sessions.exportMarkdown(owner, markdown)
+      if (result.cancelled) return
+      get().showToast(`Exported ${basename(result.path)}`)
     } catch (error) {
       bindSet(set, get, owner)({ error: messageOf(error) })
     }
@@ -5481,6 +5512,9 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     switch (name) {
       case 'export':
         await get().exportSession()
+        break
+      case 'export-md':
+        await get().exportSessionMarkdown()
         break
       case 'duplicate':
         await get().duplicateSession()

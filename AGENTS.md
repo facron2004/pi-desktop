@@ -213,6 +213,20 @@ The launcher's *Copy the last answer* / *Copy the whole conversation* commands
 remain the whole-conversation doors; they are not a second implementation of
 this button.
 
+**A conversation leaves as Markdown through the same projection.** The File
+menu's *Export as Markdown…* (and the launcher's matching entry, and the
+`export-md` app command) call `exportSessionMarkdown`, which wraps
+`transcriptOf(items)` with a title and where the file came from
+(`lib/session-markdown.ts`) and sends that text to `sessions:exportMarkdown`.
+The main process asks for a path, checks the size and the `.md`/`.markdown`
+extension, and writes beside the destination through a temporary file so a
+failed write never leaves half a conversation where the reader pointed it.
+Exporting never starts Pi: the transcript on screen is the document, so a
+cold, stopped or still-running conversation exports from what it has, and the
+HTML export's `ensureRuntime` is not a precedent here. Tool output is not part
+of the file (`transcriptOf` drops it) — the export is what was said, not a
+build log.
+
 **"Waiting for model response" describes an empty screen, not a slow request.**
 The live label is the only thing on screen while a turn has produced nothing, so
 `Thread` passes `showWaitStatus` only while the turn has no output at all —
