@@ -285,7 +285,13 @@ without a pointer. Its focus ring is drawn inside the container
 **The left-edge turn rail is one keyboard column.** Its ticks carry
 `data-rail-marker`: Up/Down walk them and Home/End jump to the ends; each tick
 is a button, so Enter jumps to that turn. The rail is covered by the maximized
-panel, so the keys only act when a tick itself has focus.
+panel, so the keys only act when a tick itself has focus. **It is also one Tab
+stop:** a tick per turn used to be a Tab stop per turn, so a 40-turn conversation
+put 40 stops between the sidebar and the transcript; only the reader's current
+tick (`activeTurnId`, else the first) is in the Tab order, and every arrow moves
+that stop along with the focus. `output/audit/check-rail-tabs.mjs` measures it
+(40 markers, 40 tabbable before; one now, with ArrowUp → 39, Home → 1, End → 40),
+and `tests/session-rail.test.ts` pins the structure.
 
 **A folded history opens in one action, one page per frame.** The history row
 carries *Up N messages* — one 20-turn page, unchanged — and *Load all*, which

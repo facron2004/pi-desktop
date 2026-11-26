@@ -2205,9 +2205,18 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   // The rail is one keyboard column: Up/Down walk its turn ticks.
   const railMarkers = [...document.querySelectorAll('[data-rail-marker]')]
   check(railMarkers.length >= 2, 'The session rail exposed fewer than two turn ticks')
+  const railTabStops = railMarkers.filter((marker) => marker.tabIndex >= 0)
+  check(
+    railTabStops.length === 1,
+    `The session rail exposed ${railTabStops.length} Tab stops instead of one`
+  )
   railMarkers[0].focus()
   railMarkers[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
   await until(() => document.activeElement === railMarkers[1], 'ArrowDown did not move to the next rail tick')
+  check(
+    railMarkers[1].tabIndex === 0 && railMarkers[0].tabIndex === -1,
+    'The rail Tab stop did not follow the arrow keys'
+  )
   railMarkers[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
   await until(() => document.activeElement === railMarkers[0], 'ArrowUp did not move back to the previous rail tick')
   passed.push('the session rail walks with the arrow keys')

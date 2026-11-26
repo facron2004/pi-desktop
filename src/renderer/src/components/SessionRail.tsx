@@ -70,6 +70,8 @@ interface MarkerProps {
   turn: Turn & { user: UserItem }
   index: number
   active: boolean
+  /** The rail is one keyboard stop: only the reader's current tick takes it. */
+  tabStop: boolean
   onSelect: (turnId: string) => void
 }
 
@@ -84,6 +86,7 @@ const SessionRailMarker = memo(function SessionRailMarker({
   turn,
   index,
   active,
+  tabStop,
   onSelect
 }: MarkerProps) {
   const t = useT()
@@ -102,6 +105,7 @@ const SessionRailMarker = memo(function SessionRailMarker({
       type="button"
       className="session-rail__marker"
       data-rail-marker
+      tabIndex={tabStop ? 0 : -1}
       data-active={active || undefined}
       aria-label={`${index + 1}: ${prompt}`}
       aria-current={active ? 'location' : undefined}
@@ -121,12 +125,16 @@ const SessionRailMarker = memo(function SessionRailMarker({
   )
 })
 
-type SessionRailHistoryProps = Pick<SessionRailProps, 'turns' | 'activeTurnId' | 'onSelect'>
+type SessionRailHistoryProps = Pick<SessionRailProps, 'turns' | 'activeTurnId' | 'onSelect'> & {
+  /** Index of the tick that owns the rail's single Tab stop. */
+  stopIndex: number
+}
 
 const SessionRailHistory = memo(function SessionRailHistory({
   turns,
   activeTurnId,
-  onSelect
+  onSelect,
+  stopIndex
 }: SessionRailHistoryProps) {
   return <>
     {turns.slice(0, -1).map((turn, index) => (
@@ -135,6 +143,7 @@ const SessionRailHistory = memo(function SessionRailHistory({
         turn={turn}
         index={index}
         active={turn.id === activeTurnId}
+        tabStop={index === stopIndex}
         onSelect={onSelect}
       />
     ))}
@@ -142,6 +151,7 @@ const SessionRailHistory = memo(function SessionRailHistory({
 }, (previous, next) =>
   previous.turns === next.turns &&
   previous.activeTurnId === next.activeTurnId &&
+  previous.stopIndex === next.stopIndex &&
   previous.onSelect === next.onSelect
 )
 
@@ -149,6 +159,9 @@ export const SessionRail = memo(
   function SessionRail({ turns, activeTurn, activeTurnId, onSelect }: SessionRailProps) {
     const t = useT()
     const railHeight = Math.min(96, turns.length * 12 + (turns.length - 1) * 2 + 8)
+    // One Tab stop for the whole rail: the reader's current turn, or the first
+    // tick when nothing is marked. Arrows move it with the keyboard.
+    const stopIndex = Math.max(0, turns.findIndex((turn) => turn.id === activeTurnId))
 
     return (
       <aside
@@ -167,23 +180,35 @@ export const SessionRail = memo(
           const index = markers.indexOf(target)
           if (index < 0) return
           event.preventDefault()
+          const move = (next: HTMLElement | undefined) => {
+            if (!next || next === target) return
+            target.tabIndex = -1
+            next.tabIndex = 0
+            next.focus()
+          }
           if (event.key === 'Home') {
-            markers[0]?.focus()
+            move(markers[0])
           } else if (event.key === 'End') {
-            markers[markers.length - 1]?.focus()
+            move(markers[markers.length - 1])
           } else if (event.key === 'ArrowDown') {
-            if (index < markers.length - 1) markers[index + 1].focus()
+            if (index < markers.length - 1) move(markers[index + 1])
           } else if (index > 0) {
-            markers[index - 1].focus()
+            move(markers[index - 1])
           }
         }}
       >
         <div className="session-rail__track">
-          <SessionRailHistory turns={turns} activeTurnId={activeTurnId} onSelect={onSelect} />
+          <SessionRailHistory
+            turns={turns}
+            activeTurnId={activeTurnId}
+            onSelect={onSelect}
+            stopIndex={stopIndex}
+          />
           <SessionRailMarker
             turn={activeTurn}
             index={turns.length - 1}
             active={activeTurn.id === activeTurnId}
+            tabStop={stopIndex === turns.length - 1}
             onSelect={onSelect}
           />
         </div>

@@ -51,6 +51,7 @@ const suites = [
   'context-reading.test.ts',
   'git-status.test.ts',
   'diff-fold.test.ts',
+  'session-rail.test.ts',
   'permissions.test.ts',
   'task-modes.test.ts',
   'computer-use.test.ts',
