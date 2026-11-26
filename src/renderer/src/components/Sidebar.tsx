@@ -1234,6 +1234,34 @@ export const Sidebar = memo(function Sidebar({
       className="sidebar"
       inert={open && !searchOpen ? undefined : true}
       aria-hidden={open && !searchOpen ? undefined : true}
+      onKeyDown={(event) => {
+        // The list is one keyboard column: the arrows walk the project,
+        // conversation and archived-group rows in the order they are drawn,
+        // and the top of the column hands focus to the search button. The
+        // handler only acts when a row itself has focus, so the buttons
+        // inside a row and the rename input keep their own keys.
+        if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+        const keys = ['ArrowDown', 'ArrowUp', 'Home', 'End']
+        if (!keys.includes(event.key)) return
+        const target = event.target
+        if (!(target instanceof HTMLElement) || !target.matches('[data-sidebar-row]')) return
+        const rows = [...event.currentTarget.querySelectorAll<HTMLElement>('[data-sidebar-row]')]
+          .filter((row) => row.offsetParent !== null)
+        const index = rows.indexOf(target)
+        if (index < 0) return
+        event.preventDefault()
+        if (event.key === 'Home') {
+          rows[0]?.focus()
+        } else if (event.key === 'End') {
+          rows[rows.length - 1]?.focus()
+        } else if (event.key === 'ArrowDown') {
+          if (index < rows.length - 1) rows[index + 1].focus()
+        } else if (index > 0) {
+          rows[index - 1].focus()
+        } else {
+          searchTriggerRef.current?.focus()
+        }
+      }}
     >
       <div
         className="sidebar__resizer"
@@ -1467,6 +1495,7 @@ export const Sidebar = memo(function Sidebar({
                           <button
                             type="button"
                             className="sidebar__archive-group-head"
+                            data-sidebar-row
                             aria-expanded={groupExpanded}
                             title={group.key || undefined}
                             onClick={() => toggleArchiveGroup(group.key)}
@@ -1577,6 +1606,7 @@ export const Sidebar = memo(function Sidebar({
                       <button
                         className="project__main"
                         type="button"
+                        data-sidebar-row
                         ref={(element) => {
                           if (!projectId) return
                           if (element) projectRowRefs.current.set(projectId, element)
@@ -2450,6 +2480,7 @@ const SessionRow = memo(function SessionRow({
           ref={mainRef}
           type="button"
           className="session-item__main"
+          data-sidebar-row
           onClick={() => onSelect(session)}
           // The card replaces the native tooltip, which could only carry the
           // name the row already shows.

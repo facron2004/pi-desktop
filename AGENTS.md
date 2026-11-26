@@ -343,6 +343,15 @@ thread in `threads`, keyed by the JSONL path, or by `draft:…` until Pi writes 
 file. Events are stamped with the runtime that owns them, so a background run
 keeps updating after the view has moved on.
 
+**The list is one keyboard column.** ArrowUp/ArrowDown walk the rows that carry
+`data-sidebar-row` — project rows, conversation rows and archived group heads —
+in the order they are drawn; Home/End jump to the ends, and ArrowUp at the first
+row hands focus to the search button above it. The handler sits on the `<aside>`
+and acts only when the event starts on a row itself, so a row's own buttons and
+the rename input keep their own keys, and rows without a client rect (folded
+away) are skipped. It is an addition to Tab order, not a roving tabindex: every
+row is still reachable by Tab.
+
 Opening a conversation does not start Pi. A conversation that stays on screen
 for a moment prewarms its own process in the background (`schedulePrewarm`),
 and focusing the composer starts a cold runtime; the prompt itself is still sent
