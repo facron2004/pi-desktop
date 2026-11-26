@@ -26,3 +26,63 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* One group per project. The head is the fold control — a caret, the project
+   name and the number of conversations under it — and the rows hang below it,
+   so folding never takes the heading with it. */
+.archived-group + .archived-group {
+  margin-top: var(--sp-2, 8px);
+}
+
+.archived-group__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2, 8px);
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius-sm, 6px);
+  background: none;
+  color: var(--text-muted);
+  font-size: var(--text-small);
+  text-align: left;
+  cursor: pointer;
+}
+
+.archived-group__head:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.archived-group__caret {
+  flex: 0 0 auto;
+  transform: rotate(-90deg);
+  transition: transform 120ms ease;
+}
+
+.archived-group__caret[data-open='true'] {
+  transform: none;
+}
+
+.archived-group__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 550;
+}
+
+.archived-group__count {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.archived-group__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+}

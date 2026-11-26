@@ -144,6 +144,7 @@ const suites = [
   'composer-files.test.ts',
   'memory.test.ts',
   'memory-fold.test.ts',
+  'archive-fold.test.ts',
   'auto-title.test.ts',
   'branch-menu-worktree.test.ts',
   'title-sync.test.ts',
