@@ -799,17 +799,19 @@ switches to the Files page and back, and fails if the value changes;
 `output/audit/check-side-draft.mjs` does the same through `Ctrl+Shift+L` and
 prints the key and the value after reopening.
 
-**A side draft is not kept across a restart yet.** Measured with
-`output/audit/check-side-draft-restart.mjs` (a fixture main conversation, two
-launches): the side composer is keyed `draft:side:<uuid>`, and the main process
-mints and remembers that key in memory only — it reaches disk once the side
-runtime writes a real side session, which opening or focusing the box does not
-do. After a relaunch the same main conversation gets a brand-new side draft key,
-the box is empty, and the text sits in localStorage under the old key. Closing
-that needs the pending side binding persisted in `side-chats.json` (under the
-parent conversation) and reused by `resolve`, with Clear minting a fresh key; it
-is not a renderer-only change, which is why the main composer's link/mirror
-trick does not cover this one.
+**A side draft comes back with its conversation.** The side composer is keyed
+`draft:side:<uuid>` until the side runtime writes a real side session, so
+`side-chats.json` records that key for a persisted parent in `draftKeys` and
+`resolve` reuses it instead of minting a new one — reopening the parent after a
+restart reopens the same draft, and the composer's saved text comes back. The
+entry is dropped when the draft is promoted to a real side session, when the
+reader clears the side chat (`clear` mints a fresh key and records that one), and
+when the parent conversation is deleted. Draft parents are never recorded: their
+keys would not survive a restart either, which is why the original zero-write
+rule for them still holds. `tests/side-chat-supervisor.test.ts` covers
+resolve → restart → clear → delete; `output/audit/check-side-draft-restart.mjs`
+reports the same side key and the text in the second launch where it used to
+report a new key and an empty box.
 
 If a draft snapshot exceeds browser storage quota, drop sent-prompt history
 before removing any unsent images. If the images still exceed the quota,

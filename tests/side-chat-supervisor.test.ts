@@ -667,3 +667,43 @@ test('MemoryService and AutoTitleService ignore Side Chat runtimes completely', 
     rmSync(temp, { recursive: true, force: true })
   }
 })
+
+/**
+ * A side chat that was typed but never sent has no side .jsonl; only the draft
+ * key exists. Recording that key for a persisted parent is what lets the composer
+ * bring the text back after a restart, instead of opening a brand-new empty side.
+ */
+test('a persisted parent keeps its draft side key across a restart, and clear replaces it', async () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-side-draft-'))
+  const parent = path.join(userData, '2026-01-01T00-00-00-000Z_main.jsonl')
+  writeFileSync(parent, '{}\n', 'utf8')
+  try {
+    const first = new SideChatBindingService({ userData, getSessionRoots: () => [userData] })
+    const minted = await first.resolve(parent, 'C:/proj', [userData])
+    assert.equal(minted.activeSideKey.startsWith(SIDE_DRAFT_PREFIX), true)
+    first.dispose()
+
+    // A fresh instance is the next launch: the same draft key comes back.
+    const second = new SideChatBindingService({ userData, getSessionRoots: () => [userData] })
+    const restored = await second.resolve(parent, 'C:/proj', [userData])
+    assert.equal(restored.activeSideKey, minted.activeSideKey, 'the draft key must survive a restart')
+
+    // Clear is the reader asking for a new side chat: a fresh key, recorded too.
+    const cleared = await second.clear(parent, 'C:/proj', async () => true, [userData])
+    assert.notEqual(cleared.activeSideKey, minted.activeSideKey)
+    const third = new SideChatBindingService({ userData, getSessionRoots: () => [userData] })
+    const afterClear = await third.resolve(parent, 'C:/proj', [userData])
+    assert.equal(afterClear.activeSideKey, cleared.activeSideKey)
+    third.dispose()
+
+    // Deleting the parent drops the recorded draft with the rest of its slot.
+    third.takeSideFilesForParent(parent)
+    const fourth = new SideChatBindingService({ userData, getSessionRoots: () => [userData] })
+    const afterDelete = await fourth.resolve(parent, 'C:/proj', [userData])
+    assert.notEqual(afterDelete.activeSideKey, cleared.activeSideKey)
+    fourth.dispose()
+    second.dispose()
+  } finally {
+    rmSync(userData, { recursive: true, force: true })
+  }
+})

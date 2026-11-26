@@ -25,9 +25,25 @@ export interface SideChatBindingEntry {
   updatedAt: number
 }
 
+export interface SideChatDraftEntry {
+  sideKey: string
+  cwd: string
+  updatedAt: number
+}
+
 export interface SideChatStoreData {
   version: 1
   bindings: Record<string, SideChatBindingEntry>
+  /**
+   * The `draft:side:...` key a persisted parent is currently working in.
+   *
+   * A side chat that has never sent anything has no side `.jsonl`, so there is
+   * no `bindings` entry — but the renderer's composer saved its draft under that
+   * key. Remembering the key is what lets the same draft come back when the
+   * reader reopens the parent after a restart. Draft parents are not recorded:
+   * their keys do not survive a restart either.
+   */
+  draftKeys?: Record<string, SideChatDraftEntry>
 }
 
 interface PendingSideBinding {
@@ -112,7 +128,25 @@ function parseStoreData(raw: string): SideChatStoreData {
       updatedAt
     }
   }
-  return { version: 1, bindings }
+  const draftKeys: Record<string, SideChatDraftEntry> = {}
+  const rawDraftKeys = root.draftKeys
+  if (rawDraftKeys && typeof rawDraftKeys === 'object' && !Array.isArray(rawDraftKeys)) {
+    for (const [rawKey, rawEntry] of Object.entries(rawDraftKeys as Record<string, unknown>)) {
+      if (!rawKey || rawKey.startsWith('draft:')) continue
+      if (!rawEntry || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) continue
+      const entry = rawEntry as Record<string, unknown>
+      if (typeof entry.sideKey !== 'string' || !entry.sideKey.startsWith(SIDE_DRAFT_PREFIX)) continue
+      draftKeys[canonicalSessionFile(rawKey)] = {
+        sideKey: entry.sideKey,
+        cwd: typeof entry.cwd === 'string' ? entry.cwd : '',
+        updatedAt:
+          typeof entry.updatedAt === 'number' && Number.isFinite(entry.updatedAt)
+            ? entry.updatedAt
+            : Date.now()
+      }
+    }
+  }
+  return { version: 1, bindings, ...(Object.keys(draftKeys).length > 0 ? { draftKeys } : {}) }
 }
 
 export class SideChatBindingService {
@@ -293,7 +327,8 @@ export class SideChatBindingService {
       }
       const cloned: SideChatStoreData = {
         version: 1,
-        bindings: { ...current.bindings }
+        bindings: { ...current.bindings },
+        draftKeys: { ...(current.draftKeys ?? {}) }
       }
       const maybeNext = mutator(cloned)
       if (maybeNext === false) {
@@ -454,7 +489,27 @@ export class SideChatBindingService {
       }
     }
 
-    // 4. Mint a fresh in-memory `draft:side:<uuid>` without writing anything to disk
+    // 4. A persisted parent may already have a draft side key on disk: the reader
+    // typed a side question, never sent it, and quit. Reusing that key brings the
+    // composer's saved draft back instead of starting a brand-new empty side.
+    if (!parentSessionKey.startsWith('draft:')) {
+      const savedDraft = this.refreshFromDisk().draftKeys?.[pKey]
+      if (savedDraft?.sideKey?.startsWith(SIDE_DRAFT_PREFIX)) {
+        const sideCwd = cwd || savedDraft.cwd
+        this.pendingDraftBindings.set(pKey, {
+          parentSessionKey,
+          ...(parentSessionId ? { parentSessionId } : {}),
+          cwd: sideCwd,
+          activeSideKey: savedDraft.sideKey,
+          sideFiles: [],
+          updatedAt: Date.now()
+        })
+        this.parentBySide.set(sideLookupKey(savedDraft.sideKey), { parentSessionKey, cwd: sideCwd })
+        return { parentSessionKey, activeSideKey: savedDraft.sideKey, hasPersistedHistory: false }
+      }
+    }
+
+    // 5. Mint a fresh in-memory `draft:side:<uuid>` without writing anything to disk
     const draftKey = mintSideDraftKey()
     this.pendingDraftBindings.set(pKey, {
       parentSessionKey,
@@ -465,6 +520,14 @@ export class SideChatBindingService {
       updatedAt: Date.now()
     })
     this.parentBySide.set(sideLookupKey(draftKey), { parentSessionKey, cwd })
+    // Record the key for a persisted parent so the next launch resolves the same
+    // draft instead of minting an empty one. Draft parents stay in memory only.
+    if (!parentSessionKey.startsWith('draft:')) {
+      this.mutateStore((draft) => {
+        draft.draftKeys = { ...(draft.draftKeys ?? {}) }
+        draft.draftKeys[pKey] = { sideKey: draftKey, cwd, updatedAt: Date.now() }
+      })
+    }
     return { parentSessionKey, activeSideKey: draftKey, hasPersistedHistory: false }
   }
 
@@ -523,6 +586,8 @@ export class SideChatBindingService {
               sideFiles: mergedFiles,
               updatedAt: Date.now()
             }
+            // The draft became a real session: its saved key is no longer needed.
+            if (draft.draftKeys?.[pKey]) delete draft.draftKeys[pKey]
           })
         } catch (error) {
           console.error('[pi-desktop] could not persist side chat binding on side rekey:', error)
@@ -730,6 +795,16 @@ export class SideChatBindingService {
       updatedAt: Date.now()
     })
     this.parentBySide.set(sideLookupKey(freshDraftKey), { parentSessionKey, cwd })
+    if (persistedParent) {
+      try {
+        this.mutateStore((draft) => {
+          draft.draftKeys = { ...(draft.draftKeys ?? {}) }
+          draft.draftKeys[pKey] = { sideKey: freshDraftKey, cwd, updatedAt: Date.now() }
+        })
+      } catch (error) {
+        console.error('[pi-desktop] could not record the cleared side chat draft:', error)
+      }
+    }
     return { parentSessionKey, activeSideKey: freshDraftKey, hasPersistedHistory: false }
   }
 
@@ -750,6 +825,7 @@ export class SideChatBindingService {
         this.mutateStore((draft) => {
           persistedEntry = draft.bindings[pKey]
           delete draft.bindings[pKey]
+          if (draft.draftKeys?.[pKey]) delete draft.draftKeys[pKey]
         })
       } catch (error) {
         console.error('[pi-desktop] could not remove side chat binding on parent delete:', error)
