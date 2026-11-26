@@ -93,10 +93,28 @@ export function TextSearch({
     <div
       className="text-search"
       onKeyDown={(event) => {
-        if (event.key !== 'Escape') return
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          event.stopPropagation()
+          onClose()
+          return
+        }
+        // The hits are one keyboard column: the arrows walk them and the first
+        // one hands focus back to the field.
+        if (event.altKey || event.ctrlKey || event.metaKey) return
+        if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+        const target = event.target
+        if (!(target instanceof HTMLElement) || !target.matches('[data-text-search-hit]')) return
+        const hits = [...event.currentTarget.querySelectorAll<HTMLElement>('[data-text-search-hit]')]
+        const index = hits.indexOf(target)
+        if (index < 0) return
         event.preventDefault()
-        event.stopPropagation()
-        onClose()
+        if (event.key === 'Home') hits[0]?.focus()
+        else if (event.key === 'End') hits[hits.length - 1]?.focus()
+        else if (event.key === 'ArrowDown') {
+          if (index < hits.length - 1) hits[index + 1].focus()
+        } else if (index === 0) inputRef.current?.focus()
+        else hits[index - 1].focus()
       }}
     >
       <div className="tree__search">
@@ -109,6 +127,26 @@ export function TextSearch({
           aria-label={t('Search inside the project files')}
           placeholder={t('Search inside the project files')}
           onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.altKey || event.ctrlKey || event.metaKey) return
+            const firstHit = () =>
+              inputRef.current?.closest('.text-search')?.querySelector<HTMLElement>('[data-text-search-hit]')
+            if (event.key === 'ArrowDown') {
+              const first = firstHit()
+              if (first) {
+                event.preventDefault()
+                first.focus()
+              }
+              return
+            }
+            if (event.key === 'Enter') {
+              const first = firstHit()
+              if (first) {
+                event.preventDefault()
+                first.click()
+              }
+            }
+          }}
         />
         {query ? (
           <button
@@ -162,6 +200,7 @@ export function TextSearch({
                 <button
                   key={`${hit.path}:${hit.line}`}
                   className="text-search__hit"
+                  data-text-search-hit
                   title={`${shown}:${hit.line}`}
                   onClick={() => onOpenFile({ path: hit.path, line: hit.line })}
                 >

@@ -1548,6 +1548,11 @@ returns to the filter. `lib/tree-nav.ts` is the same decision the session tree
 uses; this tree only adds the mapping from a row to its path, folder state and
 toggle.
 
+**The preview's full-text search is the same keyboard column.** Enter opens the
+top hit, ArrowDown enters the hit list, Up/Down walk the hits and Up at the
+first returns to the field. Hits carry `data-text-search-hit`; a hit click also
+closes the search, so the file it names is what the preview shows next.
+
 The marks come from `lib/file-status.ts`, a projection of the same `git` the
 task rail reads. `changeKind` folds git's two-letter porcelain codes onto one
 mark per file (`modified`, `added`, `deleted`, `renamed`, `conflicted`);

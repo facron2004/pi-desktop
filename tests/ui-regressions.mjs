@@ -2365,7 +2365,28 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   const textSearchButton = document.querySelector('.file-workspace__text-search')
   check(textSearchButton, 'The preview pane lost its full-text search entry')
   textSearchButton.click()
-  await until(() => document.querySelector('.text-search'), 'Full-text search did not open in the preview pane')
+  const textSearch = await until(() => document.querySelector('.text-search'), 'Full-text search did not open in the preview pane')
+  // Enter opens the top hit, and the arrows walk the hit list.
+  const textSearchInput = textSearch.querySelector('input')
+  setInput.call(textSearchInput, 'nested')
+  textSearchInput.dispatchEvent(new Event('input', { bubbles: true }))
+  const firstTextHit = await until(
+    () => document.querySelector('[data-text-search-hit]'),
+    'Full-text search found no fixture hit'
+  )
+  textSearchInput.focus()
+  textSearchInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+  await until(() => document.activeElement === firstTextHit, 'ArrowDown did not enter the text search hits')
+  firstTextHit.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+  await until(() => document.activeElement === textSearchInput, 'ArrowUp did not return to the text search field')
+  textSearchInput.focus()
+  textSearchInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  await until(
+    () => !document.querySelector('.text-search') &&
+      document.querySelector('.file-workspace')?.textContent?.includes('nested workspace file'),
+    'Enter did not open the top full-text hit'
+  )
+  passed.push('the full-text search opens its top hit with Enter')
   document.querySelector('.text-search .icon-btn[title]')?.click()
   await pause(120)
   const pythonRow = [...document.querySelectorAll('.tree__item')]
@@ -2980,7 +3001,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 60 : 55)
+  assert.equal(passed.length, process.platform === 'win32' ? 61 : 56)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })
