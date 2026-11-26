@@ -703,11 +703,15 @@ name away. A focused `input`, `select` or contenteditable now keeps the chords
 that change the view (new chat, project `Ctrl+1…9`, sidebar, focus-composer,
 model and thinking cycling, side chat, terminal), while the chords that open a
 layer — palette, settings, shortcut list, session tree — still work, because
-opening a layer is not a view change. The composer is a textarea, so its own
-chords are untouched. `tests/ui-regressions.mjs` renames a project and sends
-`Ctrl+N`, failing if the field disappears or the conversation switches;
+opening a layer is not a view change. A **textarea that is not the composer** is
+the same kind of field: writing a scheduled task's prompt and pressing `Ctrl+N`
+used to leave the page for a new chat and drop the draft. The composer keeps its
+chords (`.composer__input` is the one textarea exempted), because there they are
+part of writing a prompt. `tests/ui-regressions.mjs` renames a project and sends
+`Ctrl+N`, then writes a task prompt and sends it again, failing if the field or
+the page disappears or the conversation switches;
 `output/audit/check-shortcuts-in-fields.mjs` prints the draft id before and
-after (identical now, a new draft before).
+after both chords (identical now, a new draft before).
 
 **Both lists in the box are one keyboard walk.** The command palette and the
 `@` file list take Up/Down (wrapping), Home/End and PageUp/PageDown; the page

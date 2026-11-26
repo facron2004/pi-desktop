@@ -3267,6 +3267,26 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     'The new task form did not focus its name field'
   )
   passed.push('a new scheduled task starts at its name')
+  // A textarea that is not the composer keeps the app-wide chords too: Ctrl+N
+  // while writing a task prompt used to leave the page and start a new chat.
+  const taskPrompt = document.querySelector('.scheduled-tasks__prompt')
+  check(taskPrompt, 'The new task form has no prompt field')
+  taskPrompt.focus()
+  const draftBeforePromptChord = store.getState().activeSessionFile ?? store.getState().draftId
+  taskPrompt.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'n', ctrlKey: true, bubbles: true, cancelable: true })
+  )
+  await pause(250)
+  check(
+    Boolean(document.querySelector('.scheduled-tasks__prompt')),
+    'Ctrl+N tore down the scheduled task form'
+  )
+  check(Boolean(document.querySelector('.scheduled-tasks__new')), 'Ctrl+N left the scheduled page')
+  check(
+    (store.getState().activeSessionFile ?? store.getState().draftId) === draftBeforePromptChord,
+    'Ctrl+N started a new chat while a task prompt was being written'
+  )
+  passed.push('an app-wide shortcut stays out of a task prompt')
   ;[...document.querySelectorAll('.scheduled-detail__icon')]
     .find((button) => button.getAttribute('aria-label') === 'Close details')?.click()
   await until(() => !document.querySelector('.scheduled-detail'), 'The new task form did not close')
@@ -3650,7 +3670,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 81 : 75)
+  assert.equal(passed.length, process.platform === 'win32' ? 82 : 76)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })
