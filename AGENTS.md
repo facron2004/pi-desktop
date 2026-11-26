@@ -1437,6 +1437,12 @@ The Images page lists at most 1,000 pictures after scanning at most 100,000
 directory entries; a newer image-list request in the same window supersedes
 the previous walk.
 
+**A read failure offers a retry.** The file viewer, the picture stage and the
+session-tree dialog each put a *Try again* button beside the error; a refresh
+token re-runs the same read instead of making the reader close and reopen the
+page. The retry does not guess another source — it asks the same file, picture
+or tree again.
+
 **An empty page names the action that fills it.** The Files page, its text
 search, the Images page and the scheduled-task page carry an *Open project*
 button that calls `pickWorkspace()`, because a page that says a project is

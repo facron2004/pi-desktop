@@ -150,6 +150,7 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
   const [content, setContent] = useState<FileContent | null>(null)
   const [copied, setCopied] = useState<'file' | 'path' | null>(null)
   const [error, setError] = useState(false)
+  const [reloadToken, setReloadToken] = useState(0)
   // A Markdown file reads as a document by default; the source view is a
   // deliberate switch. A line to reveal (a text-search hit) needs the source,
   // because only the numbered lines can be jumped to.
@@ -201,7 +202,7 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
     return () => {
       cancelled = true
     }
-  }, [file])
+  }, [file, reloadToken])
 
   // A new file (or a new line to reveal in the same one) picks its own view:
   // a Markdown document without a target line reads as a document, and a
@@ -492,7 +493,18 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
   }
 
   if (error) {
-    return <div className="drawer__empty">{t('That file could not be read.')}</div>
+    return (
+      <div className="drawer__empty">
+        <div>{t('That file could not be read.')}</div>
+        <button
+          type="button"
+          className="btn btn--sm drawer__empty-action"
+          onClick={() => setReloadToken((token) => token + 1)}
+        >
+          {t('Try again')}
+        </button>
+      </div>
+    )
   }
   if (!content) {
     return (

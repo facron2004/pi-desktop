@@ -35,6 +35,7 @@ export function ImageViewer({
   const [source, setSource] = useState<{ path: string; data: string } | null>(null)
   const [natural, setNatural] = useState<{ width: number; height: number } | null>(null)
   const [error, setError] = useState(false)
+  const [reloadToken, setReloadToken] = useState(0)
   const [limit, setLimit] = useState(60)
 
   // The main process finds every picture in one walk; asking once per
@@ -106,7 +107,7 @@ export function ImageViewer({
     return () => {
       cancelled = true
     }
-  }, [active])
+  }, [active, reloadToken])
 
   const activeInfo = (images ?? []).find((image) => image.path === active)
   // One Tab stop for the whole strip. A requested picture outside the rendered
@@ -132,6 +133,12 @@ export function ImageViewer({
           <img
             src={activeSource}
             alt={activeInfo?.name ?? ''}
+            onError={() => {
+              // The bytes arrived but the browser cannot decode them: that is a
+              // read failure too, and the stage must offer the same retry.
+              setSource(null)
+              setError(true)
+            }}
             onLoad={(event) =>
               setNatural({
                 width: event.currentTarget.naturalWidth,
@@ -143,6 +150,13 @@ export function ImageViewer({
           <div className="image-viewer__empty">
             <ImageOff size={20} />
             <span>{t('This picture could not be read')}</span>
+            <button
+              type="button"
+              className="btn btn--sm"
+              onClick={() => setReloadToken((token) => token + 1)}
+            >
+              {t('Try again')}
+            </button>
           </div>
         ) : images === undefined ? (
           <div className="image-viewer__empty">

@@ -505,6 +505,13 @@ export function SessionTreeDialog({ onClose }: { onClose: () => void }) {
             <div className="session-tree__state" data-tone="error">
               <AlertTriangle size={13} />
               {t('The session tree could not be read.')}
+              <button
+                type="button"
+                className="btn btn--sm session-tree__retry"
+                onClick={() => void load()}
+              >
+                {t('Try again')}
+              </button>
             </div>
           ) : !view.matched ? (
             <div className="session-tree__state">{t('No entries match')}</div>

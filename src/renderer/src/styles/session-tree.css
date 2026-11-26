@@ -90,6 +90,10 @@
   color: var(--red);
 }
 
+.session-tree__retry {
+  margin-left: var(--sp-2);
+}
+
 .session-tree__row {
   display: flex;
   align-items: center;

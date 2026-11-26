@@ -1017,6 +1017,7 @@ const zhCN: Record<string, string> = {
   'Text search reached a limit; results may be incomplete.': '全文搜索受扫描限制，结果可能不完整。',
   empty: '空',
   'That file could not be read.': '无法读取该文件。',
+  'Try again': '重试',
   truncated: '内容已截断',
   'Copy the file': '复制文件内容',
   'Copy the path of the file': '复制文件路径',

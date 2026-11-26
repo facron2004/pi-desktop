@@ -38,6 +38,9 @@ writeFileSync(
   path.join(workspace, 'shot-two.png'),
   Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
 )
+// A listed picture whose bytes are not an image: the Images page must offer a
+// retry rather than a dead end.
+writeFileSync(path.join(workspace, 'broken.png'), 'not a picture\n')
 const agent = path.join(profile, 'home', '.pi', 'agent')
 mkdirSync(agent, { recursive: true })
 const searchFixtureDir = path.join(agent, 'sessions', `--${workspace.replace(/^[\\/]+/, '').replace(/[\\/:]/g, '-')}--`)
@@ -2118,6 +2121,11 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   document.querySelector('.tool-panel__action').click()
   await until(() => !document.querySelector('.tool-panel--maximized'), 'The panel did not restore')
   check(!document.querySelector('.main__body')?.inert, 'Restoring the panel left the conversation inert')
+  await until(() => {
+    if (document.querySelector('.session-rail')) return true
+    store.setState({ items: seededRailItems })
+    return false
+  }, 'The session rail did not return after restoring the panel')
   check(
     getComputedStyle(document.querySelector('.session-rail')).visibility === 'visible',
     'The session rail stayed hidden after restoring the panel'
@@ -2168,6 +2176,18 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   nextThumb.dispatchEvent(new KeyboardEvent('keydown', { key: backward, bubbles: true }))
   await until(() => document.activeElement === activeThumb, 'The arrows did not return to the previous picture')
   passed.push('the image strip walks with the arrow keys')
+  // A picture that cannot be decoded offers a retry instead of a dead end.
+  const brokenThumb = [...document.querySelectorAll('.image-viewer__thumb')]
+    .find((thumb) => thumb.title?.includes('broken.png'))
+  check(Boolean(brokenThumb), 'The Images page did not list the broken fixture')
+  brokenThumb.click()
+  const imageRetry = await until(
+    () => [...document.querySelectorAll('.image-viewer__empty .btn')]
+      .find((button) => button.textContent?.includes('Try again')),
+    'A picture that cannot be read did not offer a retry'
+  )
+  check(Boolean(imageRetry), 'The picture retry has no label')
+  passed.push('a picture that cannot be read offers a retry')
   passed.push('the image viewer reveals a picture with a tooltip-only icon')
 
   // The jump controls float centred on the composer's own axis, directly above
@@ -3200,7 +3220,8 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   )
   store.setState({ workspace: savedWorkspace })
   await until(
-    () => !document.querySelector('.image-viewer__empty .btn'),
+    () => ![...document.querySelectorAll('.image-viewer__empty .btn')]
+      .some((button) => button.textContent?.includes('Open project')),
     'Restoring the workspace left the no-project state on the images page'
   )
   passed.push('empty pages offer the action that fills them')
@@ -3271,7 +3292,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 71 : 66)
+  assert.equal(passed.length, process.platform === 'win32' ? 72 : 67)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })
