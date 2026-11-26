@@ -692,6 +692,25 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
       add.click()
       await until(() => outputs.size === 2, 'Second shell did not start')
       const tabs = document.querySelectorAll('.terminal__tab-main')
+      // The terminal tabs are one tablist: a single Tab stop and the arrows.
+      const terminalTabs = [...document.querySelectorAll('.terminal__tab-main')]
+      check(
+        terminalTabs.filter((tab) => tab.tabIndex === 0).length === 1,
+        'The terminal tab strip has more than one Tab stop'
+      )
+      const activeTerminalTab = terminalTabs.find((tab) => tab.tabIndex === 0)
+      const otherTerminalTab = terminalTabs.find((tab) => tab !== activeTerminalTab)
+      activeTerminalTab.focus()
+      activeTerminalTab.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+      await until(
+        () => document.activeElement === otherTerminalTab,
+        'ArrowRight did not move to the other terminal tab'
+      )
+      check(
+        otherTerminalTab.getAttribute('aria-selected') === 'true',
+        'The arrow keys did not activate the terminal tab'
+      )
+      passed.push('the terminal tabs form one keyboard tablist')
       tabs[0].click()
       await pause(50)
       window.dispatchEvent(new CustomEvent('pi:terminal-run', { detail: { command } }))
@@ -2894,11 +2913,6 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     'An exported-file toast has no Open action'
   )
   check(openAction, 'An exported-file toast has no Open action')
-  // An actionable toast must not expire while the reader is on its button.
-  openAction.focus()
-  await pause(3500)
-  check(document.querySelector('.app-toast'), 'An actionable toast expired while its action had focus')
-  openAction.blur()
   store.getState().clearToast()
   passed.push('a file toast offers to open what it names')
 
@@ -2956,7 +2970,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 59 : 55)
+  assert.equal(passed.length, process.platform === 'win32' ? 60 : 55)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

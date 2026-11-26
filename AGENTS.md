@@ -1584,6 +1584,11 @@ Git Bash or WSL. Each tab keeps its shell for its lifetime, including an
 explicit restart. Adding a shell means adding it in `resolveShellSpec`
 (`src/main/shell.ts`) and in the Settings select.
 
+**The terminal tabs are a real tablist.** `role="tab"`, `aria-selected` and the
+roving tab index sit on `.terminal__tab-main`, not on the wrapper div; only the
+active tab is a Tab stop, and Left/Right/Home/End move through the tabs and
+activate the one they land on. The close button stays a separate stop.
+
 A card in the transcript (the bash tool card, or a bash execution card) can hand
 its command to the terminal by dispatching `pi:terminal-run` with `{ command }`.
 `App` captures the workspace in a `{ command, cwd, seq }` request. Terminal

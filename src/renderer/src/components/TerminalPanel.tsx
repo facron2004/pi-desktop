@@ -656,17 +656,46 @@ export function TerminalPanel({
         </div>
       ) : (
         <div className="terminal__bar">
-          <div className="terminal__tabstrip" role="tablist" aria-label={t('Terminal')}>
+          <div
+            className="terminal__tabstrip"
+            role="tablist"
+            aria-label={t('Terminal')}
+            onKeyDown={(event) => {
+              // The tablist owns one Tab stop and the arrows: Left/Right wrap
+              // through the tabs and Home/End go to the ends, activating the
+              // tab they land on. The close button stays its own stop.
+              if (event.altKey || event.ctrlKey || event.metaKey) return
+              if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+              const target = event.target
+              if (!(target instanceof HTMLElement) || target.getAttribute('role') !== 'tab') return
+              const tabsDom = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]')]
+              const index = tabsDom.indexOf(target)
+              if (index < 0) return
+              event.preventDefault()
+              const next =
+                event.key === 'Home'
+                  ? 0
+                  : event.key === 'End'
+                    ? tabsDom.length - 1
+                    : event.key === 'ArrowRight'
+                      ? (index + 1) % tabsDom.length
+                      : (index - 1 + tabsDom.length) % tabsDom.length
+              const nextTab = tabs[next]
+              if (nextTab) setActiveKey(nextTab.key)
+              tabsDom[next]?.focus()
+            }}
+          >
             {tabs.map((tab) => (
               <div
                 key={tab.key}
                 className="terminal__tab"
                 data-active={tab.key === activeKey || undefined}
-                role="tab"
-                aria-selected={tab.key === activeKey}
               >
                 <button
                   type="button"
+                  role="tab"
+                  aria-selected={tab.key === activeKey}
+                  tabIndex={tab.key === activeKey ? 0 : -1}
                   className="terminal__tab-main"
                   title={tab.label || t('Terminal')}
                   onClick={() => setActiveKey(tab.key)}
