@@ -2206,6 +2206,27 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     () => [...document.querySelectorAll('.tree__item .tree__name')].some((node) => node.textContent === 'nested-only.txt'),
     'The nested folder did not load before switching projects'
   )
+
+  // The tree proper is one keyboard column: Right opens or enters, Left closes
+  // or climbs, and Down/Up walk the visible rows.
+  nestedFolder.focus()
+  nestedFolder.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))
+  await until(() => nestedFolder.getAttribute('aria-expanded') === 'false', 'ArrowLeft did not close the folder')
+  nestedFolder.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+  await until(
+    () => nestedFolder.getAttribute('aria-expanded') === 'true' && document.querySelector('[data-tree-row][data-depth="1"]'),
+    'ArrowRight did not reopen the folder'
+  )
+  nestedFolder.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+  const firstChild = await until(
+    () => document.querySelector('[data-tree-row][data-depth="1"]'),
+    'ArrowDown did not enter the folder'
+  )
+  await until(() => document.activeElement === firstChild, 'ArrowDown did not focus the first child row')
+  firstChild.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))
+  await until(() => document.activeElement === nestedFolder, 'ArrowLeft on a child did not return to its folder')
+  passed.push('the file tree walks with the arrow keys')
+
   await store.getState().switchProject(nestedWorkspace)
   await until(
     () => store.getState().workspace?.path === nestedWorkspace,
@@ -2894,7 +2915,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 56 : 52)
+  assert.equal(passed.length, process.platform === 'win32' ? 57 : 53)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

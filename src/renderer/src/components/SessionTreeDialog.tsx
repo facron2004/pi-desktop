@@ -24,7 +24,7 @@ import {
   type TreeRow,
   type TreeView
 } from '../lib/session-tree'
-import { treeNavAction, type TreeNavKey } from '../lib/session-tree-nav'
+import { treeNavAction, type TreeNavKey } from '../lib/tree-nav'
 import '../styles/session-tree.css'
 
 type LoadState =

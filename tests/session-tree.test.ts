@@ -12,7 +12,7 @@ import {
   type SessionTreeNode,
   type TreeRow
 } from '../src/renderer/src/lib/session-tree'
-import { treeNavAction } from '../src/renderer/src/lib/session-tree-nav'
+import { treeNavAction } from '../src/renderer/src/lib/tree-nav'
 
 function makeNode(
   id: string,

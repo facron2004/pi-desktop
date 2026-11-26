@@ -21,6 +21,7 @@ import {
 import { formatBytes } from '../lib/format'
 import { relativePath } from '../lib/path'
 import { useT } from '../lib/i18n'
+import { treeNavAction, type TreeNavKey } from '../lib/tree-nav'
 import { useAppStore } from '../store/useAppStore'
 
 interface FileTreeProps {
@@ -303,9 +304,34 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
         // The flat search results are one keyboard column; the tree proper
         // keeps its nested buttons. Enter on the field takes the top result.
         if (event.altKey || event.ctrlKey || event.metaKey) return
-        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
         const target = event.target
-        if (!(target instanceof HTMLElement) || !target.matches('[data-tree-result]')) return
+        if (!(target instanceof HTMLElement)) return
+        if (target.matches('[data-tree-row]')) {
+          const keys: TreeNavKey[] = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End']
+          if (!keys.includes(event.key as TreeNavKey)) return
+          const rows = [...event.currentTarget.querySelectorAll<HTMLElement>('[data-tree-row]')]
+            .filter((row) => row.getClientRects().length > 0)
+          const index = rows.indexOf(target)
+          if (index < 0) return
+          const action = treeNavAction(
+            rows.map((row) => ({
+              id: row.dataset.path ?? '',
+              depth: Number(row.dataset.depth ?? '0'),
+              hasChildren: row.dataset.kind === 'directory',
+              childrenOpen: row.getAttribute('aria-expanded') === 'true'
+            })),
+            index,
+            event.key as TreeNavKey
+          )
+          if (!action) return
+          event.preventDefault()
+          if (action.kind === 'focus') rows[action.index]?.focus()
+          else if (action.kind === 'filter') searchInputRef.current?.focus()
+          else rows.find((row) => row.dataset.path === action.id)?.click()
+          return
+        }
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+        if (!target.matches('[data-tree-result]')) return
         const results = [...event.currentTarget.querySelectorAll<HTMLElement>('[data-tree-result]')]
           .filter((row) => row.getClientRects().length > 0)
         const index = results.indexOf(target)
@@ -517,6 +543,9 @@ function ChangedLevel({
                 type="button"
                 className="tree__item"
                 data-kind="directory"
+                data-tree-row
+                data-depth={depth}
+                data-path={node.path}
                 data-change={node.change}
                 aria-expanded={open}
                 style={{ paddingLeft: depth * INDENT + 6 }}
@@ -546,6 +575,9 @@ function ChangedLevel({
               type="button"
               className="tree__item"
               data-kind="file"
+              data-tree-row
+              data-depth={depth}
+              data-path={node.path}
               data-change={node.change}
               style={{ paddingLeft: depth * INDENT + 6 }}
               onClick={() => onOpen(node.path)}
@@ -620,6 +652,9 @@ const TreeLevel = memo(function TreeLevel({
                 <button
                   className="tree__item"
                   data-kind={directory ? 'directory' : 'file'}
+                  data-tree-row
+                  data-depth={depth}
+                  data-path={entry.path}
                   data-status={change}
                   data-open={directory ? isOpen || undefined : undefined}
                   aria-expanded={directory ? isOpen : undefined}

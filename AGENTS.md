@@ -335,7 +335,7 @@ closes an open branch or climbs to the nearest parent row, and Up at the first
 row returns to the filter (Down in the filter enters the first row). Rows are
 `tabIndex={-1}` and focused programmatically, so Tab still lands on the chevron
 and the row's fork/copy actions instead of stopping on every row;
-`lib/session-tree-nav.ts` decides what a key means, and
+`lib/tree-nav.ts` decides what a key means, and
 `tests/session-tree.test.ts` pins it without a renderer.
 
 ## The sidebar is a list, not a switch
@@ -1515,8 +1515,14 @@ the tree is showing. `App` owns `fileTreeOpen` and passes it down; `ToolPanel`'s
 **The filter is one keyboard column with its results.** Enter opens the top flat
 result, ArrowDown moves into the results, Up/Down walk them, and ArrowUp at the
 first returns to the field. Only the flat search results carry
-`data-tree-result`; the nested tree keeps its own buttons, so the handler never
-steals an arrow from a folder row.
+`data-tree-result`; the nested tree keeps its own buttons.
+
+The tree proper carries `data-tree-row`, `data-depth` and `data-path`: Down/Up
+and Home/End walk the visible rows, Right opens a closed folder or enters an
+open one, Left closes it or climbs to the parent, and Up at the first row
+returns to the filter. `lib/tree-nav.ts` is the same decision the session tree
+uses; this tree only adds the mapping from a row to its path, folder state and
+toggle.
 
 The marks come from `lib/file-status.ts`, a projection of the same `git` the
 task rail reads. `changeKind` folds git's two-letter porcelain codes onto one
