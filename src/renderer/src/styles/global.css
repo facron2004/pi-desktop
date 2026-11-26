@@ -9116,6 +9116,16 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   color: var(--text-faint);
 }
 
+/* The list stopped at its limit: a note under the rows, not a row of its own,
+   so it cannot be mistaken for a file the reader can pick. */
+.mention__note {
+  flex: 0 0 auto;
+  padding: var(--sp-2) var(--sp-4);
+  border-top: 1px solid var(--border-soft);
+  font-size: var(--text-2xs);
+  color: var(--text-faint);
+}
+
 .mention__item {
   display: flex;
   flex-direction: column;

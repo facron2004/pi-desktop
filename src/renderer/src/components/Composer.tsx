@@ -538,6 +538,8 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
   const [mentionSearching, setMentionSearching] = useState(false)
   // The search for this query failed; the next keystroke retries it.
   const [mentionFailed, setMentionFailed] = useState(false)
+  // The search stopped at its limit, so the list is not the whole answer.
+  const [mentionTruncated, setMentionTruncated] = useState(false)
   const [paletteIndex, setPaletteIndex] = useState(0)
   const [commandSelected, setCommandSelected] = useState(false)
   const [imageSelected, setImageSelected] = useState(false)
@@ -920,24 +922,28 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
       setMentionIndex(0)
       setMentionSearching(false)
       setMentionFailed(false)
+      setMentionTruncated(false)
       return
     }
     setMentionFiles([])
     setMentionIndex(0)
     setMentionSearching(true)
     setMentionFailed(false)
+    setMentionTruncated(false)
     let cancelled = false
     let requestStarted = false
-    const onResult = (result: { entries: FileEntry[] }) => {
+    const onResult = (result: { entries: FileEntry[]; truncated: boolean }) => {
       if (cancelled) return
       setMentionFiles(result.entries)
       setMentionIndex(0)
       setMentionSearching(false)
+      setMentionTruncated(result.truncated)
     }
     const onFailure = () => {
       if (cancelled) return
       setMentionFiles([])
       setMentionSearching(false)
+      setMentionTruncated(false)
       setMentionFailed(true)
     }
     const timer = window.setTimeout(() => {
@@ -1605,6 +1611,7 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
             activeIndex={mentionIndex}
             searching={mentionSearching}
             failed={mentionFailed}
+            truncated={mentionTruncated}
             noProject={!workspace?.path}
             queryTooLong={mention.query.length > MAX_SEARCH_QUERY_LENGTH}
             onActiveChange={setMentionIndex}

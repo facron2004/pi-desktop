@@ -21,6 +21,7 @@ export function FileMention({
   listRef,
   searching = false,
   failed = false,
+  truncated = false,
   noProject = false,
   queryTooLong = false
 }: {
@@ -35,6 +36,8 @@ export function FileMention({
   searching?: boolean
   /** The search for this query failed; editing the text retries it. */
   failed?: boolean
+  /** The search stopped at its limit, so this list is not the whole answer. */
+  truncated?: boolean
   /** No project is open, so there is nothing to search. */
   noProject?: boolean
   /** The query is longer than a file search is allowed to take. */
@@ -85,6 +88,11 @@ export function FileMention({
           })}
         </div>
       )}
+      {truncated ? (
+        // The same words the file tree's search uses for the same reason: the
+        // walk stopped at its limit, so the list is not the whole answer.
+        <div className="mention__note">{t('Search stopped at its limit; results may be incomplete.')}</div>
+      ) : null}
     </div>
   )
 }

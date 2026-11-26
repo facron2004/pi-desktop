@@ -1,5 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import {
   composerFileToken,
   extractFilePathMentions,
@@ -374,4 +376,24 @@ test('the @ list names why it has no rows instead of always blaming the name', (
     'Searching files…',
     'a running retry outranks the failure it follows'
   )
+})
+
+test('the @ list says when its search stopped at the limit', () => {
+  const read = (file: string) => readFileSync(path.resolve(process.cwd(), file), 'utf8')
+  const composer = read('src/renderer/src/components/Composer.tsx')
+  const mention = read('src/renderer/src/components/FileMention.tsx')
+  // The main process already reports whether the walk stopped early; the
+  // composer used to drop that flag, so twelve rows read as the whole answer.
+  assert.match(
+    composer,
+    /setMentionTruncated\(result\.truncated\)/,
+    'the @ search drops the truncation the main process reports'
+  )
+  assert.match(composer, /truncated=\{mentionTruncated\}/, 'the @ list does not receive the flag')
+  assert.match(
+    mention,
+    /Search stopped at its limit; results may be incomplete\./,
+    'the @ list shows no note when the search stopped early'
+  )
+  assert.match(mention, /className="mention__note"/, 'the note lost its own row')
 })

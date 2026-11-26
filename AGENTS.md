@@ -698,6 +698,15 @@ says *No file matches that name.* `mentionEmptyLine` in
 `lib/composer-files.ts` picks the line in that order. Before this every case
 read as a wrong file name, and a projectless chat was never searching at all.
 
+**A list that stopped early says so.** `FileSearchResult.truncated` already
+reports that the walk hit its row limit, its entry budget or a depth cap; the
+`@` list renders the same note the file tree's search uses — *Search stopped at
+its limit; results may be incomplete.* — under the rows, never as a row a reader
+could pick. Twelve rows used to read as the whole answer, so a file that matched
+but fell past the cap looked like it did not exist.
+`output/audit/check-mention-cap.mjs` types `@many` into a 20-file workspace and
+prints the cap with the note.
+
 **A queued prompt can be taken back without stopping the run.** The rows above
 the box are Pi's queue, and the first one carries two 20px controls: recall
 (`clearQueue(true)`, the prompts go back into the editor) and discard
