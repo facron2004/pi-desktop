@@ -3248,6 +3248,17 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     'ArrowUp did not select the previous scheduled task'
   )
   passed.push('the scheduled task list walks with the arrow keys')
+  // A controlled `type="search"` field does not clear itself on Escape: the
+  // browser's native cancel never reaches React's state, so the old value is
+  // painted straight back and the key looks inert.
+  const scheduledSearch = document.querySelector('.scheduled-tasks__search-field input')
+  check(scheduledSearch, 'The scheduled page lost its search field')
+  scheduledSearch.focus()
+  setInputValue(scheduledSearch, 'zz')
+  await until(() => scheduledSearch.value === 'zz', 'The scheduled search did not take the typed text')
+  scheduledSearch.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  await until(() => scheduledSearch.value === '', 'Escape did not clear the scheduled search')
+  passed.push('Escape clears the scheduled search instead of doing nothing')
   for (const task of createdTasks) {
     if (task) await window.pi.scheduledTasks.remove(task.id)
   }
@@ -3602,7 +3613,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 79 : 73)
+  assert.equal(passed.length, process.platform === 'win32' ? 80 : 74)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

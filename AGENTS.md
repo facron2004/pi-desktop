@@ -2223,13 +2223,17 @@ a Chinese reading.
 Escape in the capture phase, so a plain filter field could never clear itself:
 the reader lost the whole dialog to remove a few typed characters. A field
 marked `data-escape-clears` owns the key while it has text and clears on the
-same event; a `type="search"` field gets the browser's own clear. The next
-Escape closes the dialog. The settings search, the session-tree filter and the
-commit detail's file filter all work this way.
+same event; the next Escape closes the dialog. The session-tree filter and the
+commit detail's file filter work this way. Do not rely on the browser's native
+cancel for a `type="search"` field: a controlled input never sees it — measured,
+the old value is painted straight back and Escape looks inert — so every search
+field clears itself in its own handler (the settings search and the scheduled
+and marketplace searches do).
 `output/audit/check-filter-escape.mjs` opens a seven-file commit detail, types a
 filter and presses Escape twice, printing the dialog and filter state after each
 press (before this, the first press closed the dialog with the filter still in
-it).
+it). `output/audit/check-search-escape.mjs` types into the scheduled-task search
+and prints the value after Escape.
 
 Choosing a result does not stop at opening the page. The page is lazy, so
 `SettingsDialog` polls for the row whose trimmed text is exactly the matched

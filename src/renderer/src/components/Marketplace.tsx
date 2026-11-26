@@ -924,6 +924,15 @@ export function Marketplace() {
               aria-label={searchLabel}
               placeholder={searchLabel}
               onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                // The native cancel of a controlled search field never reaches
+                // React's state: Escape has to clear it here or the old query
+                // is painted straight back.
+                if (event.key !== 'Escape' || !query) return
+                event.preventDefault()
+                event.stopPropagation()
+                setQuery('')
+              }}
             />
             {query ? (
               <button

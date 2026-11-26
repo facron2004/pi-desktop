@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, it } from 'node:test'
@@ -481,5 +481,18 @@ describe('bundled marketplace snapshot', () => {
       'badlogic/pi-skills',
       'earendil-works/pi-review-loop'
     ])
+  })
+})
+
+describe('the marketplace search field', () => {
+  it('clears itself on Escape', () => {
+    const source = readFileSync(
+      path.resolve(process.cwd(), 'src/renderer/src/components/Marketplace.tsx'),
+      'utf8'
+    )
+    // A controlled `type="search"` field keeps its React value: the browser's
+    // native cancel never reaches it, so the field has to clear itself.
+    assert.match(source, /event\.key !== 'Escape' \|\| !query/, 'Escape no longer clears the search')
+    assert.match(source, /setQuery\(''\)/, 'the Escape branch does not clear the query')
   })
 })

@@ -548,6 +548,15 @@ export function ScheduledTasksDialog() {
                   aria-label={t('Search scheduled tasks')}
                   placeholder={t('Search scheduled tasks')}
                   onChange={(event) => setSearch(event.target.value)}
+                  onKeyDown={(event) => {
+                    // A controlled `type="search"` field does not clear itself
+                    // on Escape: the browser's native cancel never reaches the
+                    // React state, so the old value is painted straight back.
+                    if (event.key !== 'Escape' || !search) return
+                    event.preventDefault()
+                    event.stopPropagation()
+                    setSearch('')
+                  }}
                 />
                 {search ? (
                   <button
