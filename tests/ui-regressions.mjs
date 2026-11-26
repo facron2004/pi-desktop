@@ -2337,6 +2337,19 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     imageThumbs.filter((thumb) => thumb.tabIndex === 0).length === 1,
     'The image strip has more than one Tab stop'
   )
+  // The strip is a listbox and each picture is an option that says whether it
+  // is the selected one; screen readers announce the selection from here.
+  const imageStrip = document.querySelector('.image-viewer__strip')
+  check(
+    imageStrip?.getAttribute('role') === 'listbox' && Boolean(imageStrip.getAttribute('aria-label')),
+    'The picture strip is not a named listbox'
+  )
+  check(
+    imageThumbs.every(
+      (thumb) => thumb.getAttribute('role') === 'option' && thumb.hasAttribute('aria-selected')
+    ),
+    'A picture is not an option that says whether it is selected'
+  )
   const activeThumbIndex = imageThumbs.findIndex((thumb) => thumb.tabIndex === 0)
   const nextIndex = activeThumbIndex + 1 < imageThumbs.length ? activeThumbIndex + 1 : activeThumbIndex - 1
   const activeThumb = imageThumbs[activeThumbIndex]
@@ -3790,6 +3803,22 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   // input and becomes a command chip before the palette can offer it.
   typeIntoBox('/comp')
   await until(() => document.querySelector('.palette'), 'The filtered palette did not open')
+  // The box is the combobox and names the list it controls and the option it
+  // highlights; the rows themselves are not Tab stops.
+  const composerCombo = document.querySelector('.composer__input')
+  const composerPalette = document.querySelector('.palette[role="listbox"]')
+  check(
+    composerPalette && composerCombo.getAttribute('aria-controls') === composerPalette.id,
+    'The composer does not name the command list it controls'
+  )
+  const composerActiveId = composerCombo.getAttribute('aria-activedescendant')
+  const composerActive = composerActiveId ? document.getElementById(composerActiveId) : null
+  check(
+    composerActive &&
+      composerActive.getAttribute('role') === 'option' &&
+      composerPalette.contains(composerActive),
+    'The composer active command is not an option in its list'
+  )
   paletteInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }))
   const commandChip = await until(
     () => document.querySelector('.composer__command'),
@@ -3807,6 +3836,15 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   pressInBox('Backspace')
   await until(() => !document.querySelector('.composer__command'), 'The command chip did not clear')
   typeIntoBox('')
+  check(
+    composerCombo.getAttribute('aria-expanded') === 'false',
+    'The composer stayed expanded after its list closed'
+  )
+  check(
+    !composerCombo.hasAttribute('aria-controls') && !composerCombo.hasAttribute('aria-activedescendant'),
+    'The composer still names a list or an option that is closed'
+  )
+
   passed.push('the command palette walks with Home, End and the page keys, and Shift+Tab leaves the box')
 
   // The launcher's shortcut hints are 12px text. On the highlighted row the
@@ -3977,6 +4015,30 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   )
   store.setState({ workspace: workspaceBeforeMention })
   await pause(80)
+  // The @ list is the second popup of the composer's combobox: it must name the
+  // list it controls and the file it highlights, and both must live in the DOM.
+  typeMention('@no')
+  const mentionPopup = await until(
+    () => document.querySelector('.mention[role="listbox"]'),
+    'The @ list did not reopen with a project'
+  )
+  await until(
+    () => document.querySelector('.mention [role="option"]'),
+    'The @ list did not find a file to highlight'
+  )
+  const mentionCombo = document.querySelector('.composer__input')
+  check(
+    mentionCombo.getAttribute('aria-controls') === mentionPopup.id,
+    'The composer does not name the file list it controls'
+  )
+  const mentionActiveId = mentionCombo.getAttribute('aria-activedescendant')
+  const mentionActive = mentionActiveId ? document.getElementById(mentionActiveId) : null
+  check(
+    mentionActive &&
+      mentionActive.getAttribute('role') === 'option' &&
+      mentionPopup.contains(mentionActive),
+    'The composer active file is not an option in its list'
+  )
   // A query over the search limit never ran either; the line says so instead of
   // reporting an empty result.
   typeMention('@' + 'x'.repeat(520))

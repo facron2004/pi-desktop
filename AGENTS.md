@@ -795,6 +795,19 @@ both sides of the guard (fields keep the chords, the composer does not).
 rename, the task prompt and the composer, so the blocked and the allowed sides
 are measured, not assumed.
 
+**Both lists are two popups of one combobox, and the relations follow the
+state.** While a list is open the box carries `aria-expanded="true"`, an
+`aria-controls` naming that list's own id (a named `role="listbox"`) and an
+`aria-activedescendant` naming the highlighted row (`role="option"` inside that
+list); when both lists are closed all three are gone, so nothing points at a
+widget that is not there. The command palette and the file mention list are the
+two cases; on the mention side `.mention` is the listbox and `.mention__list` is
+only its scroller. The picture strip is the third listbox in the app: named,
+every thumb an `option` with `aria-selected`, and one Tab stop with arrow
+navigation. `output/audit/check-a11y.mjs` measures the composer in all three
+states, and `tests/ui-regressions.mjs` asserts the relations for `/` and `@`,
+the closed state, and the picture strip.
+
 **Both lists in the box are one keyboard walk.** The command palette and the
 `@` file list take Up/Down (wrapping), Home/End and PageUp/PageDown; the page
 step is read from the list that is open (`listPageSize`), so a short window
