@@ -78,6 +78,11 @@ export function SettingsDialog({
 
   const [page, setPage] = useState<SettingsPage>(initialPage)
   const [pageQuery, setPageQuery] = useState('')
+  // The row a result named, so opening its page can point at it instead of
+  // leaving the reader to scan for the label they just typed.
+  const [hit, setHit] = useState<{ text: string; seq: number } | undefined>(undefined)
+  const contentRef = useRef<HTMLDivElement>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
   // The search reads the curated index in lib/settings-search.ts, never the
   // lazy pages themselves: mounting all twelve to read their labels would
   // start provider, update and memory requests the reader never asked for.
@@ -120,6 +125,47 @@ export function SettingsDialog({
     },
     [updateSettings]
   )
+
+  // A chosen result opens its page and then finds the row it named. The page is
+  // lazy, so the row may not exist on the first frame: poll for a moment, flash
+  // the deepest matching label, and clear the mark after the animation.
+  useEffect(() => {
+    if (!hit) return
+    let cancelled = false
+    let attempts = 0
+    let timer: number | undefined
+    const clear = () => {
+      contentRef.current?.querySelectorAll('.settings-hit').forEach((node) => {
+        node.classList.remove('settings-hit')
+      })
+    }
+    const find = () => {
+      if (cancelled) return
+      const container = contentRef.current
+      if (!container) return
+      const node = findSettingLabel(container, hit.text)
+      if (!node) {
+        if (attempts < 20) {
+          attempts += 1
+          window.setTimeout(find, 80)
+        }
+        return
+      }
+      clear()
+      node.classList.add('settings-hit')
+      // The page just changed under the pointer; an animated scroll would make
+      // the reader wait to see where the label landed.
+      node.scrollIntoView({ block: 'center' })
+      timer = window.setTimeout(() => node.classList.remove('settings-hit'), 1800)
+    }
+    const frame = requestAnimationFrame(find)
+    return () => {
+      cancelled = true
+      cancelAnimationFrame(frame)
+      if (timer !== undefined) window.clearTimeout(timer)
+      clear()
+    }
+  }, [hit])
 
   // The full update reading lives in the shared module, not in a component:
   // closing Settings, reopening it, or toggling a switch in between must not
@@ -184,6 +230,16 @@ export function SettingsDialog({
         aria-labelledby="settings-title"
         tabIndex={-1}
         onMouseDown={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          // The conversation's Ctrl+F searches the transcript and is disabled
+          // while a modal is open; inside Settings the same chord should reach
+          // the settings search instead of doing nothing.
+          if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'f') {
+            event.preventDefault()
+            searchRef.current?.focus()
+            searchRef.current?.select()
+          }
+        }}
       >
         <div className="modal__head">
           <h2 id="settings-title" className="modal__title">{t('Settings')}</h2>
@@ -203,6 +259,7 @@ export function SettingsDialog({
             <label className="settings-nav__search">
               <Search size={13} aria-hidden="true" />
               <input
+                ref={searchRef}
                 type="search"
                 value={pageQuery}
                 onChange={(event) => setPageQuery(event.target.value)}
@@ -242,6 +299,9 @@ export function SettingsDialog({
                   onClick={() => {
                     setPage(result.page)
                     setPageQuery('')
+                    setHit(result.match
+                      ? { text: result.match, seq: (hit?.seq ?? 0) + 1 }
+                      : undefined)
                   }}
                 >
                   <Icon size={15} />
@@ -257,7 +317,7 @@ export function SettingsDialog({
             ) : null}
           </nav>
 
-          <div className="settings-content">
+          <div className="settings-content" ref={contentRef}>
             <Suspense fallback={<FeatureLoading />}>
               {page === 'general' ? <GeneralSettings /> : null}
               {page === 'agent' ? <AgentSettings /> : null}
@@ -291,4 +351,21 @@ export function SettingsDialog({
       </div>
     </div>
   )
+}
+
+/**
+ * The element a search result named, inside the page that just opened.
+ *
+ * Settings rows grew their own markup page by page, so there is no shared
+ * anchor to point at. The label text is the one thing they have in common:
+ * take the deepest element whose trimmed text is exactly that label, so a
+ * wrapper row is not what flashes.
+ */
+function findSettingLabel(root: HTMLElement, label: string): HTMLElement | null {
+  const needle = label.trim()
+  if (!needle) return null
+  const matches = [...root.querySelectorAll<HTMLElement>('*')].filter(
+    (node) => node.textContent?.trim() === needle
+  )
+  return matches.find((node) => !matches.some((other) => other !== node && node.contains(other))) ?? null
 }

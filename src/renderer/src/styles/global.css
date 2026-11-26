@@ -6625,6 +6625,32 @@ animation: fade var(--dur-fast) var(--ease);
   line-height: var(--leading-small);
 }
 
+/* The label a search result named: the page opens at it and it flashes once,
+   so the reader's eye lands on the row instead of scanning the whole page. */
+.settings-hit {
+  border-radius: var(--r-xs);
+  animation: settings-hit 1.8s var(--ease);
+}
+
+@keyframes settings-hit {
+  0%,
+  30% {
+    background: color-mix(in oklab, var(--accent) 24%, transparent);
+    box-shadow: 0 0 0 4px color-mix(in oklab, var(--accent) 20%, transparent);
+  }
+  100% {
+    background: transparent;
+    box-shadow: 0 0 0 4px transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-hit {
+    animation: none;
+    background: color-mix(in oklab, var(--accent) 16%, transparent);
+  }
+}
+
 .settings-content {
   min-width: 0;
   min-height: 0;

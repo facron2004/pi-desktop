@@ -1214,6 +1214,25 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     'Clicking a search result did not open the page'
   )
   check(settingsSearch.value === '', 'Choosing a result left the query behind')
+  const markedSetting = await until(
+    () => [...document.querySelectorAll('.settings-hit')].find((node) => node.textContent?.trim() === 'Auto-generate title'),
+    'Opening a search result did not mark the setting it named'
+  )
+  await until(() => {
+    const box = markedSetting.getBoundingClientRect()
+    const view = document.querySelector('.settings-content')?.getBoundingClientRect()
+    return Boolean(view && box.top >= view.top - 1 && box.bottom <= view.bottom + 1)
+  }, 'The matched setting was not scrolled into view', 4000)
+  // Ctrl+F reaches the settings search while the dialog owns the keyboard.
+  document.querySelector('.settings-content').dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true })
+  )
+  await until(() => document.activeElement === settingsSearch, 'Ctrl+F did not focus the settings search')
+  await until(
+    () => !document.querySelector('.settings-hit'),
+    'The matched setting kept its highlight after the flash',
+    4000
+  )
   settingsSearch.focus()
   setSettingsField.call(settingsSearch, 'font')
   settingsSearch.dispatchEvent(new Event('input', { bubbles: true }))

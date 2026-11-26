@@ -1937,6 +1937,17 @@ Escape in a modal clears a non-empty `type="search"` field before it closes the
 dialog: `useDialogFocus` listens in the capture phase, so the hook has to step
 aside for that field or the key never reaches it. The next Escape closes.
 
+Choosing a result does not stop at opening the page. The page is lazy, so
+`SettingsDialog` polls for the row whose trimmed text is exactly the matched
+label (the deepest such element, or an ancestor would flash the whole group),
+scrolls it to the middle of `.settings-content` **without animation** — the
+page just changed, and an animated scroll makes the reader wait to see where
+the label landed — and flashes it with `.settings-hit` for 1.8 s. There is no
+shared anchor on the pages to point at, which is why the label text is the
+contract. `Ctrl+F` focuses the settings search while the dialog owns the
+keyboard; the conversation search it normally opens is already disabled behind
+a modal.
+
 ## Jumping to a search hit
 
 A conversation-search hit becomes a `pendingJump` in the store. The sidebar only
