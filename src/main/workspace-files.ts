@@ -6,7 +6,7 @@ const READ_FILE_FLAGS = constants.O_NONBLOCK === undefined
   ? 'r'
   : constants.O_RDONLY | constants.O_NONBLOCK
 
-function isInside(root: string, target: string): boolean {
+export function isPathWithin(root: string, target: string): boolean {
   const relative = path.relative(path.resolve(root), path.resolve(target))
   return relative === '' || (
     relative !== '..' &&
@@ -24,12 +24,12 @@ export async function resolveWorkspaceLocation(
   if (!root || typeof file !== 'string') return null
   const lexicalRoot = path.resolve(root)
   const lexicalTarget = path.resolve(lexicalRoot, file)
-  if (!isInside(lexicalRoot, lexicalTarget)) return null
+  if (!isPathWithin(lexicalRoot, lexicalTarget)) return null
   try {
     const [realRoot, realTarget] = preResolvedRoot
       ? [preResolvedRoot, await realpath(lexicalTarget)]
       : await Promise.all([realpath(lexicalRoot), realpath(lexicalTarget)])
-    return isInside(realRoot, realTarget) ? { root: realRoot, target: realTarget } : null
+    return isPathWithin(realRoot, realTarget) ? { root: realRoot, target: realTarget } : null
   } catch {
     return null
   }

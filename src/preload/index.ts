@@ -32,6 +32,7 @@ import type {
   GitCommitResult,
   GitFileDiff,
   GitPatch,
+  GitRemoveWorktreeResult,
   GitStatus,
   GitWorktreeResult,
   GeneratedImage,
@@ -324,7 +325,7 @@ const bridge: PiDesktopBridge = {
       expectedRoot: string
     ): Promise<GitWorktreeResult> =>
       ipcRenderer.invoke('git:addWorktree', path, branch, createBranch !== false, expectedRoot),
-    removeWorktree: (path: string, expectedRoot: string): Promise<GitCommitResult> =>
+    removeWorktree: (path: string, expectedRoot: string): Promise<GitRemoveWorktreeResult> =>
       ipcRenderer.invoke('git:removeWorktree', path, expectedRoot),
     revertFile: (file: string, expectedRoot: string): Promise<GitCommitResult> =>
       ipcRenderer.invoke('git:revertFile', file, expectedRoot),

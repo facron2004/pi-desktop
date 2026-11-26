@@ -26,6 +26,17 @@ const workspace = (id: string, path: string, lastOpenedAt: number): Workspace =>
 })
 
 /**
+ * `whoami` / `icacls` by their full path, the way `settings.ts` runs them.
+ *
+ * A bare name is resolved through `PATH`, and a shell that puts its own
+ * `whoami` first (Git Bash ships one that has no `/user`) fails the call
+ * while the app — which never looks at `PATH` for these — works.
+ */
+const system32 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32')
+const whoami = path.join(system32, 'whoami.exe')
+const icacls = path.join(system32, 'icacls.exe')
+
+/**
  * The folder the mocked `app.getPath('userData')` points at.
  *
  * It is created rather than assumed: a clean CI runner has no `C:\tmp`, and the
@@ -120,13 +131,13 @@ test('Windows user-data ACL repair removes an extra Everyone full-control ACE', 
   if (process.platform !== 'win32') return
   const directory = mkdtempSync(path.join(tmpdir(), 'pi-user-data-acl-extra-principal-'))
   try {
-    const identity = execFileSync('whoami', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8' })
+    const identity = execFileSync(whoami, ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8' })
     const account = parseWindowsUserName(identity)
     const sid = parseWindowsUserSid(identity)
     assert.ok(account)
     assert.ok(sid)
-    execFileSync('icacls', [directory, '/inheritance:r', '/Q', '/L'])
-    execFileSync('icacls', [
+    execFileSync(icacls, [directory, '/inheritance:r', '/Q', '/L'])
+    execFileSync(icacls, [
       directory,
       '/grant:r',
       `*${sid}:(OI)(CI)F`,
@@ -136,11 +147,11 @@ test('Windows user-data ACL repair removes an extra Everyone full-control ACE', 
       '/Q',
       '/L'
     ])
-    const before = execFileSync('icacls', [directory, '/L'], { encoding: 'utf8' })
+    const before = execFileSync(icacls, [directory, '/L'], { encoding: 'utf8' })
     assert.equal(windowsUserDataAclSecure(before, account, sid, directory), false)
 
     assert.equal(secureUserDataDirectory(directory), true, 'the unsafe root ACL should be repaired')
-    const after = execFileSync('icacls', [directory, '/L'], { encoding: 'utf8' })
+    const after = execFileSync(icacls, [directory, '/L'], { encoding: 'utf8' })
     assert.equal(windowsUserDataAclSecure(after, account, sid, directory), true, `unexpected repaired ACL:\n${after}`)
     assert.doesNotMatch(after, /Everyone:\(OI\)\(CI\)\(F\)/i)
   } finally {
@@ -611,6 +622,23 @@ test('an explicit project hide takes effect after another store makes the projec
   local.removeWorkspace(undefined, project)
 
   assert.deepEqual(new SettingsStore(fileName).get().hiddenProjects, ['C:/another', project])
+})
+
+test('a delayed removal keeps a replacement registration at the same path visible', (t) => {
+  const fileName = `settings-remove-replaced-workspace-${process.pid}.json`
+  t.after(() => rmSync(settingsFile(fileName), { force: true }))
+  const project = 'C:/worktree'
+  const local = new SettingsStore(fileName)
+  const peer = new SettingsStore(fileName)
+  local.addWorkspace(workspace('previous', project, 100))
+  peer.removeWorkspace('previous')
+  peer.addWorkspace(workspace('replacement', project, 200))
+
+  local.removeWorkspace('previous', project)
+  const saved = new SettingsStore(fileName).get()
+  assert.deepEqual(saved.workspaces.map((item) => item.id), ['replacement'])
+  assert.equal(saved.activeWorkspaceId, 'replacement')
+  assert.deepEqual(saved.hiddenProjects, [])
 })
 
 test('registering a project moves it to the first row after another store changes the order', (t) => {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
@@ -87,6 +87,25 @@ test('removeWorktree stops its runtime only after validating the registered targ
     })
     assert.equal(invalid.ok, false)
     assert.equal(invalidTargetStopped, false)
+
+    const unexpectedStop = async () => assert.fail('an ineligible worktree must leave its processes running')
+    const untracked = path.join(worktree, 'draft.txt')
+    writeFileSync(untracked, 'keep this draft')
+    const dirty = await removeWorktree(root, worktree, unexpectedStop)
+    assert.equal(dirty.ok, false)
+    assert.match(dirty.error ?? '', /uncommitted changes/)
+    assert.equal(existsSync(untracked), true)
+    unlinkSync(untracked)
+
+    git('worktree', 'lock', '--reason', 'external device', worktree)
+    const locked = await removeWorktree(root, worktree, unexpectedStop)
+    assert.equal(locked.ok, false)
+    assert.match(locked.error ?? '', /locked/i)
+    git('worktree', 'unlock', worktree)
+
+    const main = await removeWorktree(worktree, root, unexpectedStop)
+    assert.equal(main.ok, false)
+    assert.match(main.error ?? '', /main worktree/i)
 
     let stoppedPath: string | undefined
     let runtimeStopped = false

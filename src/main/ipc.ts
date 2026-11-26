@@ -27,6 +27,7 @@ import type {
   FileSearchResult,
   FileSearchScope,
   GitCommitResult,
+  GitRemoveWorktreeResult,
   ImageGenerationRequest,
   ImageListResult,
   ImChannelConfig,
@@ -132,7 +133,7 @@ import {
   pullBranch
 } from './git'
 import { SettingsStore } from './settings'
-import { openWorkspaceFile, resolveWorkspaceLocation, resolveWorkspacePath } from './workspace-files'
+import { isPathWithin, openWorkspaceFile, resolveWorkspaceLocation, resolveWorkspacePath } from './workspace-files'
 
 export { openWorkspaceFile, resolveWorkspacePath }
 import {
@@ -158,7 +159,7 @@ import type { ScheduledTaskService } from './scheduled-tasks'
 import type { SideChatBindingService } from './side-chats'
 import type { MainConversationMirror } from './pi/main-mirror'
 import type { SideChatBridgeServer } from './pi/side-chat-bridge'
-import { canonicalSessionFile } from './pi/session-file'
+import { canonicalPath, canonicalSessionFile } from './pi/session-file'
 
 export interface IpcContext {
   supervisor: SessionSupervisor
@@ -476,12 +477,6 @@ async function gitWrite<T extends GitCommitResult>(
   }
 }
 
-function isPathWithin(root: string, target: string): boolean {
-  const relative = path.relative(path.resolve(root), path.resolve(target))
-  return relative === '' ||
-    (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
-}
-
 type RuntimeCwdRegistration =
   | { kind: 'projectless'; path: string }
   | { kind: 'workspace'; id: string; path: string }
@@ -531,31 +526,22 @@ async function resolveRuntimeCwd(context: IpcContext, cwd: unknown): Promise<Res
   return null
 }
 
-/**
- * Where a terminal may start.
- *
- * The renderer names the folder a hand-off came from, so it is treated like
- * every other renderer path: only a folder this app knows about — a registered
- * project, the projectless chats root, or a folder inside one of them — is
- * accepted. Anything else falls back to the workspace on screen. A shell parked
- * in an unregistered directory would also outlive the project it claims to
- * belong to, because removing a workspace only stops the terminals whose cwd is
- * inside it (`supervisor.stopCwd`).
- */
+/** An explicit directory belongs to the original hand-off, even after a view change. */
 export function resolveTerminalCwd(context: IpcContext, requested: unknown): string {
-  const fallback = workspaceRoot(context)
+  if (requested === undefined) return workspaceRoot(context) || projectlessRoot()
   if (requested === '') return projectlessRoot()
   const wanted = typeof requested === 'string' ? requested.trim() : ''
-  if (!wanted || !path.isAbsolute(wanted)) return fallback
+  if (!path.isAbsolute(wanted)) throw new Error('Working folder is not an available workspace.')
   const candidate = path.resolve(wanted)
+  const realCandidate = canonicalPath(candidate)
   const roots = [
     projectlessPath(),
     ...(context.settings.get().workspaces ?? []).map((workspace) => workspace.path)
   ]
   for (const root of roots) {
-    if (root && isPathWithin(root, candidate)) return candidate
+    if (root && isPathWithin(root, candidate) && isPathWithin(canonicalPath(root), realCandidate)) return candidate
   }
-  return fallback
+  throw new Error('Working folder is not an available workspace.')
 }
 
 /** The picture types the inspector's viewer can draw, by file extension. */
@@ -1164,6 +1150,11 @@ export function registerIpc(context: IpcContext): void {
     })
     return result
   }
+  const stopWorkspaceProcesses = async (cwd: string): Promise<void> => {
+    const results = await Promise.allSettled([supervisor.stopCwd(cwd), terminals.disposeCwd(cwd)])
+    const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+    if (failure) throw failure.reason
+  }
   // Large sessions are searched through an index kept beside the app's data,
   // never inside the user's project folder.
   configureSessionSearchIndex(path.join(app.getPath('userData'), 'session-search-index'))
@@ -1771,7 +1762,7 @@ export function registerIpc(context: IpcContext): void {
       if (!workspace) return next
       // Only stop a project after its removal is saved. stopCwd claims it
       // synchronously, and the settings response can return while it drains.
-      void supervisor.stopCwd(workspace.path).catch((error: unknown) => {
+      void stopWorkspaceProcesses(workspace.path).catch((error: unknown) => {
         console.error('[pi-desktop] failed to stop a removed project:', error)
       })
       return next
@@ -2085,17 +2076,30 @@ export function registerIpc(context: IpcContext): void {
       gitWrite(context, root => addWorktree(root, worktreePath, branch, create !== false), expectedRoot)
   )
 
-  ipcMain.handle('git:removeWorktree', async (_event, worktreePath: string, expectedRoot: unknown) => {
+  ipcMain.handle('git:removeWorktree', async (_event, worktreePath: unknown, expectedRoot: unknown): Promise<GitRemoveWorktreeResult> => {
     try {
       const workspace = expectedRoot ?? ''
       const root = gitWorkspaceRoot(context, workspace)
-      return await removeWorktree(
-        root,
-        worktreePath,
-        async (resolved, remove) => {
+      if (typeof worktreePath !== 'string' || !worktreePath) return { ok: false, error: 'No worktree was given.' }
+      const target = path.resolve(root, worktreePath)
+      return await serializeWorkspaceMutation(target, () => {
+        const registration = settings.get().workspaces.find((entry) => pathsEqual(entry.path, target))
+        return removeWorktree(root, target, (resolved, remove) => {
+          gitWorkspaceRoot(context, workspace)
           const removeIfCurrent = () => {
             gitWorkspaceRoot(context, workspace)
-            return remove()
+            return terminals.withCwdClosed(resolved, async (): Promise<GitRemoveWorktreeResult> => {
+              gitWorkspaceRoot(context, workspace)
+              const result = await remove()
+              if (!result.ok) return result
+              try {
+                await waitForSettingsLock()
+                return { ...result, settings: settings.removeWorkspace(registration?.id, resolved) }
+              } catch (error) {
+                console.error('[pi-desktop] could not clear a removed worktree registration:', error)
+                return result
+              }
+            })
           }
           // A parent lock covers a nested worktree. Stop its current process
           // first and keep the folder closed through the Git operation.
@@ -2105,8 +2109,8 @@ export function registerIpc(context: IpcContext): void {
           return supervisor.withCwdLock(root, () =>
             supervisor.stopCwd(resolved, () => supervisor.withCwdLock(resolved, removeIfCurrent))
           )
-        }
-      )
+        })
+      })
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }
@@ -2817,7 +2821,7 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('runtime:stopCwd', async (_event, cwd: unknown) => {
     const target = await resolveRuntimeStopCwd(context, cwd)
-    if (target) await supervisor.stopCwd(target)
+    if (target) await stopWorkspaceProcesses(target)
   })
 
   ipcMain.handle(

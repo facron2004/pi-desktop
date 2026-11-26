@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { IPty, IPtyForkOptions, IWindowsPtyForkOptions } from 'node-pty'
@@ -31,11 +31,12 @@ test('a terminal only starts inside a project the app knows about', () => {
     // The project and a folder inside it are accepted...
     assert.equal(resolveTerminalCwd(context, project), project)
     assert.equal(resolveTerminalCwd(context, nested), nested)
-    // ...an unrelated absolute directory falls back to the workspace on screen...
-    assert.equal(resolveTerminalCwd(context, outside), project)
-    // ...a relative path is not a working directory either, and the explicit
-    // empty string still means "the projectless chats folder".
-    assert.equal(resolveTerminalCwd(context, 'relative/dir'), project)
+    assert.equal(resolveTerminalCwd(context, undefined), project)
+    assert.throws(() => resolveTerminalCwd(context, outside), /not an available workspace/)
+    assert.throws(() => resolveTerminalCwd(context, 'relative/dir'), /not an available workspace/)
+    const link = path.join(project, 'link')
+    symlinkSync(outside, link, process.platform === 'win32' ? 'junction' : 'dir')
+    assert.throws(() => resolveTerminalCwd(context, link), /not an available workspace/)
     assert.match(resolveTerminalCwd(context, ''), /chats$/)
   } finally {
     rmSync(parent, { recursive: true, force: true })
@@ -189,6 +190,40 @@ function disposablePty(): IPty {
   } as unknown as IPty
 }
 
+test('closing a project stops terminal trees in that project and its nested folders only', async (t) => {
+  const parent = mkdtempSync(path.join(tmpdir(), 'pi-terminal-scope-'))
+  t.after(() => rmSync(parent, { recursive: true, force: true }))
+  const project = path.join(parent, 'project')
+  const child = path.join(project, 'src')
+  const sibling = path.join(parent, 'project-other')
+  const alias = path.join(parent, 'linked-project')
+  mkdirSync(child, { recursive: true })
+  mkdirSync(sibling)
+  symlinkSync(project, alias, process.platform === 'win32' ? 'junction' : 'dir')
+  const stoppedTrees: number[] = []
+  const stoppedPtys: number[] = []
+  let pid = 1000
+  const manager = new TerminalManager(() => undefined, () => {
+    const shell = Object.assign(disposablePty(), { pid: ++pid })
+    shell.kill = () => { stoppedPtys.push(shell.pid) }
+    return shell
+  }, 'win32', async (target) => { stoppedTrees.push(target); return true })
+  const tab = manager.create({ cwd: alias, cols: 80, rows: 24 })
+  const nested = manager.create({ cwd: child, cols: 80, rows: 24 })
+  const other = manager.create({ cwd: sibling, cols: 80, rows: 24 })
+  try {
+    const closing = manager.disposeCwd(project)
+    assert.equal(manager.write(tab.id, 'echo'), false)
+    assert.equal(manager.write(nested.id, 'echo'), false)
+    assert.equal(manager.write(other.id, 'echo'), true)
+    await closing
+    assert.deepEqual(stoppedTrees, [tab.pid, nested.pid])
+    assert.deepEqual(stoppedPtys, stoppedTrees)
+  } finally {
+    await manager.disposeAll()
+  }
+})
+
 test('terminal writes report whether the PTY accepted the input', async () => {
   const pty = disposablePty()
   const writes: string[] = []
@@ -295,16 +330,20 @@ test('Windows terminal shutdown still waits for native cleanup after the shell e
 
   let disposed = false
   const shutdown = manager.disposeAll().then(() => { disposed = true })
+  let worktreeRemovalStarted = false
+  const scoped = manager.withCwdClosed(terminal.cwd, async () => { worktreeRemovalStarted = true })
   try {
     await new Promise((resolve) => setImmediate(resolve))
     assert.equal(nativeStops, 0)
     assert.equal(disposed, false)
+    assert.equal(worktreeRemovalStarted, false)
   } finally {
     treeFinished.resolve(true)
-    await Promise.all([closing, shutdown])
+    await Promise.all([closing, shutdown, scoped])
   }
   assert.equal(nativeStops, 1)
   assert.equal(disposed, true)
+  assert.equal(worktreeRemovalStarted, true)
 })
 
 test('terminal creation waits for renderer disposal and rejects a superseded request', async () => {

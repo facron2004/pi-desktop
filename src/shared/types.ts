@@ -735,6 +735,11 @@ export interface GitWorktreeResult extends GitCommitResult {
   branch?: string
 }
 
+export interface GitRemoveWorktreeResult extends GitCommitResult {
+  /** Saved project settings. A successful Git removal can outlive a failed settings write. */
+  settings?: AppSettings
+}
+
 /* ------------------------------------------------------------------ *
  * MCP configuration
  * ------------------------------------------------------------------ */
@@ -1614,7 +1619,7 @@ export interface PiDesktopBridge {
       expectedRoot: string
     ): Promise<GitWorktreeResult>
     /** Remove a registered worktree that is not the one that is open. */
-    removeWorktree(path: string, expectedRoot: string): Promise<GitCommitResult>
+    removeWorktree(path: string, expectedRoot: string): Promise<GitRemoveWorktreeResult>
     /** Discard the working-tree changes of a tracked file. */
     revertFile(file: string, expectedRoot: string): Promise<GitCommitResult>
     /** Move one file into (or out of) the index. */

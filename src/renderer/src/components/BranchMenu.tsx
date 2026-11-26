@@ -174,8 +174,12 @@ export const BranchMenu = memo(function BranchMenu({
       }
       setWorktreeToRemove(undefined)
       restoreFocus()
-      await removeWorkspace({ path: target.path })
-      showToast(`${t('Worktree removed')}: ${basename(target.path)}`)
+      if (result.settings) {
+        await removeWorkspace({ path: target.path }, result.settings)
+        showToast(`${t('Worktree removed')}: ${basename(target.path)}`)
+      } else {
+        showToast(t('The worktree was removed, but its project settings could not be saved.'), 'warning')
+      }
       await Promise.allSettled([refreshGit(), load()])
     } catch {
       showToast(t('Could not remove the worktree'), 'error')

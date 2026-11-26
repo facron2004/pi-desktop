@@ -961,7 +961,7 @@ export interface AppStore {
    */
   queueProjectSwitch: (path: string | null) => Promise<void>
   /** Drop a project from the sidebar, whether or not it was registered. */
-  removeWorkspace: (target: { id?: string; path: string }) => Promise<void>
+  removeWorkspace: (target: { id?: string; path: string }, savedSettings?: AppSettings) => Promise<void>
   refreshSessions: () => Promise<void>
   selectSession: (session: SessionMeta, sourceAction?: string) => Promise<void>
   /** Read a cold conversation from disk into its own thread. Does not start Pi. */
@@ -2691,18 +2691,19 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     return epoch === workspaceEpoch ? activeKey : undefined
   },
 
-  async removeWorkspace(target) {
+  async removeWorkspace(target, savedSettings) {
     const path = target.path
     if (!path) return
-    const queuedSwitchRemoved = typeof pendingProjectPath === 'string' && samePath(pendingProjectPath, path)
+    const removesPath = !savedSettings?.workspaces.some((workspace) => samePath(workspace.path, path))
+    const queuedSwitchRemoved = removesPath && typeof pendingProjectPath === 'string' && samePath(pendingProjectPath, path)
     if (queuedSwitchRemoved) {
       pendingProjectPath = undefined
       set({ pendingProject: undefined })
     }
     const active = get().workspace
-    const removesActive = Boolean(active && samePath(active.path, path))
+    const removesActive = removesPath && Boolean(active && samePath(active.path, path))
     const removesTransitionTarget =
-      typeof projectTransitionTarget === 'string' && samePath(projectTransitionTarget, path)
+      removesPath && typeof projectTransitionTarget === 'string' && samePath(projectTransitionTarget, path)
     // `beginProjectChange` returns the workspace epoch, which also moves for
     // view-only changes. This guard is about the project, so it has to compare
     // the project epoch itself: using the returned value made the replacement
@@ -2714,7 +2715,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     // The removal answers with the settings it wrote: re-reading them here
     // waited on the settings lock a second time for a value this call already
     // had, which is the second half of "deleting a project is slow".
-    const settings = await window.pi.workspaces.remove(target.id, path)
+    const settings = savedSettings ?? await window.pi.workspaces.remove(target.id, path)
     set({ settings })
     applyAppearance(settings, get().info?.forcedTheme)
     if (epoch !== projectEpoch) return

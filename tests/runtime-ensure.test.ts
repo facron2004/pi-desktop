@@ -15,7 +15,8 @@ import { piVersion } from '../src/main/pi/cli'
 import { SessionSupervisor } from '../src/main/pi/supervisor'
 import { properLockfile } from '../src/main/proper-lockfile'
 import { SettingsStore } from '../src/main/settings'
-import type { AppSettings, GitFileDiff, GitPatch, GitStatus, PiCliUpgradeProgress, RuntimeEnsureOptions } from '../src/shared/types'
+import { TerminalManager } from '../src/main/terminal'
+import type { AppSettings, GitFileDiff, GitPatch, GitRemoveWorktreeResult, GitStatus, PiCliUpgradeProgress, RuntimeEnsureOptions } from '../src/shared/types'
 
 test('saving Automatic reasoning clears the Pi startup override before returning', async (t) => {
   const directory = mkdtempSync(path.join(tmpdir(), 'pi-automatic-reasoning-'))
@@ -307,8 +308,9 @@ test('Git writes reject a stale project and registration does not select a folde
   }
 })
 
-for (const nested of [true, false]) {
-  test(`worktree removal holds runtime admission closed while Git waits (${nested ? 'nested' : 'sibling'})`, async (t) => {
+for (const scenario of ['nested', 'sibling', 'settings-error', 'replacement'] as const) {
+  test(`worktree removal holds runtime admission closed while Git waits (${scenario})`, async (t) => {
+    const nested = scenario !== 'sibling'
     const directory = mkdtempSync(path.join(realpathSync(tmpdir()), 'pi-remove-worktree-admission-'))
     const root = path.join(directory, 'repo')
     const target = path.join(nested ? root : directory, 'other-tree')
@@ -325,12 +327,36 @@ for (const nested of [true, false]) {
     git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '--allow-empty', '-qm', 'initial')
     git('worktree', 'add', '-qb', 'other-tree', target)
     const workspaces = [
-      { id: 'source', path: root },
-      { id: 'target', path: target }
+      { id: 'source', path: root, name: 'Source', lastOpenedAt: 0 },
+      { id: 'target', path: target, name: 'Target', lastOpenedAt: 0 }
     ]
-    let activeWorkspaceId = 'source'
+    t.mock.method(app, 'getPath', () => directory)
+    const settings = new SettingsStore('worktree-test-settings.json')
+    settings.addWorkspace(workspaces[0])
+    settings.addWorkspace(workspaces[1], false)
+    if (scenario === 'settings-error') {
+      t.mock.method(settings, 'removeWorkspace', () => { throw new Error('Settings file unavailable') })
+      t.mock.method(console, 'error', () => {})
+    }
+    if (scenario === 'replacement') {
+      t.mock.method(settings, 'waitForLock', async () => {
+        assert.equal(existsSync(target), false, 'the peer replaces the directory after Git removed it')
+        mkdirSync(target)
+        const peer = new SettingsStore('worktree-test-settings.json')
+        peer.removeWorkspace('target')
+        peer.addWorkspace({ ...workspaces[1], id: 'replacement' }, false)
+      })
+    }
     const entered = Promise.withResolvers<void>()
     const resume = Promise.withResolvers<void>()
+    const terminalEntered = Promise.withResolvers<void>()
+    const resumeTerminal = Promise.withResolvers<void>()
+    const terminals = new TerminalManager(() => {}, () => { throw new Error('PTY factory reached') })
+    t.mock.method(terminals, 'disposeCwd', async (cwd: string) => {
+      assert.equal(cwd, target)
+      terminalEntered.resolve()
+      await resumeTerminal.promise
+    })
     const withCwdLock = supervisor.withCwdLock.bind(supervisor)
     supervisor.withCwdLock = (cwd, action) => withCwdLock(cwd, async () => {
       if (cwd === (nested ? root : target)) {
@@ -344,9 +370,9 @@ for (const nested of [true, false]) {
     t.mock.method(ipcMain, 'handle', (channel, handler) => handlers.set(channel, handler))
     registerIpc({
       supervisor,
-      settings: { get: () => ({ workspaces, activeWorkspaceId }) },
+      settings,
       getWindow: () => null,
-      terminals: {},
+      terminals,
       memory: {}
     } as unknown as IpcContext)
     const removing = handlers.get('git:removeWorktree')!({}, target, root)
@@ -358,20 +384,50 @@ for (const nested of [true, false]) {
       assert.deepEqual(await supervisor.ensure({ sessionKey: 'draft:target', cwd: target }), {
         ok: false, error: 'Working folder is being closed.'
       })
+      resume.resolve()
+      await Promise.race([
+        terminalEntered.promise,
+        Promise.resolve(removing).then(result => assert.fail(`Removal finished before closing terminals: ${JSON.stringify(result)}`))
+      ])
+      assert.equal(existsSync(target), true)
+      assert.throws(() => terminals.create({ cwd: target, cols: 80, rows: 24 }), /Working folder is being closed/)
+      assert.throws(() => terminals.create({ cwd: root, cols: 80, rows: 24 }), /PTY factory reached/)
       // A user selecting the target before the delayed write reaches Git
       // should not have the worktree removed from under the new view.
-      if (!nested) activeWorkspaceId = 'target'
+      if (!nested) settings.patch({ activeWorkspaceId: 'target' })
     } finally {
       resume.resolve()
+      resumeTerminal.resolve()
       await removing
     }
-    assert.deepEqual(await removing, nested
-      ? { ok: true }
-      : { ok: false, error: 'The active project changed before Git could start.' })
-    assert.equal(existsSync(target), !nested)
+    const result = await removing as GitRemoveWorktreeResult
+    assert.equal(existsSync(target), scenario === 'sibling' || scenario === 'replacement')
+    if (scenario === 'nested') {
+      assert.equal(result.ok, true, result.error)
+      const saved = new SettingsStore('worktree-test-settings.json').get()
+      assert.deepEqual(saved.workspaces.map((item) => item.id), ['source'])
+      assert.deepEqual(saved.hiddenProjects, [target])
+      assert.deepEqual(result.settings?.workspaces, saved.workspaces)
+
+      mkdirSync(target)
+      const opened = await handlers.get('workspaces:add')!({}, target) as { workspace: { id: string } }
+      assert.notEqual(opened.workspace.id, 'target', 'reopening the folder uses a fresh registration')
+    } else if (scenario === 'sibling') {
+      assert.deepEqual(result, { ok: false, error: 'The active project changed before Git could start.' })
+      assert.equal(settings.get().activeWorkspaceId, 'target')
+      assert.deepEqual(settings.get().workspaces.map((item) => item.id), ['source', 'target'])
+    } else if (scenario === 'settings-error') {
+      assert.deepEqual(result, { ok: true })
+      assert.deepEqual(settings.get().workspaces.map((item) => item.id), ['source', 'target'])
+    } else {
+      assert.equal(result.ok, true, result.error)
+      assert.deepEqual(result.settings?.workspaces.map((item) => item.id), ['source', 'replacement'])
+      assert.deepEqual(result.settings?.hiddenProjects, [])
+    }
     assert.ok(git('branch', '--list', 'other-tree').trim())
     if (!nested) {
       await assert.rejects(supervisor.ensure({ sessionKey: 'draft:retry', cwd: target }), /Pi runtime factory reached/)
+      assert.throws(() => terminals.create({ cwd: target, cols: 80, rows: 24 }), /PTY factory reached/)
     }
   })
 }
@@ -657,7 +713,7 @@ test('runtime stopCwd is limited to an exact registered project root', async () 
         }
       },
       getWindow: () => null,
-      terminals: { create: () => ({}) },
+      terminals: { disposeCwd: async (cwd: string) => { operations.push(`terminal:${cwd}`) } },
       memory: { promptFor: () => '' }
     } as unknown as IpcContext)
 
@@ -671,11 +727,11 @@ test('runtime stopCwd is limited to an exact registered project root', async () 
     assert.deepEqual(operations, [], 'an unregistered parent path cannot stop project runtimes')
 
     await stopCwd({}, workspace)
-    assert.deepEqual(operations, [`stop:${workspace}`])
+    assert.deepEqual(operations, [`stop:${workspace}`, `terminal:${workspace}`])
 
     operations.length = 0
     await removeWorkspace({}, 'workspace')
-    assert.deepEqual(operations, ['remove', `stop:${workspace}`])
+    assert.deepEqual(operations, ['remove', `stop:${workspace}`, `terminal:${workspace}`])
   } finally {
     if (handleDescriptor) Object.defineProperty(ipcMain, 'handle', handleDescriptor)
     else delete (ipcMain as unknown as { handle?: unknown }).handle
@@ -683,13 +739,15 @@ test('runtime stopCwd is limited to an exact registered project root', async () 
   }
 })
 
-test('removing a project does not wait for its agent to shut down', async () => {
+test('removing a project leaves cleanup in the background and rejects pending shells for that project', async () => {
   // `abort` can spend its whole timeout on a busy run, and the project row used
   // to stay on screen for it. The settings write happens first; the stop drains
   // behind it.
   const parent = mkdtempSync(path.join(tmpdir(), 'runtime-remove-fast-'))
   const workspace = path.join(parent, 'workspace')
+  const other = { id: 'other', path: path.join(parent, 'other') }
   mkdirSync(workspace)
+  mkdirSync(other.path)
   const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
   const handleDescriptor = Object.getOwnPropertyDescriptor(ipcMain, 'handle')
   Object.defineProperty(ipcMain, 'handle', {
@@ -699,47 +757,60 @@ test('removing a project does not wait for its agent to shut down', async () => 
     }
   })
   const operations: string[] = []
+  const terminalCleanup = Promise.withResolvers<void>()
+  const piCleanup = Promise.withResolvers<void>()
   let writeFails = true
-  let releaseStop: () => void = () => undefined
+  let workspaces = [{ id: 'workspace', path: workspace }, other]
   try {
     registerIpc({
       supervisor: {
         // A stop that never settles is exactly what a wedged agent looks like.
         stopCwd: (cwd: string) => {
           operations.push(`stop:${cwd}`)
-          return new Promise<void>((resolve) => {
-            releaseStop = resolve
-          })
+          return piCleanup.promise
         }
       },
       settings: {
         get: () => ({
-          activeWorkspaceId: 'workspace',
-          workspaces: [{ id: 'workspace', path: workspace }]
+          activeWorkspaceId: workspaces[0]?.id,
+          workspaces
         }),
         removeWorkspace: () => {
           operations.push('remove')
           if (writeFails) throw new Error('Settings are not writable')
-          return { activeWorkspaceId: null, workspaces: [] }
+          workspaces = [other]
+          return { activeWorkspaceId: 'other', workspaces }
         }
       },
       getWindow: () => null,
-      terminals: { create: () => ({}) },
+      terminals: {
+        create: () => { operations.push('spawn'); return {} },
+        disposeCwd: (cwd: string) => {
+          operations.push(`terminal:${cwd}`)
+          return terminalCleanup.promise
+        },
+        waitForDisposal: () => terminalCleanup.promise
+      },
       memory: { promptFor: () => '' }
     } as unknown as IpcContext)
 
     const removeWorkspace = handlers.get('workspaces:remove')
     assert.ok(removeWorkspace, 'workspaces:remove handler was registered')
     await assert.rejects(removeWorkspace({}, 'workspace'), /Settings are not writable/)
-    assert.deepEqual(operations, ['remove'], 'a failed settings write must leave Pi running')
+    assert.deepEqual(operations, ['remove'], 'a failed settings write must leave Pi and its terminals running')
 
     writeFails = false
     operations.length = 0
-    const settings = await removeWorkspace({}, 'workspace')
-    assert.deepEqual(operations, ['remove', `stop:${workspace}`], 'the settings write must not wait for the agent')
-    assert.deepEqual((settings as { workspaces: unknown[] }).workspaces, [])
-    releaseStop()
+    const terminalCreate = handlers.get('terminal:create')!
+    const pendingShell = terminalCreate({}, { cwd: workspace, cols: 80, rows: 24 })
+    const removal = await removeWorkspace({}, 'workspace')
+    terminalCleanup.resolve()
+    await assert.rejects(pendingShell, /not an available workspace/)
+    assert.deepEqual(operations, ['remove', `stop:${workspace}`, `terminal:${workspace}`])
+    assert.deepEqual((removal as { workspaces: unknown[] }).workspaces, workspaces)
   } finally {
+    terminalCleanup.resolve()
+    piCleanup.resolve()
     if (handleDescriptor) Object.defineProperty(ipcMain, 'handle', handleDescriptor)
     else delete (ipcMain as unknown as { handle?: unknown }).handle
     rmSync(parent, { recursive: true, force: true })

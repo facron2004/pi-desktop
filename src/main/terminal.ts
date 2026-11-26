@@ -8,7 +8,9 @@ import {
   type TerminalSessionInfo
 } from '@shared/types'
 import { resolveShellSpec } from './shell'
+import { canonicalPath } from './pi/session-file'
 import { assertTerminalWorkingDirectory } from './terminal-path'
+import { isPathWithin } from './workspace-files'
 
 const MAX_COLS = 500
 const MAX_ROWS = 300
@@ -21,6 +23,7 @@ const TERMINAL_TREE_KILL_TIMEOUT_MS = 5_000
 interface Session {
   process: pty.IPty
   cwd: string
+  realCwd: string
   shell: string
   nextOutputSequence: number
   pendingOutput: Map<number, number>
@@ -54,7 +57,8 @@ function stopWindowsTerminalTree(pid: number): Promise<boolean> {
 export class TerminalManager {
   private readonly sessions = new Map<string, Session>()
   // Shell exit removes the session before native cleanup can finish.
-  private readonly pendingStops = new Map<string, Promise<void>>()
+  private readonly pendingStops = new Map<string, { session: Session; done: Promise<void> }>()
+  private readonly closingCwds = new Map<string, number>()
   private disposal?: Promise<void>
 
   constructor(
@@ -70,6 +74,10 @@ export class TerminalManager {
     }
     const cwd = options.cwd?.trim() || process.cwd()
     assertTerminalWorkingDirectory(cwd)
+    const realCwd = canonicalPath(cwd)
+    for (const root of this.closingCwds.keys()) {
+      if (isPathWithin(root, realCwd)) throw new Error('Working folder is being closed.')
+    }
     const shell = resolveShellSpec(options.shell)
     const env: Record<string, string> = {}
     for (const [key, value] of Object.entries(process.env)) {
@@ -101,6 +109,7 @@ export class TerminalManager {
     const session: Session = {
       process: processHandle,
       cwd,
+      realCwd,
       shell: shell.label,
       nextOutputSequence: 0,
       pendingOutput: new Map(),
@@ -182,7 +191,7 @@ export class TerminalManager {
 
   kill(id: string): Promise<void> {
     const pendingStop = this.pendingStops.get(id)
-    if (pendingStop) return pendingStop
+    if (pendingStop) return pendingStop.done
     const session = this.sessions.get(id)
     if (!session) return Promise.resolve()
     session.closing = true
@@ -213,7 +222,7 @@ export class TerminalManager {
     }).finally(() => {
       this.pendingStops.delete(id)
     })
-    this.pendingStops.set(id, stopTask)
+    this.pendingStops.set(id, { session, done: stopTask })
     return stopTask
   }
 
@@ -233,11 +242,40 @@ export class TerminalManager {
 
   disposeAll(): Promise<void> {
     const ids = [...new Set([...this.sessions.keys(), ...this.pendingStops.keys()])]
-    const disposal = Promise.all(ids.map(id => this.kill(id))).then(() => this.finishClosing(ids))
+    const disposal = this.disposeSessions(ids)
     // Report a failed disposal to its caller; a later terminal open can retry
     // the retained handles through waitForDisposal.
     this.disposal = disposal.catch(() => {})
     return disposal
+  }
+
+  disposeCwd(cwd: string): Promise<void> {
+    const realRoot = canonicalPath(cwd)
+    const sessions = new Map(this.sessions)
+    for (const [id, { session }] of this.pendingStops) sessions.set(id, session)
+    const ids: string[] = []
+    for (const [id, session] of sessions) {
+      if (isPathWithin(cwd, session.cwd) || isPathWithin(realRoot, session.realCwd)) ids.push(id)
+    }
+    return this.disposeSessions(ids)
+  }
+
+  async withCwdClosed<T>(cwd: string, action: () => Promise<T>): Promise<T> {
+    const root = canonicalPath(cwd)
+    this.closingCwds.set(root, (this.closingCwds.get(root) ?? 0) + 1)
+    try {
+      await this.disposeCwd(cwd)
+      return await action()
+    } finally {
+      const count = this.closingCwds.get(root) ?? 0
+      if (count <= 1) this.closingCwds.delete(root)
+      else this.closingCwds.set(root, count - 1)
+    }
+  }
+
+  private async disposeSessions(ids: string[]): Promise<void> {
+    await Promise.all(ids.map(id => this.kill(id)))
+    await this.finishClosing(ids)
   }
 
   private async finishClosing(ids: string[]): Promise<void> {

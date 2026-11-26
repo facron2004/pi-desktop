@@ -906,8 +906,13 @@ export class SettingsStore {
         ? workspaces[0]?.id
         : current.activeWorkspaceId
       const hiddenProjects = [...(current.hiddenProjects ?? [])]
-      if (hidePath && !hiddenProjects.some((item) => workspaceKey(item) === workspaceKey(hidePath))) {
-        hiddenProjects.push(hidePath)
+      if (hidePath) {
+        const key = workspaceKey(hidePath)
+        // Another instance may have registered this path with a new id.
+        if (!workspaces.some((item) => workspaceKey(item.path) === key) &&
+            !hiddenProjects.some((item) => workspaceKey(item) === key)) {
+          hiddenProjects.push(hidePath)
+        }
       }
       return {
         workspaces,

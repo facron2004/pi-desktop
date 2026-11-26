@@ -1123,13 +1123,30 @@ export async function removeWorktree(
 
   const list = await git(root, ['worktree', 'list', '--porcelain'])
   const registered = list.stdout
-    .split('\n')
-    .filter((line) => line.startsWith('worktree '))
-    .map((line) => path.resolve(line.slice('worktree '.length)))
+    .split(/\r?\n\r?\n/)
+    .map((entry) => entry.split(/\r?\n/))
   const samePath = (left: string, right: string): boolean =>
     process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right
-  if (!registered.some((entry) => samePath(entry, resolved))) {
+  const entry = registered.findIndex(([line]) => line.startsWith('worktree ') &&
+    samePath(path.resolve(line.slice('worktree '.length)), resolved))
+  if (entry < 0) {
     return { ok: false, error: 'That folder is not a worktree of this repository.' }
+  }
+  if (entry === 0) return { ok: false, error: 'The main worktree cannot be removed.' }
+  if (registered[entry].some((line) => line === 'locked' || line.startsWith('locked '))) {
+    return { ok: false, error: 'This worktree is locked.' }
+  }
+
+  // Refuse known failures before closing processes. A missing directory may
+  // still have a registration for Git to remove.
+  const present = await stat(resolved).then(() => true, (error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return false
+    throw error
+  })
+  if (present) {
+    const status = await git(resolved, ['status', '--porcelain=v1', '--ignore-submodules=none', '--untracked-files=normal'])
+    if (status.code !== 0) return { ok: false, error: cleanError(status.stderr) || 'Could not remove the worktree' }
+    if (status.stdout) return { ok: false, error: 'The worktree has uncommitted changes or untracked files.' }
   }
 
   const remove = async (): Promise<GitCommitResult> => withGitMutation(root, async () => {

@@ -1603,7 +1603,11 @@ const zhCN: Record<string, string> = {
     '该工作树目录将从磁盘删除，对应分支会保留。',
   'Commit or discard changes before removing': '移除前请先提交或丢弃更改',
   'Worktree removed': '工作树已移除',
+  'The worktree was removed, but its project settings could not be saved.': '工作树已移除，但未能保存项目设置。',
   'Could not remove the worktree': '无法移除工作树',
+  'The main worktree cannot be removed.': '无法移除主工作树。',
+  'This worktree is locked.': '此工作树已锁定。',
+  'The worktree has uncommitted changes or untracked files.': '工作树中有未提交的更改或未跟踪的文件。',
   'Revert this hunk': '还原此修改块',
   'Only this hunk is reverted. The other changes in this file stay as they are.':
     '只还原此修改块，文件中的其他更改保持不变。',

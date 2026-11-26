@@ -48,7 +48,7 @@ test('the branch menu lists and can remove worktrees', () => {
     'a search with one worktree match must keep that row visible'
   )
   assert.match(source, /window\.pi\.git\.removeWorktree/, 'a worktree row must be removable')
-  assert.match(source, /await removeWorkspace\(\{ path: target\.path \}\)/, 'removing a worktree must remove its project registration')
+  assert.match(source, /await removeWorkspace\(\{ path: target\.path \}, result\.settings\)/, 'the menu must use the saved project settings from worktree removal')
   assert.match(source, /ConfirmDialog/, 'removal must ask for confirmation')
 })
 
