@@ -184,6 +184,19 @@ export function ReviewView({
     }
   }, [refreshGit])
 
+  // A failed read is cached under the signature it failed on, so selecting the
+  // same file again would show the same notice without asking git. Dropping the
+  // entry is what lets the read effect try once more.
+  const retryDiff = useCallback((path: string) => {
+    delete readsInFlight.current[path]
+    setDiffs((previous) => {
+      if (!(path in previous)) return previous
+      const next = { ...previous }
+      delete next[path]
+      return next
+    })
+  }, [])
+
   // Reverting a hunk rewrites the work tree, so every cached diff is stale.
   // The new `git` reading invalidates them, and the selected-file effect reads
   // this file again from disk under it.
@@ -480,6 +493,7 @@ export function ReviewView({
                 onCopyPatch={() => void copyPatch(selectedFile.path)}
                 onRevert={() => setRevertTarget({ file: selectedFile.path, root: expectedRoot })}
                 onHunkReverted={() => void reloadAfterHunk()}
+                onRetry={() => retryDiff(selectedFile.path)}
               />
             ) : (
               <div className="review__empty">
@@ -650,7 +664,8 @@ function ReviewFileDetail({
   onToggleStage,
   onCopyPatch,
   onRevert,
-  onHunkReverted
+  onHunkReverted,
+  onRetry
 }: {
   file: GitFileStatus
   mentionPath: string
@@ -665,6 +680,8 @@ function ReviewFileDetail({
   onCopyPatch: () => void
   onRevert: () => void
   onHunkReverted: () => void
+  /** Drop the cached failure so the read effect asks git again. */
+  onRetry: () => void
 }) {
   const t = useT()
   const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
@@ -744,9 +761,19 @@ function ReviewFileDetail({
             {t('Reading the changes…')}
           </div>
         ) : state.status === 'error' ? (
-          <div className="review__state">{t('Could not read the changes of this file.')}</div>
+          <div className="review__state">
+            <span>{t('Could not read the changes of this file.')}</span>
+            <button type="button" className="btn btn--ghost" onClick={onRetry}>
+              {t('Try again')}
+            </button>
+          </div>
         ) : state.diff.error ? (
-          <div className="review__state">{t(state.diff.error)}</div>
+          <div className="review__state">
+            <span>{t(state.diff.error)}</span>
+            <button type="button" className="btn btn--ghost" onClick={onRetry}>
+              {t('Try again')}
+            </button>
+          </div>
         ) : state.diff.binary ? (
           <div className="review__state">{t('Binary file changed.')}</div>
         ) : (

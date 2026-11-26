@@ -107,6 +107,16 @@ test('DiffView/ReviewView gap toggling, BrowserView listener re-attach, ToolPane
   const reviewView = read('src/renderer/src/components/ReviewView.tsx')
   assert.match(reviewView, /onExpandAllChange=\{setExpandAll\}/)
   assert.match(reviewView, /onExpandAllChange=\{onExpandAllChange\}/)
+  // A failed read is cached under its signature, so the notice carries its own
+  // way out: the retry drops that entry and the read effect asks git again.
+  assert.match(reviewView, /const retryDiff = useCallback\(\(path: string\) => \{/)
+  assert.match(reviewView, /delete next\[path\]/)
+  assert.match(reviewView, /onRetry=\{\(\) => retryDiff\(selectedFile\.path\)\}/)
+  assert.match(
+    reviewView,
+    /Could not read the changes of this file\.[\s\S]{0,240}?Try again/
+  )
+  assert.match(reviewView, /state\.diff\.error[\s\S]{0,240}?Try again/)
 
   const browserView = read('src/renderer/src/components/BrowserView.tsx')
   assert.match(browserView, /\[syncNavigation,\s*requestSeq\]/)

@@ -191,6 +191,16 @@ stopping twice per row. The same audit now reads one tabbable gutter,
 `arrowMoved: true`, and a split step that lands on the next row (`arrowSameRow:
 false`).
 
+**A failed diff read offers a retry, and the retry forgets the failure.** A
+diff is cached under the signature it was read from, so a failure was sticky:
+selecting the same file again — or coming back to it — showed the same notice
+without asking git, and the only way out was the header's whole-tree refresh.
+The error state (and a `diff.error` reported by git for that file) carries a
+`Try again` button that drops that one cache entry, and the read effect asks
+again under the same tree reading; the header's Refresh still re-reads
+everything. `tests/diff-fold.test.ts` pins the button, the entry drop and the
+prop that wires them.
+
 A row in the stream is a link, not a card, so it carries no surface of its
 own: the pointer must not paint a gray band across the column. The hover
 surface belongs to a card. The lock is
