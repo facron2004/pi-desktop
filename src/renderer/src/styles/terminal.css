@@ -134,6 +134,9 @@ body.terminal-resizing {
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
+  /* The `+` is pinned to this strip's right edge; scrollIntoView honours this
+     padding, so the active tab lands beside the button instead of under it. */
+  scroll-padding-right: calc(var(--toolpanel-tab-h) + var(--sp-1));
 }
 
 .terminal__tabstrip::-webkit-scrollbar {
@@ -222,6 +225,12 @@ body.terminal-resizing {
   height: var(--toolpanel-tab-h);
   border-radius: var(--toolpanel-tab-radius);
   color: var(--text-secondary);
+  /* The strip hides its scrollbar; without this the one control that opens a
+     tab scrolls out of the strip it is the door to. */
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  background: var(--surface-chrome);
 }
 
 .terminal__tabstrip .terminal__new:hover {

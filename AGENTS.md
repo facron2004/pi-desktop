@@ -1733,6 +1733,18 @@ roving tab index sit on `.terminal__tab-main`, not on the wrapper div; only the
 active tab is a Tab stop, and Left/Right/Home/End move through the tabs and
 activate the one they land on. The close button stays a separate stop.
 
+**The strip keeps the tab it just opened in view.** It scrolls sideways and
+hides its scrollbar, so an active tab past the right edge used to be invisible
+while the pane below switched to it — the reader saw the same strip and a
+different shell. An effect scrolls the selected tab into view when the active
+key or the tab count changes, exactly as the tool panel's page strip does, and
+the `+` is pinned to the strip's right edge (`position: sticky`) so the one
+control that opens a tab cannot scroll away from the strip it is the door to.
+The strip carries `scroll-padding-right` for the pinned button's width, or
+`scrollIntoView` would park the active tab underneath it.
+`tests/ui-regressions.mjs` opens tabs past the edge and measures both rects;
+`output/audit/check-terminal-tabs.mjs` prints them for a visible strip.
+
 A card in the transcript (the bash tool card, or a bash execution card) can hand
 its command to the terminal by dispatching `pi:terminal-run` with `{ command }`.
 `App` captures the workspace in a `{ command, cwd, seq }` request. Terminal

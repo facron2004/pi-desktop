@@ -859,6 +859,39 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
         'The keyboard did not land on the terminal tab that took the closed one\'s place'
       )
       passed.push('closing a background terminal tab keeps the keyboard in the strip')
+
+      // The strip scrolls sideways and hides its scrollbar. A tab opened past
+      // its right edge must follow into view — the pane switched, so a strip
+      // that did not move would look like nothing happened — and the `+` that
+      // opens tabs must stay reachable at the strip's edge.
+      for (let index = 0; index < 3; index += 1) {
+        document.querySelector('.terminal__tabstrip .terminal__new').click()
+        await pause(140)
+      }
+      await pause(300)
+      const tabStrip = document.querySelector('.terminal__tabstrip')
+      check(
+        tabStrip.scrollWidth > tabStrip.clientWidth + 1,
+        'The terminal strip did not overflow, so the visibility check proves nothing'
+      )
+      const stripBox = tabStrip.getBoundingClientRect()
+      const shownTab = tabStrip
+        .querySelector('[role="tab"][aria-selected="true"]')
+        .getBoundingClientRect()
+      const plusBox = tabStrip.querySelector('.terminal__new').getBoundingClientRect()
+      check(
+        shownTab.left >= stripBox.left - 1 && shownTab.right <= stripBox.right + 1,
+        `The active terminal tab stayed scrolled out of its strip: ${JSON.stringify({ tab: shownTab.right, strip: stripBox.right })}`
+      )
+      check(
+        plusBox.left >= stripBox.left - 1 && plusBox.right <= stripBox.right + 1,
+        'The new-terminal button scrolled out of its strip'
+      )
+      check(
+        shownTab.right <= plusBox.left + 1,
+        'The new-terminal button covers the active tab instead of sitting beside it'
+      )
+      passed.push('the terminal strip keeps the active tab and its new-tab button in view')
     } finally {
       off()
       const panel = visibleToolPanel()
@@ -3535,7 +3568,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 77 : 71)
+  assert.equal(passed.length, process.platform === 'win32' ? 78 : 72)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

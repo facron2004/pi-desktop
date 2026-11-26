@@ -429,6 +429,16 @@ export function TerminalPanel({
   const heightRef = useRef(height)
   const draggingRef = useRef(false)
 
+  // The strip scrolls sideways and hides its scrollbar, so a tab opened past
+  // its right edge used to be invisible while the pane below switched to it:
+  // the reader saw the same strip and a different shell. The active tab follows
+  // into view, exactly as the tool panel's own page strip does.
+  useEffect(() => {
+    tabStripRef.current
+      ?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [activeKey, tabs.length])
+
   useEffect(() => {
     heightRef.current = height
   }, [height])
