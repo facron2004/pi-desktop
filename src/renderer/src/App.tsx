@@ -198,6 +198,9 @@ export default function App() {
   const [panelMounted, setPanelMounted] = useState(false)
   const [panelClosing, setPanelClosing] = useState(false)
   const [panelConcealed, setPanelConcealed] = useState(false)
+  // A maximized tool panel covers the conversation; the covered surface is
+  // inert until the panel is restored or closed.
+  const [panelMaximized, setPanelMaximized] = useState(false)
   const panelCloseTimer = useRef<number | null>(null)
   // The panel opens on its home page; its pages are a choice made per visit,
   // not a mode that follows the conversation around.
@@ -1180,7 +1183,11 @@ export default function App() {
             margin lives here, so this element measures the width the
             conversation actually has to read in. */}
         <div className="main__stage">
-          <div className="main__body">
+          <div
+            className="main__body"
+            inert={panelMaximized || undefined}
+            aria-hidden={panelMaximized || undefined}
+          >
           {deskPage ? (
             <div className="desk-page">
               <Suspense fallback={<FeatureLoading />}>
@@ -1226,8 +1233,8 @@ export default function App() {
             <aside
               className="task-rail"
               data-open={effectiveTaskRailOpen || undefined}
-              aria-hidden={!effectiveTaskRailOpen || undefined}
-              inert={!effectiveTaskRailOpen || undefined}
+              aria-hidden={!effectiveTaskRailOpen || panelMaximized || undefined}
+              inert={!effectiveTaskRailOpen || panelMaximized || undefined}
               aria-label={t('Task status')}
             >
               <div className="task-rail__body">
@@ -1257,6 +1264,7 @@ export default function App() {
           <ToolPanel
             view={panelView}
             onViewChange={handlePanelViewChange}
+            onMaximizedChange={setPanelMaximized}
             onViewClosed={(closed) => {
               if (closed === 'side-chat') setSideChatMounted(false)
               if (closed === 'browser') setBrowserMounted(false)

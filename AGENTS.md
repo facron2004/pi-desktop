@@ -1368,6 +1368,13 @@ key from an open dialog, menu or lightbox. There is no permanent
 "Tools" tab: closing the last page closes the panel. Reopening it starts from a
 centered "start from here" card list (`ToolPanel`).
 
+**A maximized panel makes the conversation behind it inert.** `ToolPanel` reports
+its maximize state through `onMaximizedChange`; `App` sets `inert` and
+`aria-hidden` on `.main__body` and on the task rail, so Tab and clicks cannot
+land on a composer or rail the panel covers. The title bar, the sidebar and the
+panel's own escape routes stay live; restoring or closing the panel releases the
+conversation again.
+
 Files, File changes, Subagents, Swarm, Terminal, Browser and Images are pages,
 not a fixed function tab bar. Selecting a card on the new-tab page turns that tab
 into the chosen page; opening a view elsewhere adds or focuses its page tab.

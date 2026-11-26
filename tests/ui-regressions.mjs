@@ -2017,6 +2017,15 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   document.querySelector('.tool-panel__action').click()
   await until(() => document.querySelector('.tool-panel--maximized'), 'The panel did not maximize')
   await pause(50)
+  // The maximized panel covers the conversation, so nothing behind it may keep
+  // the keyboard or a click.
+  check(document.querySelector('.main__body')?.inert, 'The maximized panel left the conversation interactive behind it')
+  const hiddenRailMarker = document.querySelector('[data-rail-marker]')
+  hiddenRailMarker.focus()
+  check(
+    document.activeElement !== hiddenRailMarker,
+    'The maximized panel left a covered control focusable'
+  )
   const railTickBox = document.querySelector('.session-rail__tick').getBoundingClientRect()
   check(
     !document.elementFromPoint(
@@ -2062,6 +2071,7 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   await until(() => document.querySelector('.tool-panel--maximized'), 'The panel did not maximize again')
   document.querySelector('.tool-panel__action').click()
   await until(() => !document.querySelector('.tool-panel--maximized'), 'The panel did not restore')
+  check(!document.querySelector('.main__body')?.inert, 'Restoring the panel left the conversation inert')
   check(
     getComputedStyle(document.querySelector('.session-rail')).visibility === 'visible',
     'The session rail stayed hidden after restoring the panel'

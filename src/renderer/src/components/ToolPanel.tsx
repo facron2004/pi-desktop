@@ -89,7 +89,8 @@ export const ToolPanel = memo(function ToolPanel({
   width,
   onResize,
   onResizeEnd,
-  actions
+  actions,
+  onMaximizedChange
 }: {
   view: ToolPanelView
   onViewChange: (view: ToolPanelView) => void
@@ -107,6 +108,8 @@ export const ToolPanel = memo(function ToolPanel({
   onResizeEnd?: (width: number) => void
   /** Page-specific controls that sit in the strip's right corner. */
   actions?: ReactNode
+  /** Whether the panel currently covers the conversation. */
+  onMaximizedChange?: (maximized: boolean) => void
 }) {
   const t = useT()
   const panelRef = useRef<HTMLElement>(null)
@@ -126,6 +129,17 @@ export const ToolPanel = memo(function ToolPanel({
   const [dragTab, setDragTab] = useState<string | null>(null)
   const [overflowing, setOverflowing] = useState(false)
   const [maximized, setMaximized] = useState(false)
+  // A maximized panel covers the conversation; report it so the shell can
+  // make the covered content inert. Closing the panel releases it too.
+  useEffect(() => {
+    onMaximizedChange?.(maximized && !concealed)
+  }, [maximized, concealed, onMaximizedChange])
+  useEffect(
+    () => () => {
+      onMaximizedChange?.(false)
+    },
+    [onMaximizedChange]
+  )
   const [menu, setMenu] = useState<TabContextMenu | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
