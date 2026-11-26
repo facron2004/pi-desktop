@@ -8,6 +8,7 @@ import { buildTurns, changedTurnsFrom, replyMarkdownOf, roundMetadataForTurns, u
 import { MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
 import type { InspectorRequest, ModelInfo } from '@shared/types'
 import { collectChanges } from '../lib/changes'
+import { isEditingField } from '../lib/editing-field'
 import { formatClock, formatCost, formatExactTokens, formatTokens } from '../lib/format'
 import { findMatches, splitSnippet, type SearchableChunk, type SearchHit } from '../lib/search'
 import { describeTool } from '../lib/tools'
@@ -747,6 +748,11 @@ export const Thread = memo(function Thread() {
       if (document.querySelector('[aria-modal="true"]')) return
       if (focusIsInSideSurface() !== isSideSurface) return
       if (matchesAnyShortcut(event, 'search-conversation', shortcutBindings)) {
+        // A field the reader is typing in keeps the chord: without this, a
+        // find box, a rename or the terminal lost the focus and their text.
+        // The composer is the exception, where searching the conversation is
+        // what `Ctrl+F` means and the draft survives a focus move.
+        if (isEditingField(document.activeElement)) return
         event.preventDefault()
         setSearchOpen(true)
         requestAnimationFrame(() => searchInputRef.current?.focus())

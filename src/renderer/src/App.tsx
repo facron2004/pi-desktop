@@ -48,6 +48,7 @@ import {
   subscribeAvailableAppUpdate
 } from './lib/app-update'
 import { matchesAnyShortcut, type ShortcutId } from './lib/shortcuts'
+import { isEditingField } from './lib/editing-field'
 import { activeConversationTitle } from './lib/live-sessions'
 import { OPEN_SIDE_CHAT_EVENT, type SideChatOpenRequest } from './lib/side-chat-context'
 import { useT } from './lib/i18n'
@@ -817,20 +818,8 @@ export default function App() {
       // a layer (the palette, settings, the shortcut list, the session tree)
       // still work, and the composer is the one textarea whose chords are part
       // of writing a prompt.
-      const active = document.activeElement
-      const editing =
-        active instanceof HTMLElement &&
-        (active.isContentEditable ||
-          active instanceof HTMLSelectElement ||
-          (active instanceof HTMLInputElement &&
-            !['checkbox', 'radio', 'button', 'submit', 'reset', 'file', 'range', 'color'].includes(
-              active.type
-            )) ||
-          // A multi-line field owns the keyboard as well, except the composer:
-          // its own chords are part of writing a prompt.
-          (active instanceof HTMLTextAreaElement && !active.matches('.composer__input')))
       if (
-        editing &&
+        isEditingField(document.activeElement) &&
         !matches('command-palette') &&
         !matches('open-settings') &&
         !matches('shortcut-list') &&

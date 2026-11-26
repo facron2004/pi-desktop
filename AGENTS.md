@@ -699,21 +699,28 @@ keyboard lands after the drawer closes.
 **App-wide chords stay out of a single-line field.** The window handler in
 `App.tsx` only steps aside for a modal and the launcher; a project rename is
 neither, so `Ctrl+N` while renaming used to start a new chat and throw the typed
-name away. A focused `input`, `select` or contenteditable now keeps the chords
-that change the view (new chat, project `Ctrl+1…9`, sidebar, focus-composer,
-model and thinking cycling, side chat, terminal), while the chords that open a
-layer — palette, settings, shortcut list, session tree — still work, because
-opening a layer is not a view change. A **textarea that is not the composer** is
-the same kind of field: writing a scheduled task's prompt and pressing `Ctrl+N`
-used to leave the page for a new chat and drop the draft. The composer keeps its
+name away. The predicate is `isEditingField` in `lib/editing-field.ts`
+(`input`, `select`, contenteditable, and any `textarea` that is not the
+composer; focus inside the terminal counts too). A field keeps the chords that
+change the view (new chat, project `Ctrl+1…9`, sidebar, focus-composer, model
+and thinking cycling, side chat, terminal, and the conversation search), while
+the chords that open a layer — palette, settings, shortcut list, session tree —
+still work, because opening a layer is not a view change. A textarea is the
+same kind of field: writing a scheduled task's prompt and pressing `Ctrl+N` used
+to leave the page for a new chat and drop the draft. The composer keeps its
 chords (`.composer__input` is the one textarea exempted), because there they are
-part of writing a prompt. `tests/ui-regressions.mjs` renames a project and sends
-`Ctrl+N`, then writes a task prompt and sends it again, failing if the field or
-the page disappears or the conversation switches; `tests/shortcuts.test.ts`
-asserts both sides of the guard (fields keep the chords, the composer does not).
-`output/audit/check-shortcuts-in-fields.mjs` prints the draft id around three
-presses — the rename field, the task prompt and the composer — so the blocked
-and the allowed sides are measured, not assumed.
+part of writing a prompt and the draft survives a focus move.
+`Thread.tsx` uses the same predicate for `Ctrl+F`: without it, pressing it in a
+rename field opened the conversation search and took the focus with it
+(reproduced in the UI suite with the guard removed, which is why the suite opens
+a transcript before checking).
+`tests/ui-regressions.mjs` renames a project and sends `Ctrl+N` and `Ctrl+F`,
+then writes a task prompt and sends `Ctrl+N` again, failing if the field or the
+page disappears or the conversation switches; `tests/shortcuts.test.ts` asserts
+both sides of the guard (fields keep the chords, the composer does not).
+`output/audit/check-shortcuts-in-fields.mjs` prints the draft id around the
+rename, the task prompt and the composer, so the blocked and the allowed sides
+are measured, not assumed.
 
 **Both lists in the box are one keyboard walk.** The command palette and the
 `@` file list take Up/Down (wrapping), Home/End and PageUp/PageDown; the page

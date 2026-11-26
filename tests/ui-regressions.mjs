@@ -3091,6 +3091,12 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   // A single-line field keeps the keyboard for itself: the app-wide chords that
   // change the view (Ctrl+N here) must not fire while a project is being
   // renamed, or the typed name goes with them.
+  // The conversation search listens on the window only while a transcript is
+  // on screen, so open one first: without it there is nothing to steal focus.
+  const conversationRow = document.querySelector('.session-item__main')
+  check(conversationRow, 'The sidebar has no conversation to open for the field check')
+  conversationRow.click()
+  await until(() => document.querySelector('.thread'), 'The conversation did not open for the field check')
   const projectActions = [...document.querySelectorAll('button')].find(
     (node) => node.getAttribute('aria-label') === 'Project actions'
   )
@@ -3120,6 +3126,17 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   check(
     (store.getState().activeSessionFile ?? store.getState().draftId) === draftBeforeChord,
     'Ctrl+N started a new chat while a project name was being edited'
+  )
+  // `Ctrl+F` opens the conversation search from a window listener; a field
+  // being typed in must keep that chord, or the rename loses its focus.
+  renameField.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true, cancelable: true })
+  )
+  await pause(250)
+  check(!document.querySelector('.thread-search'), 'Ctrl+F opened the conversation search from a rename field')
+  check(
+    document.querySelector('.project__rename-input') === renameField,
+    'Ctrl+F tore down the field that was being edited'
   )
   renameField.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
   await until(() => !document.querySelector('.project__rename-input'), 'Escape did not cancel the project rename')

@@ -190,16 +190,27 @@ test('entriesForDisplay reflects sendShortcut mode in Composing', () => {
  * prompt (measured: the page left and the draft vanished).
  */
 test('the app-wide chord guard keeps fields and exempts the composer', () => {
-  const source = readFileSync(path.resolve(process.cwd(), 'src/renderer/src/App.tsx'), 'utf8')
-  assert.match(source, /active instanceof HTMLInputElement/, 'inputs no longer own the keyboard')
-  assert.match(source, /active instanceof HTMLSelectElement/, 'selects no longer own the keyboard')
-  assert.match(source, /active\.isContentEditable/, 'editable regions no longer own the keyboard')
+  const read = (file: string) => readFileSync(path.resolve(process.cwd(), file), 'utf8')
+  const app = read('src/renderer/src/App.tsx')
+  const fields = read('src/renderer/src/lib/editing-field.ts')
+  const thread = read('src/renderer/src/components/Thread.tsx')
+  assert.match(app, /isEditingField\(document\.activeElement\)/, 'the app no longer checks the field')
+  assert.match(fields, /element instanceof HTMLInputElement/, 'inputs are no longer fields')
+  assert.match(fields, /element instanceof HTMLSelectElement/, 'selects are no longer fields')
+  assert.match(fields, /element\.isContentEditable/, 'editable regions are no longer fields')
   assert.match(
-    source,
-    /active instanceof HTMLTextAreaElement && !active\.matches\('\.composer__input'\)/,
+    fields,
+    /HTMLTextAreaElement\) return !isComposerInput\(element\)/,
     'a textarea is not treated as a field, or the composer lost its exemption'
   )
+  assert.match(fields, /composer__input/, 'the composer exemption lost its selector')
   // Opening a layer is allowed from a field; changing the view is not.
-  assert.match(source, /!matches\('command-palette'\)/, 'the palette is blocked from a field')
-  assert.match(source, /!matches\('open-settings'\)/, 'settings are blocked from a field')
+  assert.match(app, /!matches\('command-palette'\)/, 'the palette is blocked from a field')
+  assert.match(app, /!matches\('open-settings'\)/, 'settings are blocked from a field')
+  // `Ctrl+F` is a view change too: a find box or a rename keeps it.
+  assert.match(
+    thread,
+    /if \(isEditingField\(document\.activeElement\)\) return/,
+    'the conversation search no longer checks whether a field owns the keyboard'
+  )
 })
