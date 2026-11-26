@@ -567,6 +567,11 @@ scheduled page is a DSH-shaped master-detail: list rows only select, and the
 47% right pane owns the editable rule, run history, pause/more/close controls
 and the inline delete confirmation.
 
+**The task list is one keyboard column.** Its rows carry `data-scheduled-task`:
+Up/Down walk them and Home/End jump to the ends, and moving focus selects the
+row so the detail pane follows, exactly as a click does. Each row is still a
+button, so Enter and Space keep their native activation.
+
 **A running task must be stoppable from that pane.** The run owns a Pi process
 under a draft session key, and the pane disables pause, more and delete while it
 goes — so without a stop action a hung run (a prompt response that timed out

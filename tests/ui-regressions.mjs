@@ -3034,6 +3034,50 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   await until(() => document.querySelector('.btn-new-chat')?.textContent?.includes('New chat'), 'The English interface did not return')
   passed.push('the Chinese interface translates labels and the messages the main process sends')
 
+  // The scheduled task list is a master-detail keyboard column: the arrows walk
+  // the rows and select each one, exactly like a click.
+  const workspaceId = store.getState().settings.activeWorkspaceId ?? store.getState().workspace?.id
+  check(workspaceId, 'No active workspace for the scheduled task check')
+  const scheduleAt = Date.now() + 24 * 60 * 60 * 1000
+  const createdTasks = []
+  for (const title of ['UI scheduled alpha', 'UI scheduled beta']) {
+    const list = await window.pi.scheduledTasks.create({
+      title,
+      prompt: `Prompt for ${title}`,
+      workspaceId,
+      schedule: { kind: 'once', at: scheduleAt }
+    })
+    createdTasks.push(list.find((task) => task.title === title))
+  }
+  check(createdTasks.every(Boolean), 'The scheduled task fixtures were not created')
+  const scheduledTrigger = [...document.querySelectorAll('.sidebar button')]
+    .find((button) => button.title === 'Scheduled tasks')
+  scheduledTrigger?.click()
+  await until(
+    () => document.querySelectorAll('.scheduled-task').length === 2,
+    'The scheduled page did not list both tasks'
+  )
+  const scheduledRows = [...document.querySelectorAll('.scheduled-task')]
+  scheduledRows[0].focus()
+  scheduledRows[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+  await until(
+    () => document.activeElement === scheduledRows[1] &&
+      scheduledRows[1].getAttribute('data-selected') === 'true',
+    'ArrowDown did not select the next scheduled task'
+  )
+  scheduledRows[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+  await until(
+    () => document.activeElement === scheduledRows[0] &&
+      scheduledRows[0].getAttribute('data-selected') === 'true',
+    'ArrowUp did not select the previous scheduled task'
+  )
+  passed.push('the scheduled task list walks with the arrow keys')
+  for (const task of createdTasks) {
+    if (task) await window.pi.scheduledTasks.remove(task.id)
+  }
+  scheduledTrigger?.click()
+  await until(() => !document.querySelector('.scheduled-tasks'), 'The scheduled page did not close')
+
   // A new chat is a box to type in: creating one puts the caret there.
   document.querySelector('.sidebar__head-btn')?.focus()
   await store.getState().newChat()
@@ -3077,7 +3121,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 64 : 59)
+  assert.equal(passed.length, process.platform === 'win32' ? 65 : 60)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

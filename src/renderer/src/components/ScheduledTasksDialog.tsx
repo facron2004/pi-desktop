@@ -582,7 +582,38 @@ export function ScheduledTasksDialog() {
                 ) : null}
               </div>
             ) : (
-              <ul className="scheduled-tasks__rows" aria-label={t('Task list')}>
+              <ul
+                className="scheduled-tasks__rows"
+                aria-label={t('Task list')}
+                onKeyDown={(event) => {
+                  // The list is one keyboard column: the arrows walk the rows
+                  // and select each one, which is what a click on it does.
+                  if (event.altKey || event.ctrlKey || event.metaKey) return
+                  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+                  const target = event.target
+                  if (
+                    !(target instanceof HTMLElement) ||
+                    !target.matches('[data-scheduled-task]')
+                  ) return
+                  const rows = [
+                    ...event.currentTarget.querySelectorAll<HTMLElement>('[data-scheduled-task]')
+                  ]
+                  const index = rows.indexOf(target)
+                  if (index < 0) return
+                  event.preventDefault()
+                  const next =
+                    event.key === 'Home'
+                      ? 0
+                      : event.key === 'End'
+                        ? rows.length - 1
+                        : event.key === 'ArrowDown'
+                          ? Math.min(rows.length - 1, index + 1)
+                          : Math.max(0, index - 1)
+                  const row = rows[next]
+                  row.focus()
+                  row.click()
+                }}
+              >
                 {visibleTasks.map((task) => {
                   const state = taskState(task)
                   return (
@@ -592,6 +623,7 @@ export function ScheduledTasksDialog() {
                         className="scheduled-task"
                         data-selected={selectedTaskId === task.id}
                         data-state={state}
+                        data-scheduled-task={task.id}
                         aria-expanded={selectedTaskId === task.id}
                         onClick={() => openTask(task)}
                       >
