@@ -687,11 +687,14 @@ that only acts while something it owns is up (the selection bar) checks that
 first, so an Escape with nothing to close still reaches the stop.
 `tests/escape-ownership.test.ts` pins the individual cases and also walks every
 `.ts`/`.tsx` under `src/renderer/src`: an `'Escape'` the nearby code never marks
-fails the suite (only the tray window and the shortcut-label table are exempt),
-so a new handler cannot quietly reintroduce the bug.
+fails the suite (only the tray window and the shortcut-label table are exempt).
+The window for "nearby" ends where the next `'Escape'` starts, so one handler's
+`preventDefault()` cannot pass for its neighbour — that is what catches a fix
+applied to only one of the tool panel's two handlers.
 `output/audit/check-escape-ownership.mjs` drives the project rename field, a
-hover card and the maximized panel, printing `defaultPrevented` (false before,
-true after, for each).
+hover card, the maximized panel and the floating panel at the minimum window,
+printing `defaultPrevented` (false before, true after, for each) plus where the
+keyboard lands after the drawer closes.
 
 **Both lists in the box are one keyboard walk.** The command palette and the
 `@` file list take Up/Down (wrapping), Home/End and PageUp/PageDown; the page

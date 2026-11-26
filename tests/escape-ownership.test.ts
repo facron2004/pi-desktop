@@ -107,10 +107,14 @@ test('every Escape handler marks the key', () => {
       }
       if (!/\.(ts|tsx)$/.test(entry) || exempt.has(entry)) continue
       const source = readFileSync(full, 'utf8')
-      for (const match of source.matchAll(/'Escape'/g)) {
-        const at = match.index ?? 0
-        const tail = source.slice(at, at + 1800)
-        if (/preventDefault|stopPropagation|stopImmediatePropagation/.test(tail)) continue
+      const occurrences = [...source.matchAll(/'Escape'/g)].map((match) => match.index ?? 0)
+      for (const [index, at] of occurrences.entries()) {
+        // The mark has to belong to this handler: the window ends where the
+        // next `'Escape'` starts, so a neighbour's preventDefault cannot pass
+        // for this one.
+        const until = Math.min(occurrences[index + 1] ?? source.length, at + 1800)
+        const body = source.slice(at, until)
+        if (/preventDefault|stopPropagation|stopImmediatePropagation/.test(body)) continue
         const line = source.slice(0, at).split('\n').length
         misses.push(`${path.relative(process.cwd(), full)}:${line}`)
       }
