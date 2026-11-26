@@ -189,6 +189,25 @@ function disposablePty(): IPty {
   } as unknown as IPty
 }
 
+test('terminal writes report whether the PTY accepted the input', async () => {
+  const pty = disposablePty()
+  const writes: string[] = []
+  pty.write = (data) => {
+    if (data === 'broken') throw new Error('PTY write failed')
+    writes.push(data)
+  }
+  const manager = new TerminalManager(() => undefined, () => pty, 'linux')
+  const { id } = manager.create({ cols: 80, rows: 24 })
+
+  assert.equal(manager.write(id, 'echo ok\r'), true)
+  assert.equal(manager.write(id, 'broken'), false)
+  const closing = manager.kill(id)
+  assert.equal(manager.write(id, 'late'), false)
+  await closing
+  assert.equal(manager.write(id, 'after exit'), false)
+  assert.deepEqual(writes, ['echo ok\r'])
+})
+
 test('Windows retries only a ConPTY launch failure once with Winpty', async () => {
   const attempts: Array<boolean | undefined> = []
   const manager = new TerminalManager(
@@ -325,4 +344,56 @@ test('a failed terminal close retains its PTY for a later disposal pass', async 
   await manager.disposeAll()
   await manager.disposeAll()
   assert.equal(attempts, 2)
+})
+
+test('terminal creation retries a failed tab close before starting another shell', async (t) => {
+  t.mock.method(console, 'warn', () => {})
+  const process = disposablePty()
+  let attempts = 0
+  process.kill = () => {
+    if (++attempts === 1) throw new Error('PTY is temporarily unavailable')
+  }
+  const manager = new TerminalManager(() => undefined, () => process, 'linux')
+  const terminal = manager.create({ cols: 80, rows: 24 })
+  await manager.kill(terminal.id)
+
+  await manager.waitForDisposal()
+
+  assert.equal(attempts, 2, 'the old PTY must be reclaimed before replacing it')
+})
+
+test('a surviving PTY blocks terminal creation until renderer cleanup can finish', async (t) => {
+  t.mock.method(console, 'warn', () => {})
+  let starts = 0
+  let treeStops = 0
+  let canStop = false
+  const process = disposablePty()
+  process.kill = () => {
+    if (!canStop) throw new Error('PTY is still running')
+  }
+  const manager = new TerminalManager(() => undefined, () => {
+    starts += 1
+    return process
+  }, 'win32', async () => {
+    treeStops += 1
+    return canStop
+  })
+  const createAfterDisposal = async () => {
+    await manager.waitForDisposal()
+    return manager.create({ cols: 80, rows: 24 })
+  }
+  const terminal = manager.create({ cols: 80, rows: 24 })
+  t.after(async () => {
+    canStop = true
+    await manager.disposeAll()
+  })
+
+  await assert.rejects(manager.disposeAll(), /could not close.*terminal/i)
+  assert.equal(treeStops, 2, 'disposal retries a failed cleanup once')
+  await assert.rejects(createAfterDisposal(), /could not close.*terminal/i)
+  assert.equal(starts, 1)
+
+  canStop = true
+  assert.notEqual((await createAfterDisposal()).id, terminal.id)
+  assert.equal(starts, 2)
 })

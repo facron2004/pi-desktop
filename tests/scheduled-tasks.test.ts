@@ -1,16 +1,19 @@
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { EventEmitter } from 'node:events'
+import { EventEmitter, once } from 'node:events'
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmdirSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import type { ScheduledTaskSchedule } from '@shared/types'
+import { app } from 'electron'
+import type { PiState, ScheduledTask, ScheduledTaskSchedule } from '@shared/types'
 import { ScheduledTaskService } from '../src/main/scheduled-tasks'
 import { properLockfile } from '../src/main/proper-lockfile'
 import type { SettingsStore } from '../src/main/settings'
-import type { SessionSupervisor } from '../src/main/pi/supervisor'
+import { PiRuntime } from '../src/main/pi/runtime'
+import { SessionSupervisor } from '../src/main/pi/supervisor'
 
 class FakeSupervisor extends EventEmitter {
   ownerId: string | undefined
@@ -19,14 +22,12 @@ class FakeSupervisor extends EventEmitter {
     sessionKey: string
     model?: string
     thinkingLevel?: string
-    rememberDefaults?: boolean
   } | undefined
 
   async ensure(options: {
     sessionKey: string
     model?: string
     thinkingLevel?: string
-    rememberDefaults?: boolean
   }): Promise<{ ok: boolean }> {
     this.ownerId = options.sessionKey
     this.ensureCalls += 1
@@ -300,6 +301,9 @@ test('scheduled task runs share a four-process limit across app instances', asyn
     assert.equal(firstSupervisor.ensureCalls, 4)
     await assert.rejects(second.runNow(tasks[4]!.id), /run slots are busy/)
     assert.equal(secondSupervisor.ensureCalls, 0)
+    rmdirSync(path.join(userData, 'scheduled-task-run-slot-0.lock'))
+    await assert.rejects(second.runNow(tasks[4]!.id), /run slots are busy/)
+    assert.equal(secondSupervisor.ensureCalls, 0, 'losing a lock directory cannot free a live run slot')
 
     firstSupervisor.emit('event', {
       ownerId: firstSupervisor.ownerIds[0],
@@ -604,10 +608,16 @@ test('an expired lease does not relaunch a due task while its Pi process is aliv
     assert.equal(second.list()[0]?.lastStatus, 'running')
     assert.equal(secondSupervisor.ensureCalls, 0)
   } finally {
+    await stopIdleProcess(piProcess)
+    if (firstSupervisor.ownerId) {
+      firstSupervisor.emit('event', {
+        ownerId: firstSupervisor.ownerId,
+        event: { type: 'agent_settled', aborted: true }
+      })
+    }
     second?.dispose()
     first.dispose()
     rmSync(userData, { recursive: true, force: true })
-    await stopIdleProcess(piProcess)
   }
 })
 
@@ -995,6 +1005,13 @@ test('a failed prompt response keeps a still-running task reserved until settle'
     await service.runNow(task.id)
     assert.equal(supervisor.ensureCalls, 2)
   } finally {
+    supervisor.running = false
+    if (supervisor.ownerId) {
+      supervisor.emit('event', {
+        ownerId: supervisor.ownerId,
+        event: { type: 'agent_settled', aborted: true }
+      })
+    }
     service.dispose()
     rmSync(userData, { recursive: true, force: true })
   }
@@ -1461,8 +1478,6 @@ test('a scheduled task runs with its pinned model and reasoning effort', async (
     await service.runNow(task.id)
     assert.equal(supervisor.lastEnsure?.model, 'provider/special')
     assert.equal(supervisor.lastEnsure?.thinkingLevel, 'high')
-    // The task's choice must not become the app-wide default.
-    assert.equal(supervisor.lastEnsure?.rememberDefaults, false)
 
     supervisor.emit('event', {
       ownerId: supervisor.ownerId,
@@ -1474,46 +1489,125 @@ test('a scheduled task runs with its pinned model and reasoning effort', async (
   }
 })
 
-test('a task without its own choice follows the app defaults', async () => {
+test('a scheduled task uses its startup choices without overwriting newer Pi defaults', { timeout: 30_000 }, async (t) => {
   const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-defaults-'))
-  const supervisor = new FakeSupervisor()
+  const agent = path.join(userData, 'agent')
+  const sessions = path.join(agent, 'sessions')
+  mkdirSync(sessions, { recursive: true })
+  const agentSettings = path.join(agent, 'settings.json')
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR
+  const originalTrace = process.env.PI_DESKTOP_RPC_TRACE
+  process.env.PI_CODING_AGENT_DIR = agent
+  process.env.PI_DESKTOP_RPC_TRACE = '0'
+  t.after(() => {
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir
+    if (originalTrace === undefined) delete process.env.PI_DESKTOP_RPC_TRACE
+    else process.env.PI_DESKTOP_RPC_TRACE = originalTrace
+    rmSync(userData, { recursive: true, force: true })
+  })
+  t.mock.method(app, 'getPath', () => userData)
+
+  const requests: string[] = []
+  const server = createServer(async (req, res) => {
+    let body = ''
+    for await (const chunk of req) body += chunk
+    const { model } = JSON.parse(body) as { model: string }
+    requests.push(model)
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+    for (const [delta, finish_reason] of [[{ role: 'assistant', content: 'Scheduled reply' }, null], [{}, 'stop']]) {
+      const event = {
+        id: 'scheduled-fixture', object: 'chat.completion.chunk', created: 1, model,
+        choices: [{ index: 0, delta, finish_reason }]
+      }
+      res.write(`data: ${JSON.stringify(event)}\n\n`)
+    }
+    res.end('data: [DONE]\n\n')
+  })
+  t.after(() => {
+    server.close()
+    server.closeAllConnections()
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  writeFileSync(path.join(agent, 'models.json'), JSON.stringify({ providers: { fixture: {
+    api: 'openai-completions', baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: 'local-test',
+    models: ['initial', 'newer', 'pinned'].map((id) => ({
+      id, reasoning: true, input: ['text'], contextWindow: 32000, maxTokens: 1024
+    }))
+  } } }))
+  const newerDefaults = { defaultProvider: 'fixture', defaultModel: 'newer', defaultThinkingLevel: 'high' }
+  writeFileSync(agentSettings, JSON.stringify({ ...newerDefaults, defaultModel: 'initial', defaultThinkingLevel: 'medium' }))
+  let savedModel = 'fixture/initial'
+  let savedThinkingLevel = 'medium'
+  const supervisor = new SessionSupervisor(() => {
+    if (savedModel === 'fixture/initial') {
+      // The task has already captured the app settings when its runtime is created.
+      savedModel = 'fixture/newer'
+      savedThinkingLevel = 'high'
+      writeFileSync(agentSettings, JSON.stringify(newerDefaults))
+    }
+    return new PiRuntime({ getSessionDir: () => sessions })
+  })
   const settings = {
     get: () => ({
       workspaces: [{ id: 'project', path: userData }],
-      model: 'app/default',
-      thinkingLevel: 'medium'
+      model: savedModel,
+      thinkingLevel: savedThinkingLevel
     })
   } as unknown as SettingsStore
   const service = new ScheduledTaskService({
     userData,
     settings,
-    supervisor: supervisor as unknown as SessionSupervisor,
+    supervisor,
     customInstructions: () => undefined
   })
 
   try {
-    const task = service.create({
-      title: 'App defaults',
-      prompt: 'Do the work',
-      workspaceId: 'project',
-      schedule: { kind: 'daily', time: '23:59' }
-    })[0]
-    assert.ok(task)
-    assert.equal(task.model, undefined)
-    assert.equal(task.thinkingLevel, undefined)
+    for (const { title, choice, expectedModel, expectedThinking } of [
+      { title: 'In flight', choice: {}, expectedModel: 'initial', expectedThinking: 'medium' },
+      { title: 'Latest defaults', choice: {}, expectedModel: 'newer', expectedThinking: 'high' },
+      {
+        title: 'Pinned', choice: { model: 'fixture/pinned', thinkingLevel: 'low' },
+        expectedModel: 'pinned', expectedThinking: 'low'
+      }
+    ]) {
+      const task = service.create({
+        title,
+        prompt: 'Do the work',
+        workspaceId: 'project',
+        schedule: { kind: 'once', at: Date.now() + 60 * 60 * 1000 },
+        ...choice
+      }).find((entry) => entry.title === title)!
+      assert.equal(task.model, choice.model)
+      assert.equal(task.thinkingLevel, choice.thinkingLevel)
 
-    await service.runNow(task.id)
-    assert.equal(supervisor.lastEnsure?.model, 'app/default')
-    assert.equal(supervisor.lastEnsure?.thinkingLevel, 'medium')
-    assert.equal(supervisor.lastEnsure?.rememberDefaults, true)
-
-    supervisor.emit('event', {
-      ownerId: supervisor.ownerId,
-      event: { type: 'agent_settled', aborted: false }
-    })
+      const settled = Promise.withResolvers<ScheduledTask>()
+      const changed = (tasks: ScheduledTask[]) => {
+        const result = tasks.find((entry) => entry.id === task.id)
+        if (result?.lastStatus && result.lastStatus !== 'running') settled.resolve(result)
+      }
+      service.on('changed', changed)
+      try {
+        await service.runNow(task.id)
+        const result = await settled.promise
+        assert.equal(result.lastStatus, 'completed', result.lastError)
+        assert.ok(result.lastSessionFile)
+        const state = await supervisor.request<PiState>(result.lastSessionFile, 'get_state')
+        assert.equal(requests.at(-1), expectedModel)
+        assert.equal(state.model?.id, expectedModel)
+        assert.equal(state.thinkingLevel, expectedThinking)
+        const { defaultProvider, defaultModel, defaultThinkingLevel } = JSON.parse(readFileSync(agentSettings, 'utf8'))
+        assert.deepEqual({ defaultProvider, defaultModel, defaultThinkingLevel }, newerDefaults)
+      } finally {
+        service.off('changed', changed)
+      }
+    }
   } finally {
+    await supervisor.stop()
     service.dispose()
-    rmSync(userData, { recursive: true, force: true })
   }
 })
 
@@ -1789,6 +1883,91 @@ class StoppableRunSupervisor extends FakeSupervisor {
     return { cwd: '', externalContext: false, running: this.running }
   }
 }
+
+test('a missing task lock preserves a live owner until lease-loss cancellation settles', async (t) => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-lost-lease-'))
+  const owner = new StoppableRunSupervisor()
+  const peerSupervisor = new FakeSupervisor()
+  const settings = {
+    get: () => ({ workspaces: [{ id: 'project', path: userData }] })
+  } as unknown as SettingsStore
+  const open = (supervisor: FakeSupervisor) => new ScheduledTaskService({
+    userData, settings, supervisor: supervisor as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+  const service = open(owner)
+  const peer = open(peerSupervisor)
+  try {
+    const [task] = service.create({
+      title: 'Keep lease ownership', prompt: 'Do the work', workspaceId: 'project',
+      schedule: { kind: 'once', at: Date.now() + 60 * 60 * 1000 }
+    })
+    const digest = createHash('sha256').update(task.id).digest('hex')
+    const runLock = path.join(userData, `scheduled-task-${digest}.run`)
+    const compromised: Array<(error: Error) => void> = []
+    const originalLock = properLockfile.lockSync
+    t.mock.method(properLockfile, 'lockSync', (file, options) => {
+      if ((file === runLock || file.endsWith('scheduled-task-run-slot-0')) && options?.onCompromised) {
+        compromised.push(options.onCompromised)
+      }
+      return originalLock(file, options)
+    })
+
+    await service.runNow(task.id)
+    rmdirSync(`${runLock}.lock`)
+    assert.equal(peer.list()[0]?.lastStatus, 'running')
+    await assert.rejects(peer.runNow(task.id), /already running/)
+    assert.equal(peerSupervisor.ensureCalls, 0)
+    assert.equal(compromised.length, 2)
+
+    for (const onCompromised of compromised) onCompromised(new Error('Lease lost'))
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.deepEqual(owner.stopCalls, [owner.ownerId], 'both leases cancel the same run once')
+    assert.equal(peer.list()[0]?.lastStatus, 'aborted')
+    assert.ok(!readdirSync(userData).some((name) => name.endsWith('.owner.json')))
+    await peer.runNow(task.id)
+    assert.equal(peerSupervisor.ensureCalls, 1, 'a later run can acquire the released leases')
+  } finally {
+    owner.running = false
+    service.dispose()
+    peer.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
+
+test('a lease claim preserves a live owner published during lock acquisition', async (t) => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-claim-race-'))
+  const supervisor = new FakeSupervisor()
+  const service = new ScheduledTaskService({
+    userData,
+    settings: { get: () => ({ workspaces: [{ id: 'project', path: userData }] }) } as unknown as SettingsStore,
+    supervisor: supervisor as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+  try {
+    const [task] = service.create({
+      title: 'Keep the peer owner', prompt: 'Do the work', workspaceId: 'project',
+      schedule: { kind: 'once', at: Date.now() + 60 * 60 * 1000 }
+    })
+    const digest = createHash('sha256').update(task.id).digest('hex')
+    const runLock = path.join(userData, `scheduled-task-${digest}.run`)
+    const ownerFile = `${runLock}.owner.json`
+    const owner = JSON.stringify({ token: 'peer', ownerPid: process.pid })
+    const originalLock = properLockfile.lockSync
+    t.mock.method(properLockfile, 'lockSync', (file, options) => {
+      if (file === runLock) writeFileSync(ownerFile, owner)
+      return originalLock(file, options)
+    })
+
+    await assert.rejects(service.runNow(task.id), /already running/)
+    assert.equal(supervisor.ensureCalls, 0)
+    assert.equal(readFileSync(ownerFile, 'utf8'), owner)
+    assert.ok(!readdirSync(userData).includes(path.basename(`${runLock}.lock`)))
+  } finally {
+    service.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
 
 test('a peer cannot delete a scheduled task while its owner is running it', async (t) => {
   const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-peer-delete-'))

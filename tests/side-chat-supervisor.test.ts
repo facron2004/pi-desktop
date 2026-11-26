@@ -13,10 +13,13 @@ import {
   symlinkSync,
   writeFileSync
 } from 'node:fs'
+import fsPromises from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import {
   SIDE_CHAT_DIR_NAME,
+  SIDE_CHAT_META_ENTRY_TYPE,
   SIDE_CHAT_STATUS_KEY,
   SIDE_DRAFT_PREFIX,
   isSideSessionKey,
@@ -36,6 +39,7 @@ import { SideChatBindingService } from '../src/main/side-chats'
 import { AutoTitleService } from '../src/main/auto-title'
 import { MemoryService } from '../src/main/memory/service'
 import { MemoryStore } from '../src/main/memory/store'
+import { encodeWorkspaceDir } from '../src/main/sessions'
 
 class FakeRuntime extends EventEmitter implements ManagedSessionRuntime {
   isRunning = false
@@ -141,7 +145,6 @@ test('MAX_IDLE_RUNTIMES stays 4 while Main+Side pair co-touching protects counte
   assert.equal(rMain.stops, 0, 'paired Main runtime must not be evicted when its Side runtime starts')
   assert.equal(rSide.stops, 0, 'newly started Side runtime stays alive')
   assert.equal(rB.stops, 1, 'oldest unprotected standalone idle runtime B should be evicted')
-  assert.equal(rSide.startOptions[0]?.rememberDefaults, false, 'Side runtime always forces rememberDefaults: false')
 
   // Active running Main protects its idle Side counterpart even when another session E starts
   await supervisor.request('draft:main-1', 'prompt')
@@ -459,6 +462,64 @@ test('SideChatBindingService handles draft rekey matrix, startup replace, fork/c
     rmSync(temp, { recursive: true, force: true })
   }
 })
+
+for (const recovery of ['missing active file', 'existing active file', 'history scan'] as const) {
+  test(`side chat resolution keeps a binding written by a peer during a check for ${recovery}`, async (t) => {
+    const temp = mkdtempSync(path.join(tmpdir(), 'pi-side-resolve-peer-'))
+    const sessionRoot = path.join(temp, 'sessions')
+    const cwd = path.join(temp, 'project')
+    const sideDir = path.join(sessionRoot, SIDE_CHAT_DIR_NAME, encodeWorkspaceDir(cwd))
+    mkdirSync(sideDir, { recursive: true })
+    const mainFile = path.join(sessionRoot, 'main.jsonl')
+    const previous = path.join(sideDir, 'previous.jsonl')
+    const current = path.join(sideDir, 'current.jsonl')
+    writeFileSync(mainFile, '{"type":"session","id":"main"}\n')
+    const options = { userData: path.join(temp, 'userData'), getSessionRoots: () => [sessionRoot] }
+    const local = new SideChatBindingService(options)
+    const peer = new SideChatBindingService(options)
+    t.after(() => rmSync(temp, { recursive: true, force: true }))
+    if (recovery !== 'history scan') {
+      if (recovery === 'existing active file') writeFileSync(previous, '{"type":"session","id":"old"}\n')
+      const key = mintSideDraftKey()
+      local.noteSideAssociation(key, mainFile, cwd)
+      local.handleRekey({ from: key, to: previous })
+    } else {
+      writeFileSync(previous, [
+        { type: 'session', id: 'old' },
+        { type: 'custom', customType: SIDE_CHAT_META_ENTRY_TYPE, data: { parentSessionKey: mainFile } }
+      ].map(record => JSON.stringify(record)).join('\n') + '\n')
+    }
+
+    const checkingPrevious = Promise.withResolvers<void>()
+    const continueCheck = Promise.withResolvers<void>()
+    const realpath = fsPromises.realpath
+    const mockedRealpath = t.mock.method(fsPromises, 'realpath', async (...args: Parameters<typeof realpath>) => {
+      if (args[0] === previous) {
+        checkingPrevious.resolve()
+        await continueCheck.promise
+      }
+      return realpath(...args)
+    })
+    syncBuiltinESMExports()
+    try {
+      const resolving = local.resolve(mainFile, cwd)
+      await checkingPrevious.promise
+      try {
+        writeFileSync(current, '{"type":"session","id":"current"}\n')
+        const key = mintSideDraftKey()
+        peer.noteSideAssociation(key, mainFile, cwd)
+        peer.handleRekey({ from: key, to: current })
+      } finally {
+        continueCheck.resolve()
+      }
+      assert.equal((await resolving).activeSideKey, current)
+      assert.equal(Object.values(peer.getPersistedBindings())[0]?.activeSideFile, current)
+    } finally {
+      mockedRealpath.mock.restore()
+      syncBuiltinESMExports()
+    }
+  })
+}
 
 test('clearing a side chat keeps its saved binding until the file is removed', async () => {
   const temp = mkdtempSync(path.join(tmpdir(), 'pi-side-clear-'))

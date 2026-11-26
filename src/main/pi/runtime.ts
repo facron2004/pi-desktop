@@ -26,7 +26,7 @@ import { resolvePiLaunch } from './locate'
 import { PiRpcClient } from './rpc-client'
 import { buildRpcArgs } from './rpc-args'
 import { canAutoApprove, parseToolApproval, permissionExtension } from './permissions'
-import { prepareLaunchAgentSettings } from './retry-policy'
+import { ensurePatientRetrySettingsAsync } from './retry-policy'
 import { sideChatExtension } from './side-chat'
 import { taskModesExtension } from './task-modes'
 import { subagentExtension } from './subagent'
@@ -333,13 +333,9 @@ export class PiRuntime extends EventEmitter {
     // A 429 has to outlast the provider's rate window. Pi reads the budget
     // once, when this process starts, so it has to be in place before launch.
     try {
-      await prepareLaunchAgentSettings({
-        model: options.model,
-        thinkingLevel: options.thinkingLevel,
-        rememberDefaults: isSide ? false : options.rememberDefaults
-      })
+      await ensurePatientRetrySettingsAsync()
     } catch {
-      /* an unreadable settings file keeps Pi's own budget and model */
+      /* an unreadable settings file keeps Pi's own budget */
     }
     if (generation !== this.generation) {
       revokeSideBridge?.()

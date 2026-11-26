@@ -155,6 +155,15 @@ export interface ImageContent {
   mimeType: string
 }
 
+/** Pi returns queue text. Desktop can also restore images from its directory queue. */
+export type ClearedQueuePrompt = string | { text: string; images: Omit<ImageContent, 'type'>[] }
+
+export interface ClearedRuntimeQueue {
+  steering: ClearedQueuePrompt[]
+  followUp: ClearedQueuePrompt[]
+  queueError?: string
+}
+
 export interface ThinkingContent {
   type: 'thinking'
   thinking: string
@@ -1495,7 +1504,7 @@ export interface PiDesktopBridge {
   terminal: {
     /** Start a real PTY shell for the open workspace. */
     create(options: TerminalCreateOptions): Promise<TerminalSessionInfo>
-    write(id: string, data: string): Promise<void>
+    write(id: string, data: string): Promise<boolean>
     resize(id: string, cols: number, rows: number): Promise<void>
     kill(id: string): Promise<void>
     acknowledgeOutput(id: string, sequence: number): void
@@ -1755,12 +1764,6 @@ export interface RuntimeStartOptions {
   thinkingLevel?: string
   /** App-level instructions appended to the system prompt for this process. */
   customInstructions?: string
-  /**
-   * Write `model` / `thinkingLevel` into Pi's agent settings as the next
-   * launch's defaults. A task-specific choice passes false so it does not
-   * become the app-wide default.
-   */
-  rememberDefaults?: boolean
   /** Diagnostic only. Stripped before the process is spawned. */
   trace?: RpcTraceHint
 }

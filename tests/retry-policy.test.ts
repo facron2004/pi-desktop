@@ -7,12 +7,10 @@ import {
   RETRY_FLOOR,
   ensurePatientRetrySettings,
   forgetDefaultModel,
-  forgetDefaultModelAsync,
   raiseRetryBudget,
   rememberDefaultModel,
-  rememberDefaultModelAsync,
   rememberDefaultThinkingLevel,
-  rememberDefaultThinkingLevelAsync
+  syncAgentDefaults
 } from '../src/main/pi/retry-policy'
 import { isRateLimitError } from '../src/renderer/src/lib/provider-error'
 
@@ -158,13 +156,12 @@ test('a saved reasoning level is written into Pi settings and an unknown one is 
   }
 })
 
-test('async default model and thinking helpers update and clear Pi settings without blocking', async () => {
+test('syncing saved defaults updates and clears only the selected Pi settings', async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'pi-default-async-'))
   const file = path.join(dir, 'settings.json')
   try {
     writeFileSync(file, JSON.stringify({ theme: 'dark' }))
-    await rememberDefaultModelAsync('openai/gpt-5', file)
-    await rememberDefaultThinkingLevelAsync('medium', file)
+    await syncAgentDefaults(() => ({ model: 'openai/gpt-5', thinkingLevel: 'medium' }), file)
     const saved = JSON.parse(readFileSync(file, 'utf8')) as {
       theme: string
       defaultProvider?: string
@@ -176,7 +173,7 @@ test('async default model and thinking helpers update and clear Pi settings with
     assert.equal(saved.defaultModel, 'gpt-5')
     assert.equal(saved.defaultThinkingLevel, 'medium')
 
-    await forgetDefaultModelAsync(file)
+    await syncAgentDefaults(() => ({ model: undefined }), file)
     const cleared = JSON.parse(readFileSync(file, 'utf8')) as {
       defaultProvider?: string
       defaultModel?: string

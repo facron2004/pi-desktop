@@ -13,7 +13,7 @@ import { MAX_TERMINAL_SESSIONS, type TerminalDataPayload } from '@shared/types'
 import { EarlyTerminalExits } from '../lib/terminal-startup'
 import { useAppStore } from '../store/useAppStore'
 import { useIsDark } from '../lib/theme'
-import { useT } from '../lib/i18n'
+import { translate, useT } from '../lib/i18n'
 import '@xterm/xterm/css/xterm.css'
 import '../styles/terminal.css'
 
@@ -63,6 +63,7 @@ export interface TerminalPaneHandle {
   clear(): void
   restart(): void
   focus(): void
+  canAcceptCommand(): boolean
 }
 
 interface TerminalPaneProps {
@@ -70,6 +71,7 @@ interface TerminalPaneProps {
   cwd: string
   shell: string
   request?: TerminalRunRequest | null
+  onRequestHandled: (seq: number) => void
   /** The shell name, once the PTY reports it, for the tab label. */
   onLabel: (label: string) => void
 }
@@ -82,7 +84,7 @@ interface TerminalPaneProps {
  * shared screen. The pane owns nothing but its own process and viewport.
  */
 const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function TerminalPane(
-  { active, cwd, shell, request, onLabel },
+  { active, cwd, shell, request, onRequestHandled, onLabel },
   ref
 ) {
   const t = useT()
@@ -93,8 +95,9 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   const fitRef = useRef<FitAddon | null>(null)
   const sessionRef = useRef<string | null>(null)
   const pendingOutputRef = useRef(new Map<string, TerminalDataPayload[]>())
-  const pendingRequestRef = useRef<string | null>(null)
+  const pendingRequestRef = useRef<TerminalRunRequest | null>(null)
   const handledRequestRef = useRef(0)
+  const unavailableRef = useRef(false)
   const onLabelRef = useRef(onLabel)
   onLabelRef.current = onLabel
 
@@ -122,10 +125,28 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       },
       focus() {
         termRef.current?.focus()
+      },
+      canAcceptCommand() {
+        return !unavailableRef.current
       }
     }),
     []
   )
+
+  const completeRequest = useCallback((seq: number, sent: boolean) => {
+    if (!sent) {
+      const { settings, showToast } = useAppStore.getState()
+      showToast(translate('Could not send the command to the terminal', settings.language), 'error')
+    }
+    onRequestHandled(seq)
+  }, [onRequestHandled])
+
+  const sendRequest = useCallback((id: string, request: TerminalRunRequest) => {
+    void window.pi.terminal.write(id, `${request.command.trim()}\r`).then(
+      (sent) => completeRequest(request.seq, sent),
+      () => completeRequest(request.seq, false)
+    )
+  }, [completeRequest])
 
   // Create the shell and the screen together. The xterm instance is created
   // first so the first PTY write already knows the viewport size.
@@ -135,7 +156,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     setExited(null)
     setError(null)
     pendingOutputRef.current.clear()
-    pendingRequestRef.current = null
+    unavailableRef.current = false
 
     const term = new XTerm({
       allowTransparency: false,
@@ -194,6 +215,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     const offExit = window.pi.terminal.onExit((payload) => {
       if (payload.id === sessionRef.current) {
         sessionRef.current = null
+        unavailableRef.current = true
         setExited(payload.exitCode)
       } else if (awaitingCreate && sessionRef.current === null) {
         pendingExits.record(payload)
@@ -234,6 +256,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         }
         const earlyExit = pendingExits.takeFor(info.id)
         sessionRef.current = earlyExit ? null : info.id
+        unavailableRef.current = earlyExit !== undefined
         onLabelRef.current(info.shell)
         if (earlyExit) setExited(earlyExit.exitCode)
         const pendingOutput = pendingOutputRef.current.get(info.id) ?? []
@@ -246,13 +269,18 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         const pending = pendingRequestRef.current
         if (pending) {
           pendingRequestRef.current = null
-          if (!earlyExit) void window.pi.terminal.write(info.id, `${pending}\r`)
+          if (earlyExit) completeRequest(pending.seq, false)
+          else sendRequest(info.id, pending)
         }
         term.focus()
       })
       .catch((failure: unknown) => {
         awaitingCreate = false
         if (disposed) return
+        unavailableRef.current = true
+        const pending = pendingRequestRef.current
+        pendingRequestRef.current = null
+        if (pending) completeRequest(pending.seq, false)
         const message = failure instanceof Error ? failure.message : String(failure)
         // Keep one actionable error in the terminal instead of duplicating the
         // native backend message in a toast over the panel controls.
@@ -275,7 +303,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       termRef.current = null
       fitRef.current = null
     }
-  }, [cwd, shell, restartKey])
+  }, [cwd, shell, restartKey, completeRequest, sendRequest])
 
   // The app theme can change without restarting the shell.
   useEffect(() => {
@@ -306,16 +334,18 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   useEffect(() => {
     if (!request || request.seq === handledRequestRef.current) return
     handledRequestRef.current = request.seq
-    const command = request.command.trim()
-    if (!command) return
+    if (unavailableRef.current) {
+      completeRequest(request.seq, false)
+      return
+    }
     const id = sessionRef.current
     if (!id) {
-      pendingRequestRef.current = command
+      pendingRequestRef.current = request
       return
     }
     termRef.current?.focus()
-    void window.pi.terminal.write(id, `${command}\r`)
-  }, [request])
+    sendRequest(id, request)
+  }, [request, completeRequest, sendRequest])
 
   return (
     <div className="terminal__pane-body">
@@ -349,6 +379,7 @@ interface TerminalTab {
   label: string
   /** Startup directory, fixed for the life of the tab. */
   cwd: string
+  shell: string
 }
 
 /**
@@ -363,16 +394,18 @@ interface TerminalTab {
 export function TerminalPanel({
   onClose,
   request,
+  onRequestHandled,
   embedded = false
 }: {
   onClose: () => void
   request?: TerminalRunRequest | null
+  onRequestHandled: (seq: number) => void
   /** Draw as a column inside the side panel rather than a drawer. */
   embedded?: boolean
 }) {
   const t = useT()
   const workspace = useAppStore((state) => state.workspace)
-  const shell = useAppStore((state) => state.settings.terminalShell ?? 'powershell')
+  const defaultShell = useAppStore((state) => state.settings.terminalShell ?? 'powershell')
   const storedHeight = useAppStore((state) => state.settings.terminalHeight)
   const updateSettings = useAppStore((state) => state.updateSettings)
   const showToast = useAppStore((state) => state.showToast)
@@ -381,7 +414,7 @@ export function TerminalPanel({
     typeof storedHeight === 'number' ? clampHeight(storedHeight) : defaultTerminalHeight()
   )
   const [tabs, setTabs] = useState<TerminalTab[]>(() => [
-    { key: 'terminal-1', label: '', cwd: request?.cwd ?? workspace?.path ?? '' }
+    { key: 'terminal-1', label: '', cwd: request?.cwd ?? workspace?.path ?? '', shell: defaultShell }
   ])
   const [activeKey, setActiveKey] = useState('terminal-1')
   const [assignedRequest, setAssignedRequest] = useState<{
@@ -431,10 +464,10 @@ export function TerminalPanel({
     if (tabs.length >= MAX_TERMINAL_SESSIONS) return undefined
     const key = `terminal-${nextKeyRef.current}`
     nextKeyRef.current += 1
-    setTabs((previous) => [...previous, { key, label: '', cwd }])
+    setTabs((previous) => [...previous, { key, label: '', cwd, shell: defaultShell }])
     setActiveKey(key)
     return key
-  }, [tabs.length])
+  }, [defaultShell, tabs.length])
   const addTab = () => openTab(workspace?.path ?? '')
 
   // Preserve existing shells on project changes, and never hand the command
@@ -443,10 +476,15 @@ export function TerminalPanel({
     if (!request || request.seq === assignedSequenceRef.current) return
     assignedSequenceRef.current = request.seq
     const activeTab = tabs.find(tab => tab.key === activeKey)
-    const key = activeTab?.cwd === request.cwd ? activeTab.key : openTab(request.cwd)
+    const key = activeTab?.cwd === request.cwd && paneApis.current.get(activeTab.key)?.canAcceptCommand() !== false
+      ? activeTab.key
+      : openTab(request.cwd)
     if (key) setAssignedRequest({ key, request })
-    else showToast(t('Terminal limit reached'), 'warning')
-  }, [request, activeKey, tabs, openTab, showToast, t])
+    else {
+      showToast(t('Terminal limit reached'), 'warning')
+      onRequestHandled(request.seq)
+    }
+  }, [request, activeKey, tabs, openTab, onRequestHandled, showToast, t])
 
   const closeTab = useCallback(
     (key: string) => {
@@ -457,10 +495,11 @@ export function TerminalPanel({
         onClose()
         return
       }
+      if (assignedRequest?.key === key) onRequestHandled(assignedRequest.request.seq)
       setTabs(next)
       if (activeKey === key) setActiveKey(next[Math.max(0, index - 1)].key)
     },
-    [tabs, activeKey, onClose]
+    [tabs, activeKey, assignedRequest, onRequestHandled, onClose]
   )
 
   const activePane = useCallback(() => paneApis.current.get(activeKey), [activeKey])
@@ -677,8 +716,9 @@ export function TerminalPanel({
               }}
               active={tab.key === activeKey}
               cwd={tab.cwd}
-              shell={shell}
+              shell={tab.shell}
               request={tab.key === assignedRequest?.key ? assignedRequest.request : null}
+              onRequestHandled={onRequestHandled}
               onLabel={(label) => setTabLabel(tab.key, label)}
             />
           </div>

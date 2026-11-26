@@ -95,8 +95,9 @@ const MAX_SEARCH_INDEX_FILES = 512
 const MAX_SEARCH_INDEX_FILE_BYTES = 64 * 1024 * 1024
 const SEARCH_INDEX_SCAN_CHUNK_CHARS = 1024 * 1024
 /** A changed shape must rebuild instead of being read as the old one. */
-const SEARCH_INDEX_VERSION = 8
+const SEARCH_INDEX_VERSION = 9
 const SEARCH_INDEX_FILE_MAGIC = `pi-desktop-search-index-v${SEARCH_INDEX_VERSION}\n`
+const SEARCH_INDEX_SOURCE_HEADER_BYTES = 4 * 1024
 const LF = 0x0a
 const CR = 0x0d
 const CHUNK_SIZE = 64 * 1024
@@ -224,6 +225,7 @@ interface SearchIndexSnapshot {
   file: string
   /** Filesystem identity prevents a same-size replacement reusing this index. */
   identity: string
+  sourceHeaderHash?: string
   sessionId: string
   cwd: string
   name?: string
@@ -290,7 +292,8 @@ function clearSearchIndexCache(): void {
 }
 
 function estimateSearchIndexMemory(snapshot: SearchIndexSnapshot): number {
-  let bytes = 512 + (snapshot.file.length + snapshot.identity.length + snapshot.sessionId.length + snapshot.cwd.length) * 2
+  let bytes = 512 + (snapshot.file.length + snapshot.identity.length + (snapshot.sourceHeaderHash?.length ?? 0) +
+    snapshot.sessionId.length + snapshot.cwd.length) * 2
   if (snapshot.name) bytes += snapshot.name.length * 2
   bytes += snapshot.preview.length * 2
   for (const entry of snapshot.entries) {
@@ -2607,6 +2610,7 @@ async function searchSessionFile(
 interface SearchIndexScan {
   sessionId: string
   cwd: string
+  sourceHeaderHash?: string
   name?: string
   preview: string
   messageIndex: number
@@ -2638,6 +2642,9 @@ function scanIndexRecord(
   if (!record || typeof record !== 'object') return
 
   if (record.type === 'session') {
+    if (startOffset === 0 && endOffset <= SEARCH_INDEX_SOURCE_HEADER_BYTES) {
+      state.sourceHeaderHash = createHash('sha256').update(raw).digest('hex')
+    }
     if (typeof record.id === 'string') state.sessionId = record.id
     if (typeof record.cwd === 'string') state.cwd = record.cwd
     return
@@ -2733,6 +2740,7 @@ async function readSearchIndexFile(
           version: SEARCH_INDEX_VERSION,
           file: typeof value.file === 'string' ? value.file : '',
           identity: value.identity,
+          sourceHeaderHash: typeof value.sourceHeaderHash === 'string' ? value.sourceHeaderHash : undefined,
           sessionId: typeof value.sessionId === 'string' ? value.sessionId : '',
           cwd: typeof value.cwd === 'string' ? value.cwd : '',
           name: typeof value.name === 'string' ? value.name : undefined,
@@ -2927,8 +2935,24 @@ async function writeSearchIndexFile(
   }
 }
 
+/** Pi rewrites the session header in place when migrating a legacy file. */
+async function searchIndexSourceHeaderHash(handle: FileHandle, length: number): Promise<string | undefined> {
+  const buffer = Buffer.alloc(length)
+  let read = 0
+  while (read < length) {
+    const { bytesRead } = await handle.read(buffer, read, length - read, read)
+    if (bytesRead === 0) break
+    read += bytesRead
+  }
+  const prefix = buffer.subarray(0, read)
+  const end = prefix.indexOf(LF)
+  if (end < 0) return undefined
+  const line = prefix.toString('utf8', 0, prefix[end - 1] === CR ? end - 1 : end)
+  return createHash('sha256').update(line).digest('hex')
+}
+
 /**
- * Bring a snapshot up to the last complete record in the file.
+ * Bring a snapshot with a verified source header up to the last complete record.
  *
  * A same-size snapshot is already current. A snapshot that only trails the
  * file is extended from its last complete JSONL boundary. A missing, foreign,
@@ -2967,6 +2991,7 @@ async function updateSearchIndex(
     state = {
       sessionId: base.sessionId || path.basename(file, '.jsonl'),
       cwd: base.cwd,
+      sourceHeaderHash: base.sourceHeaderHash,
       name: base.name,
       preview: base.preview,
       messageIndex: base.messageIndex,
@@ -3031,6 +3056,7 @@ async function updateSearchIndex(
       }
       state.sessionId = head.sessionId
       state.cwd = head.cwd || state.cwd
+      state.sourceHeaderHash = head.sourceHeaderHash
       state.name ??= head.name
       state.preview = head.preview || state.preview
     }
@@ -3111,18 +3137,28 @@ async function ensureSearchIndex(
         ? cached
         : null
       const stored = cachedAppend ? null : await readSearchIndexFile(indexPath, maxWorkBytes)
-      if (cancellation.cancelled) return { snapshot: null, sourceBytesRead: 0, indexBytesRead: 0 }
-      if (stored?.skipped) {
-        return { snapshot: null, sourceBytesRead: 0, indexBytesRead: 0 }
-      }
-      const storedSnapshot = stored?.snapshot?.identity === identity ? stored.snapshot : null
-      const base = cachedAppend ?? storedSnapshot
       const indexBytesRead = stored?.indexBytesRead ?? 0
-      const sourceBytesEstimate = estimatedSearchIndexSourceReadBytes(file, identity, size, mtime, base)
-      if (indexBytesRead + sourceBytesEstimate >= maxWorkBytes) {
+      if (cancellation.cancelled || stored?.skipped) {
         return { snapshot: null, sourceBytesRead: 0, indexBytesRead }
       }
-      return await updateSearchIndex(
+      const storedSnapshot = stored?.snapshot?.identity === identity ? stored.snapshot : null
+      const candidate = cachedAppend ?? storedSnapshot
+      let base: SearchIndexSnapshot | null = null
+      let headerBytes = 0
+      if (candidate?.sourceHeaderHash) {
+        headerBytes = Math.min(size, SEARCH_INDEX_SOURCE_HEADER_BYTES)
+        if (headerBytes + indexBytesRead >= maxWorkBytes) {
+          return { snapshot: null, sourceBytesRead: 0, indexBytesRead }
+        }
+        const sourceHeaderHash = await searchIndexSourceHeaderHash(handle, headerBytes)
+        if (cancellation.cancelled) return { snapshot: null, sourceBytesRead: headerBytes, indexBytesRead }
+        if (sourceHeaderHash === candidate.sourceHeaderHash) base = candidate
+      }
+      const sourceBytesEstimate = estimatedSearchIndexSourceReadBytes(file, identity, size, mtime, base)
+      if (headerBytes + indexBytesRead + sourceBytesEstimate >= maxWorkBytes) {
+        return { snapshot: null, sourceBytesRead: headerBytes, indexBytesRead }
+      }
+      const load = await updateSearchIndex(
         file,
         indexPath,
         base,
@@ -3133,6 +3169,7 @@ async function ensureSearchIndex(
         handle,
         () => !cancellation.cancelled
       )
+      return { ...load, sourceBytesRead: load.sourceBytesRead + headerBytes }
     })()
     const build = { size, mtime, task, cancellation }
     inFlightSearchIndexes.set(inFlightKey, build)

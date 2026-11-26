@@ -210,6 +210,8 @@ test('selecting a newly saved provider refreshes an idle Pi registry before set_
     reasoning: false, input: ['text'], contextWindow: 32000, maxTokens: 4096 }
   const added = { ...oldModel, provider: 'added' }
   const calls: string[] = []
+  const snapshot = Promise.withResolvers<PiState>()
+  let refreshed: Promise<void> | undefined
   let selected = oldModel
   bridge.runtime.request = async command => {
     calls.push(command)
@@ -219,24 +221,137 @@ test('selecting a newly saved provider refreshes an idle Pi registry before set_
       selected = added
       return added
     }
-    if (command === 'get_state') return { ...previous.piState, model: selected }
+    if (command === 'get_state') return snapshot.promise
     if (command === 'get_available_models') return { models: [oldModel, added] }
     return {}
   }
   const thread = { ...active.threads[key], models: [oldModel], isStreaming: false,
     run: { phase: 'idle' as const, turns: 0, settled: true } }
   useAppStore.setState({ models: [oldModel], threads: { ...active.threads, [key]: thread },
-    run: thread.run, isStreaming: false, catalogModels: [added], disabledModelSpecs: [] })
+    run: thread.run, isStreaming: false, catalogModels: [added], disabledModelSpecs: [],
+    refreshState: (...args) => (refreshed = active.refreshState(...args)) })
   try {
-    assert.equal(await useAppStore.getState().setModel(added), true)
+    const applied = await useAppStore.getState().setModel(added)
+    assert.equal(applied, true, useAppStore.getState().error)
     assert.deepEqual(calls.slice(0, 2), ['prompt', 'set_model'])
     assert.equal(useAppStore.getState().piState?.model?.provider, 'added')
     assert.equal(useAppStore.getState().settings.model, 'added/shared-model')
+  } finally {
+    snapshot.resolve({ isStreaming: false, isCompacting: false, model: selected })
+    await refreshed
+    bridge.runtime.request = originalRequest
+    useAppStore.setState(previous)
+  }
+})
+
+test('a rejected live model choice does not change the draft default', async () => {
+  const previous = useAppStore.getState()
+  const originalRequest = bridge.runtime.request
+  await previous.newChat()
+  const active = useAppStore.getState()
+  const key = active.draftId!
+  const oldModel: ModelInfo = { id: 'working', provider: 'existing', api: 'openai-completions',
+    reasoning: false, input: ['text'], contextWindow: 32000, maxTokens: 4096 }
+  const added = { ...oldModel, id: 'unusable', provider: 'added' }
+  const piState: PiState = { isStreaming: false, isCompacting: false, model: oldModel }
+  const thread = { ...active.threads[key], models: [oldModel, added], piState }
+  useAppStore.setState({
+    piState,
+    settings: { ...active.settings, model: 'existing/working', provider: 'existing' },
+    threads: { ...active.threads, [key]: thread }
+  })
+  bridge.runtime.request = async (command) => {
+    assert.equal(command, 'set_model')
+    throw new Error('Provider credentials are missing')
+  }
+  try {
+    assert.equal(await useAppStore.getState().setModel(added), false)
+    const state = useAppStore.getState()
+    assert.equal(state.settings.model, 'existing/working')
+    assert.equal(state.piState?.model, oldModel)
+    assert.equal(state.error, 'Provider credentials are missing')
   } finally {
     bridge.runtime.request = originalRequest
     useAppStore.setState(previous)
   }
 })
+
+for (const rejected of [false, true]) {
+  test(`a model selected during prewarm ${rejected ? 'preserves the draft after rejection' : 'applies once before the first prompt'}`, { timeout: 5000 }, async (t) => {
+    const previous = useAppStore.getState()
+    const originalRequest = bridge.runtime.request
+    const runtime = bridge.runtime as typeof bridge.runtime & {
+      ensure?: (options: RuntimeStartOptions) => Promise<{ ok: boolean }>
+      has?: (key: string) => Promise<boolean>
+    }
+    const { ensure: originalEnsure, has: originalHas } = runtime
+    await previous.newChat()
+    const active = useAppStore.getState()
+    const key = active.draftId!
+    const target: ModelInfo = { id: 'new', provider: 'added', api: 'openai-completions',
+      reasoning: false, input: ['text'], contextWindow: 32000, maxTokens: 4096 }
+    const ready = Promise.withResolvers<{ ok: boolean }>()
+    const commandSent = Promise.withResolvers<void>()
+    const confirmation = Promise.withResolvers<ModelInfo>()
+    const calls: string[] = []
+    let ensures = 0
+    let refreshed: Promise<void> | undefined
+    runtime.ensure = () => { ensures += 1; return ready.promise }
+    runtime.has = async () => false
+    bridge.runtime.request = async (command) => {
+      calls.push(command)
+      if (command === 'prompt') return { disposition: 'started' }
+      if (command === 'set_model') {
+        commandSent.resolve()
+        return confirmation.promise
+      }
+      if (command === 'get_state') return { isStreaming: false, isCompacting: false, model: target }
+      return {}
+    }
+    useAppStore.setState({ refreshState: (...args) => (refreshed = active.refreshState(...args)) })
+    const boot = active.ensureRuntime(key, 'composer-focus').catch((error) => error)
+    let send: Promise<boolean> | undefined
+    t.after(async () => {
+      ready.resolve({ ok: true })
+      confirmation.resolve(target)
+      await boot
+      await send
+      await refreshed
+      runtime.ensure = originalEnsure
+      runtime.has = originalHas
+      bridge.runtime.request = originalRequest
+      useAppStore.setState(previous)
+    })
+    assert.equal(await useAppStore.getState().setModel(target), true)
+    assert.equal(ensures, 1, 'the pick reuses the existing prewarm')
+    assert.deepEqual(calls, [])
+    assert.equal(useAppStore.getState().settings.model, active.settings.model)
+
+    const draft = { text: 'First prompt', images: [] }
+    useAppStore.getState().updateDraft(key, () => draft)
+    send = useAppStore.getState().submitComposerDraft(key, { draft, text: draft.text, kind: 'steer' })
+    ready.resolve({ ok: true })
+    await Promise.race([commandSent.promise, boot])
+    assert.deepEqual(calls, ['set_model'])
+    assert.equal(useAppStore.getState().settings.model, active.settings.model)
+
+    if (rejected) {
+      confirmation.reject(new Error('Provider credentials are missing'))
+      assert.equal(await send, false)
+      assert.deepEqual(calls, ['set_model'])
+      assert.equal(useAppStore.getState().drafts[key]?.text, draft.text)
+      assert.equal(loadComposerDrafts().drafts[key]?.text, draft.text)
+      assert.equal(useAppStore.getState().settings.model, active.settings.model)
+      assert.equal(useAppStore.getState().error, 'Provider credentials are missing')
+    } else {
+      confirmation.resolve(target)
+      assert.equal(await send, true)
+      assert.deepEqual(calls.filter((command) => command === 'set_model' || command === 'prompt'), ['set_model', 'prompt'])
+      assert.equal(useAppStore.getState().settings.model, 'added/new')
+      assert.equal(useAppStore.getState().drafts[key]?.text ?? '', '')
+    }
+  })
+}
 
 test('a busy conversation keeps running when a new provider cannot be loaded yet', async () => {
   const previous = useAppStore.getState()

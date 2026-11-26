@@ -271,7 +271,7 @@ export class SideChatBindingService {
     }
   }
 
-  private mutateStore(mutator: (current: SideChatStoreData) => SideChatStoreData | void): SideChatStoreData {
+  private mutateStore(mutator: (current: SideChatStoreData) => SideChatStoreData | false | void): SideChatStoreData {
     return this.withDataLock(() => {
       let current: SideChatStoreData
       try {
@@ -296,6 +296,10 @@ export class SideChatBindingService {
         bindings: { ...current.bindings }
       }
       const maybeNext = mutator(cloned)
+      if (maybeNext === false) {
+        this.fileFingerprint = undefined
+        return current
+      }
       const next = maybeNext ?? cloned
       this.writeDataLocked(next)
       return next
@@ -381,17 +385,24 @@ export class SideChatBindingService {
       const store = this.refreshFromDisk()
       const persisted = store.bindings[pKey]
       if (persisted?.activeSideFile) {
-        const verified = await resolveSessionFilePath(persisted.activeSideFile, sessionRoots)
+        const checkedFile = persisted.activeSideFile
+        const verified = await resolveSessionFilePath(checkedFile, sessionRoots)
+        if (this.pendingDraftBindings.get(pKey) !== pending) {
+          return this.resolve(parentSessionKey, cwd, sessionRoots, parentSessionId)
+        }
         if (verified) {
+          if (this.refreshFromDisk().bindings[pKey]?.activeSideFile !== checkedFile) {
+            return this.resolve(parentSessionKey, cwd, sessionRoots, parentSessionId)
+          }
           this.parentBySide.set(sideLookupKey(verified), { parentSessionKey, cwd: cwd || persisted.cwd })
           return { parentSessionKey, activeSideKey: verified, hasPersistedHistory: true }
         }
-        // Stale missing file on disk: prune `activeSideFile` cleanly
-        this.mutateStore((draft) => {
+        // Prune only if the checked file is still active under the write lock.
+        const latest = this.mutateStore((draft) => {
           const entry = draft.bindings[pKey]
-          if (!entry) return
+          if (entry?.activeSideFile !== checkedFile) return false
           const remaining = entry.sideFiles.filter(
-            (f) => canonicalSessionFile(f) !== canonicalSessionFile(persisted.activeSideFile!)
+            (f) => canonicalSessionFile(f) !== canonicalSessionFile(checkedFile)
           )
           if (remaining.length === 0) {
             delete draft.bindings[pKey]
@@ -404,6 +415,9 @@ export class SideChatBindingService {
             }
           }
         })
+        if (latest.bindings[pKey]?.activeSideFile) {
+          return this.resolve(parentSessionKey, cwd, sessionRoots, parentSessionId)
+        }
       } else if (!persisted) {
         // 3. Self-healing fallback: scan `_side-chats/<workspaceDir>` for `pi-desktop-side-chat` custom entries
         const recoveredFiles = await findSideChatFilesForParent(
@@ -412,19 +426,26 @@ export class SideChatBindingService {
           sessionRoots,
           parentSessionId
         )
+        if (this.pendingDraftBindings.get(pKey) !== pending || this.refreshFromDisk().bindings[pKey]) {
+          return this.resolve(parentSessionKey, cwd, sessionRoots, parentSessionId)
+        }
         if (recoveredFiles.length > 0) {
           const activeSideFile = recoveredFiles[0]!
-          const now = Date.now()
-          this.mutateStore((draft) => {
-            draft.bindings[pKey] = {
-              parentSessionKey,
-              ...(parentSessionId ? { parentSessionId } : {}),
-              cwd,
-              activeSideFile,
-              sideFiles: deduplicateFiles(recoveredFiles),
-              updatedAt: now
-            }
+          const recovered: SideChatBindingEntry = {
+            parentSessionKey,
+            ...(parentSessionId ? { parentSessionId } : {}),
+            cwd,
+            activeSideFile,
+            sideFiles: deduplicateFiles(recoveredFiles),
+            updatedAt: Date.now()
+          }
+          const latest = this.mutateStore((draft) => {
+            if (draft.bindings[pKey]) return false
+            draft.bindings[pKey] = recovered
           })
+          if (latest.bindings[pKey] !== recovered) {
+            return this.resolve(parentSessionKey, cwd, sessionRoots, parentSessionId)
+          }
           for (const sideFile of recoveredFiles) {
             this.parentBySide.set(sideLookupKey(sideFile), { parentSessionKey, cwd })
           }

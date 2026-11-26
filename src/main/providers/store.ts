@@ -17,11 +17,11 @@ function readObject(file: string): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
-function writeObject(file: string, data: Record<string, unknown>): void {
+function writeContents(file: string, contents: string | Buffer): void {
   mkdirSync(path.dirname(file), { recursive: true })
   const temporary = `${file}.${randomUUID()}.tmp`
   try {
-    writeFileSync(temporary, `${JSON.stringify(data, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
+    writeFileSync(temporary, contents, { encoding: 'utf8', mode: 0o600 })
     renameSync(temporary, file)
   } catch (error) {
     try { unlinkSync(temporary) } catch { /* the temporary file may not exist */ }
@@ -105,6 +105,7 @@ export class ProviderStore {
   private readonly desktopFile: string
   private lockDepth = 0
   private authLockDepth = 0
+  private undoWrites?: Array<() => void>
 
   constructor(directory: string) {
     this.file = path.join(directory, 'models.json')
@@ -112,9 +113,40 @@ export class ProviderStore {
     this.desktopFile = path.join(directory, 'models.desktop.json')
   }
 
-  /** Keep the three provider files and selected-provider settings in one cross-process transaction. */
+  /** Keep both locks held through publication and any rollback. */
   withMutation<T>(operation: () => T): T {
-    return this.withLock(operation)
+    if (this.undoWrites) return operation()
+    return this.withLock(() => this.withAuthLock(() => {
+      const undoWrites: Array<() => void> = []
+      this.undoWrites = undoWrites
+      try {
+        return operation()
+      } catch (error) {
+        const rollbackErrors: unknown[] = []
+        for (const undo of undoWrites.reverse()) {
+          try { undo() } catch (failure) { rollbackErrors.push(failure) }
+        }
+        if (rollbackErrors.length) {
+          throw new AggregateError([error, ...rollbackErrors], 'Could not fully restore the previous provider configuration.')
+        }
+        throw error
+      } finally {
+        this.undoWrites = undefined
+      }
+    }))
+  }
+
+  private writeDocument(file: string, data: Record<string, unknown>): void {
+    let previous: Buffer | undefined
+    try { previous = readFileSync(file) } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    writeContents(file, `${JSON.stringify(data, null, 2)}\n`)
+    // Atomic replacement leaves the prior file intact if the write throws.
+    this.undoWrites!.push(() => {
+      if (previous) writeContents(file, previous)
+      else unlinkSync(file)
+    })
   }
 
   private withLock<T>(operation: () => T): T {
@@ -186,7 +218,7 @@ export class ProviderStore {
 
   private writeAuthObject(data: Record<string, unknown>): void {
     const file = existsSync(this.authFile) ? realpathSync(this.authFile) : this.authFile
-    writeObject(file, data)
+    this.writeDocument(file, data)
   }
 
   private configured(id?: string): Record<string, unknown> {
@@ -254,17 +286,13 @@ export class ProviderStore {
   }
 
   private forgetDesktop(id: string): void {
-    if (!existsSync(this.desktopFile)) return
-    try {
-      const document = readObject(this.desktopFile)
-      const providers = record(document.providers)
-      if (!Object.hasOwn(providers, id)) return
-      const rest = { ...providers }
-      delete rest[id]
-      writeObject(this.desktopFile, { ...document, providers: rest })
-    } catch {
-      // models.json no longer has the provider. A bad sidecar must not undo the removal.
-    }
+    const document = this.desktopDocument()
+    if (!document) return
+    const providers = record(document.providers)
+    if (!Object.hasOwn(providers, id)) return
+    const rest = { ...providers }
+    delete rest[id]
+    this.writeDocument(this.desktopFile, { ...document, providers: rest })
   }
 
   private profile(id: string, raw: Record<string, unknown>): ProviderProfile {
@@ -324,7 +352,7 @@ export class ProviderStore {
   }
 
   save(input: SaveProviderInput): ProviderProfile {
-    return this.withLock(() => this.withAuthLock(() => this.saveUnlocked(input)))
+    return this.withMutation(() => this.saveUnlocked(input))
   }
 
   private saveUnlocked(input: SaveProviderInput): ProviderProfile {
@@ -378,8 +406,8 @@ export class ProviderStore {
     // key can bypass `key()`'s auth.json read, which otherwise failed only
     // after models.json and the desktop sidecar had already been written.
     readObject(this.authFile)
-    writeObject(this.file, { ...document, providers: { ...providers, [id]: next } })
-    writeObject(this.desktopFile, {
+    this.writeDocument(this.file, { ...document, providers: { ...providers, [id]: next } })
+    this.writeDocument(this.desktopFile, {
       ...desktopDocument,
       providers: { ...desktopProviders, [id]: { models: written.map(model => model.desktop) } }
     })
@@ -394,7 +422,7 @@ export class ProviderStore {
 
   /** Drop a provider written into models.json. Pi sign-in credentials stay. */
   remove(id: string): void {
-    this.withLock(() => this.withAuthLock(() => this.removeUnlocked(id)))
+    this.withMutation(() => this.removeUnlocked(id))
   }
 
   private removeUnlocked(id: string): void {
@@ -406,7 +434,7 @@ export class ProviderStore {
     readObject(this.authFile)
     const rest = { ...providers }
     delete rest[id]
-    writeObject(this.file, { ...document, providers: rest })
+    this.writeDocument(this.file, { ...document, providers: rest })
     this.forgetDesktop(id)
     if (!existsSync(this.authFile)) return
     const credentials = readObject(this.authFile)

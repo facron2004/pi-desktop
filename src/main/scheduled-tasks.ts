@@ -752,14 +752,6 @@ export class ScheduledTaskService extends EventEmitter {
         return 'unknown'
       }
     }
-    try {
-      if (!properLockfile.checkSync(lockFile, {
-        realpath: false,
-        stale: LIVE_PROCESS_LOCK_STALE_MS
-      })) return 'dead'
-    } catch {
-      return 'unknown'
-    }
     if (!owner || typeof owner.token !== 'string') return 'unknown'
     if (
       lastRunAt !== undefined &&
@@ -769,6 +761,8 @@ export class ScheduledTaskService extends EventEmitter {
     ) return 'unknown'
     const pid = owner.piPid ?? owner.ownerPid
     if (!Number.isSafeInteger(pid) || pid <= 0) return 'unknown'
+    // A lock directory can disappear before its owner notices and stops Pi.
+    // Keep honoring the recorded process until it exits or releases the lease.
     return processLiveness(pid)
   }
 
@@ -806,6 +800,33 @@ export class ScheduledTaskService extends EventEmitter {
       } finally {
         this.removeRunLockOwner(ownerFile, token)
       }
+    }
+  }
+
+  private acquireRunLease(lockFile: string, owner: TaskRunOwner, onCompromised: () => void): (() => void) | undefined {
+    const ownerFile = this.runLockOwnerFile(lockFile)
+    if (this.runLockOwnerState(lockFile, ownerFile) === 'alive') return undefined
+    let releaseLock: (() => void) | undefined
+    try {
+      releaseLock = properLockfile.lockSync(lockFile, {
+        realpath: false,
+        retries: 0,
+        stale: TASK_LOCK_STALE_MS,
+        update: TASK_LOCK_UPDATE_MS,
+        onCompromised
+      })
+      // A peer can publish its owner between our first read and acquisition.
+      if (this.runLockOwnerState(lockFile, ownerFile) === 'alive') {
+        releaseLock()
+        return undefined
+      }
+      this.writeRunLockOwner(ownerFile, owner)
+      return this.wrapRunLockRelease(releaseLock, ownerFile, owner.token)
+    } catch (error) {
+      try { releaseLock?.() } catch { /* lock acquisition cleanup is best-effort */ }
+      this.removeRunLockOwner(ownerFile, owner.token)
+      if ((error as NodeJS.ErrnoException | undefined)?.code !== 'ELOCKED') throw error
+      return undefined
     }
   }
 
@@ -950,30 +971,17 @@ export class ScheduledTaskService extends EventEmitter {
     const runOwner: TaskRunOwner = { token: randomUUID(), ownerPid: process.pid, lastRunAt: now }
     const taskRunLockFile = this.taskRunLockFile(task.id)
     const taskRunOwnerFile = this.taskRunOwnerFile(task.id)
-    let releaseRunLock: () => void
-    let releaseLockFile: (() => void) | undefined
-    try {
-      const stale = this.runLockOwnerState(taskRunLockFile, taskRunOwnerFile) === 'alive'
-        ? LIVE_PROCESS_LOCK_STALE_MS
-        : TASK_LOCK_STALE_MS
-      releaseLockFile = properLockfile.lockSync(taskRunLockFile, {
-        realpath: false,
-        retries: 0,
-        stale,
-        update: TASK_LOCK_UPDATE_MS,
-        onCompromised: () => {
-          void this.supervisor.stop(sessionKey).catch(() => {})
-        }
+    let stoppingForLeaseLoss = false
+    const onCompromised = (): void => {
+      if (stoppingForLeaseLoss || this.activeTasks.get(task.id)?.draftKey !== sessionKey) return
+      stoppingForLeaseLoss = true
+      void this.stopRun(task.id).catch((error) => {
+        stoppingForLeaseLoss = false
+        console.error('[pi-desktop] could not stop a scheduled task after losing its lease:', error)
       })
-      this.writeRunLockOwner(taskRunOwnerFile, runOwner)
-      releaseRunLock = this.wrapRunLockRelease(releaseLockFile, taskRunOwnerFile, runOwner.token)
-    } catch (error) {
-      try { releaseLockFile?.() } catch { /* lock acquisition cleanup is best-effort */ }
-      this.removeRunLockOwner(taskRunOwnerFile, runOwner.token)
-      const code = typeof error === 'object' && error !== null && 'code' in error
-        ? String((error as { code?: unknown }).code)
-        : undefined
-      if (code !== 'ELOCKED') throw error
+    }
+    const releaseRunLock = this.acquireRunLease(taskRunLockFile, runOwner, onCompromised)
+    if (!releaseRunLock) {
       if (manual) throw new Error('This task is already running.')
       this.refreshFromDisk()
       this.skipOverlappedOccurrences()
@@ -983,7 +991,7 @@ export class ScheduledTaskService extends EventEmitter {
 
     let runSlot: RunSlotLease | undefined
     try {
-      runSlot = this.acquireRunSlot(sessionKey, runOwner)
+      runSlot = this.acquireRunSlot(runOwner, onCompromised)
     } catch (error) {
       releaseRunLock()
       throw error
@@ -1056,16 +1064,16 @@ export class ScheduledTaskService extends EventEmitter {
     this.activeTasks.set(currentTask.id, active)
     this.activeRuns.set(sessionKey, active)
     this.publish()
-    const workspace = this.settings.get().workspaces.find((entry) => entry.id === currentTask!.workspaceId)
+    const settings = this.settings.get()
+    const workspace = settings.workspaces.find((entry) => entry.id === currentTask!.workspaceId)
     if (!workspace) {
       this.finish(active, 'error', 'The selected project is no longer available.')
       return
     }
 
     try {
-      const settings = this.settings.get()
-      // A task may pin its own model and effort; otherwise the app defaults
-      // apply. A pinned choice must not rewrite Pi's global default.
+      // Both choices are process arguments. A run may be launching while a
+      // newer app preference is saved, so its snapshot must stay local to it.
       const model = currentTask.model ?? settings.model
       const thinkingLevel = currentTask.thinkingLevel ?? settings.thinkingLevel
       const ensured = await this.supervisor.ensure({
@@ -1073,7 +1081,6 @@ export class ScheduledTaskService extends EventEmitter {
         cwd: workspace.path,
         model,
         thinkingLevel,
-        rememberDefaults: !currentTask.model && !currentTask.thinkingLevel,
         customInstructions: this.customInstructions(workspace.path),
         trace: { sourceAction: 'scheduled-task', uiSessionId: sessionKey }
       })
@@ -1163,37 +1170,10 @@ export class ScheduledTaskService extends EventEmitter {
     return path.join(path.dirname(this.file), `scheduled-task-run-slot-${slot}`)
   }
 
-  private acquireRunSlot(sessionKey: string, owner: TaskRunOwner): RunSlotLease | undefined {
+  private acquireRunSlot(owner: TaskRunOwner, onCompromised: () => void): RunSlotLease | undefined {
     for (let slot = 0; slot < MAX_CONCURRENT_SCHEDULED_RUNS; slot++) {
-      const lockFile = this.runSlotLockFile(slot)
-      const ownerFile = this.runSlotOwnerFile(slot)
-      let releaseLock: (() => void) | undefined
-      try {
-        const stale = this.runLockOwnerState(lockFile, ownerFile) === 'alive'
-          ? LIVE_PROCESS_LOCK_STALE_MS
-          : TASK_LOCK_STALE_MS
-        releaseLock = properLockfile.lockSync(lockFile, {
-          realpath: false,
-          retries: 0,
-          stale,
-          update: TASK_LOCK_UPDATE_MS,
-          onCompromised: () => {
-            void this.supervisor.stop(sessionKey).catch(() => {})
-          }
-        })
-        this.writeRunLockOwner(ownerFile, owner)
-        return {
-          ownerFile,
-          release: this.wrapRunLockRelease(releaseLock, ownerFile, owner.token)
-        }
-      } catch (error) {
-        try { releaseLock?.() } catch { /* lock acquisition cleanup is best-effort */ }
-        this.removeRunLockOwner(ownerFile, owner.token)
-        const code = typeof error === 'object' && error !== null && 'code' in error
-          ? String((error as { code?: unknown }).code)
-          : undefined
-        if (code !== 'ELOCKED') throw error
-      }
+      const release = this.acquireRunLease(this.runSlotLockFile(slot), owner, onCompromised)
+      if (release) return { ownerFile: this.runSlotOwnerFile(slot), release }
     }
     return undefined
   }

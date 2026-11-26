@@ -2157,6 +2157,8 @@ const zhCN: Record<string, string> = {
   // cross-conversation wait status.
   'Could not open the package page': '无法打开插件页面',
   'Could not start the terminal': '无法启动终端',
+  'Could not send the command to the terminal': '无法将命令发送到终端',
+  'Pi did not refresh the model list. Try switching the model again.': 'Pi 未刷新模型列表，请重试切换模型。',
   'Connected': '已连接',
   'Restart the terminal': '重启终端',
   'Test': '测试',

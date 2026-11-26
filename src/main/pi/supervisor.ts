@@ -6,6 +6,8 @@ import path from 'node:path'
 import type { FileHandle } from 'node:fs/promises'
 import {
   isSideSessionKey,
+  type ClearedQueuePrompt,
+  type ClearedRuntimeQueue,
   type ExtensionUiResponse,
   type PiEvent,
   type PiState,
@@ -498,6 +500,23 @@ export class SessionSupervisor extends EventEmitter {
     if (this.shuttingDown) throw new Error('Pi is shutting down.')
     const runtime = this.runtimes.get(id)
     const activity = runtime && this.activity.get(runtime)
+    if (command === 'follow_up') {
+      const cancelled = { disposition: 'handled', cancelled: true } as T
+      if (!runtime?.isRunning || !activity?.running || activity.stopping || activity.changingSession) {
+        return cancelled
+      }
+      // This request joins an existing run. Putting it in the project write
+      // queue could forward it after that run finishes or the session changes.
+      const settlements = activity.settlements
+      const state = await runtime.request<Pick<PiState, 'isStreaming'>>('get_state', {}, 5_000, trace)
+      if (
+        !state?.isStreaming || !runtime.isRunning || !activity.running ||
+        activity.stopping || activity.changingSession || activity.settlements !== settlements ||
+        this.ownerOf(runtime) !== this.canonical(id)
+      ) return cancelled
+      this.touchRuntime(activity)
+      return runtime.request<T>(command, payload, timeoutMs, trace)
+    }
     if (!runtime?.isRunning || !activity || activity.stopping) {
       throw new Error('Pi is not running for this conversation.')
     }
@@ -516,7 +535,6 @@ export class SessionSupervisor extends EventEmitter {
       this.approvals.delete(id)
     }
     if (command === 'abort_bash') this.dropQueued(id, 'bash')
-    const removed = command === 'clear_queue' ? this.dropQueued(id, 'prompt') : []
     const writeCwd = writing ? this.cwdOf(id) : undefined
     if (writing) {
       this.clearWarm(id)
@@ -543,6 +561,9 @@ export class SessionSupervisor extends EventEmitter {
     const settlements = activity.settlements
     if (command === 'set_session_name') activity.nameWrites += 1
     try {
+      if (command === 'clear_queue') {
+        return await this.clearPromptQueue(id, timeoutMs, trace) as T
+      }
       const result = await this.invoke<T>(id, command, payload, timeoutMs, trace)
       if (command === 'get_state' && this.ownerOf(runtime) === id) {
         const file = (result as PiState | undefined)?.sessionFile
@@ -562,16 +583,6 @@ export class SessionSupervisor extends EventEmitter {
         if ((disposition === 'started' || disposition === 'queued') && activity.settlements === settlements) {
           activity.running = true
         }
-      }
-      if (command === 'clear_queue') {
-        const queue = result as { steering?: string[]; followUp?: string[] } | undefined
-        // Only user prompts belong in the composer when the directory queue is cleared.
-        const internalActions = ['image-params', 'image-params-cancel', 'message-edit', 'message-undo']
-        const prompts = removed.filter(job => !internalActions.includes(job.trace?.sourceAction ?? ''))
-        return {
-          steering: [...(queue?.steering ?? []), ...prompts.filter(job => job.payload.streamingBehavior !== 'followUp').map(job => String(job.payload.message ?? ''))],
-          followUp: [...(queue?.followUp ?? []), ...prompts.filter(job => job.payload.streamingBehavior === 'followUp').map(job => String(job.payload.message ?? ''))]
-        } as T
       }
       if (command === 'prompt' || changesSession) {
         const file = await this.rebindFromState(this.ownerOf(runtime) ?? id)
@@ -600,6 +611,41 @@ export class SessionSupervisor extends EventEmitter {
         activity.writes -= 1
         await this.release(this.ownerOf(runtime) ?? id, writeCwd)
       }
+    }
+  }
+
+  private async clearPromptQueue(id: string, timeoutMs: number, trace?: RpcTraceHint): Promise<ClearedRuntimeQueue> {
+    const removed = this.dropQueued(id, 'prompt')
+    // Internal commands can wait at the same gate but do not belong in a user draft.
+    const internalActions = ['image-params', 'image-params-cancel', 'message-edit', 'message-undo']
+    const cleared: ClearedRuntimeQueue = { steering: [], followUp: [] }
+    for (const { payload, trace } of removed) {
+      if (internalActions.includes(trace?.sourceAction ?? '')) continue
+      const text = String(payload.message ?? '')
+      const images = Array.isArray(payload.images) ? payload.images.flatMap((image: unknown) => {
+        const value = image as { data?: unknown; mimeType?: unknown } | null
+        return typeof value?.data === 'string' && typeof value.mimeType === 'string'
+          ? [{ data: value.data, mimeType: value.mimeType }]
+          : []
+      }) : []
+      const prompt: ClearedQueuePrompt = images.length ? { text, images } : text
+      const queue = payload.streamingBehavior === 'followUp' ? cleared.followUp : cleared.steering
+      queue.push(prompt)
+    }
+
+    try {
+      const queue = await this.invoke<{ steering?: string[]; followUp?: string[] } | undefined>(
+        id, 'clear_queue', {}, timeoutMs, trace
+      )
+      return {
+        steering: [...(queue?.steering ?? []), ...cleared.steering],
+        followUp: [...(queue?.followUp ?? []), ...cleared.followUp]
+      }
+    } catch (error) {
+      // These prompts were already cancelled at the gate. Return them even
+      // when the independent clear operation in the Pi process failed.
+      if (!cleared.steering.length && !cleared.followUp.length) throw error
+      return { ...cleared, queueError: error instanceof Error ? error.message : String(error) }
     }
   }
 
@@ -811,7 +857,9 @@ export class SessionSupervisor extends EventEmitter {
     return stopped
   }
 
-  async stopCwd(cwd: string, afterStopped?: () => void): Promise<void> {
+  stopCwd(cwd: string): Promise<void>
+  stopCwd<T>(cwd: string, afterStopped: () => T | Promise<T>): Promise<T>
+  async stopCwd<T>(cwd: string, afterStopped?: () => T | Promise<T>): Promise<T | void> {
     const closing = CwdGate.key(cwd)
     this.stoppingCwds.set(closing, (this.stoppingCwds.get(closing) ?? 0) + 1)
     try {
@@ -823,8 +871,11 @@ export class SessionSupervisor extends EventEmitter {
         if (this.gate.contains(cwd, startingCwd)) keys.add(key)
       }
       // Cancel every waiter before any old writer can exit and dispatch one.
-      await Promise.all([...keys].map(key => this.stop(key)))
-      afterStopped?.()
+      const results = await Promise.allSettled([...keys].map(key => this.stop(key)))
+      // A failed stop must not reopen the folder while its other runs drain.
+      const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+      if (failed) throw failed.reason
+      return await afterStopped?.()
     } finally {
       const count = this.stoppingCwds.get(closing) ?? 0
       if (count <= 1) this.stoppingCwds.delete(closing)
@@ -913,7 +964,6 @@ export class SessionSupervisor extends EventEmitter {
         parentSessionKey: parentKey,
         model: options.model,
         thinkingLevel: options.thinkingLevel,
-        rememberDefaults: role === 'side' ? false : options.rememberDefaults,
         customInstructions: options.customInstructions,
         trace: { ...options.trace, sourceAction: options.trace?.sourceAction ?? 'ensure', uiSessionId: id }
       })

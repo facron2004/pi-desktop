@@ -7,24 +7,33 @@
  * without losing the path Pi needs to read the file.
  */
 
+import { normalisePathKey } from './path'
+
 export interface ComposerDraftFile {
   id: string
   path: string
   name: string
 }
 
-const WINDOWS_ABSOLUTE = /^[a-zA-Z]:[\\/]/
+const WINDOWS_ABSOLUTE = /^(?:[a-zA-Z]:[\\/]|\\\\|\/\/[^/\\]+\/[^/\\]+(?:\/|$))/
 const UNIX_ABSOLUTE = /^\//
 
 export function isAbsoluteFilePath(value: string): boolean {
   return WINDOWS_ABSOLUTE.test(value) || UNIX_ABSOLUTE.test(value)
 }
 
+function normalizeFileSeparators(value: string): string {
+  return WINDOWS_ABSOLUTE.test(value) ? value.replace(/\\/g, '/') : value
+}
+
+function composerFileKey(file: ComposerDraftFile): string {
+  return WINDOWS_ABSOLUTE.test(file.path) ? normalisePathKey(file.path) : file.path
+}
+
 /** The name shown in the attachment chip; the full path stays in the title. */
 export function fileNameFromPath(value: string): string {
-  const trimmed = value.replace(/[\\/]+$/, '')
-  const parts = trimmed.split(/[\\/]/)
-  const name = parts[parts.length - 1] || trimmed
+  const trimmed = normalizeFileSeparators(value).replace(/\/+$/, '')
+  const name = trimmed.slice(trimmed.lastIndexOf('/') + 1)
   // A path copied out of a browser can still carry percent escapes in the
   // basename; show the readable name while keeping the real path for Pi.
   if (!name.includes('%')) return name
@@ -46,7 +55,7 @@ export function makeComposerFile(filePath: string): ComposerDraftFile {
 
 /** The token Pi receives for one attached file. */
 export function composerFileToken(file: ComposerDraftFile): string {
-  return '@' + JSON.stringify(file.path.replace(/\\/g, '/'))
+  return '@' + JSON.stringify(normalizeFileSeparators(file.path))
 }
 
 /** Merge new files into an existing list, dropping a path already present. */
@@ -54,10 +63,10 @@ export function mergeComposerFiles(
   current: readonly ComposerDraftFile[],
   added: readonly ComposerDraftFile[]
 ): ComposerDraftFile[] {
-  const seen = new Set(current.map((file) => file.path.replace(/\\/g, '/').toLowerCase()))
+  const seen = new Set(current.map(composerFileKey))
   const next = [...current]
   for (const file of added) {
-    const key = file.path.replace(/\\/g, '/').toLowerCase()
+    const key = composerFileKey(file)
     if (seen.has(key)) continue
     seen.add(key)
     next.push(file)

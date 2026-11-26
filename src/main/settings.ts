@@ -22,11 +22,7 @@ import {
 import { normalizeFontScale } from '@shared/font-scale'
 import { migratePresetColors } from '@shared/theme-presets'
 import { withNewProjectFirst } from '@shared/project-order'
-import {
-  forgetDefaultModelAsync,
-  rememberDefaultModelAsync,
-  rememberDefaultThinkingLevelAsync
-} from './pi/retry-policy'
+import { syncAgentDefaults } from './pi/retry-policy'
 import { properLockfile } from './proper-lockfile'
 
 /** Same folder, whatever slash style or drive-letter case it was opened with. */
@@ -853,23 +849,20 @@ export class SettingsStore {
         externalChatFolderHistory: normalizeExternalChatFolderHistory(history, nextFolder)
       }
     }, { baseline: patchBaseline })
-    // Pi reads its own startup model from the agent directory, not from this
-    // file. Sync asynchronously on a serialized chain so IPC never stalls the
-    // main thread on `Atomics.wait` while still landing updates in patch order.
+    // Pi reads its startup defaults from the agent directory. Read the latest
+    // saved choices under the Pi settings lock so a delayed sync cannot undo
+    // a newer write from another desktop process.
     const hasModel = 'model' in patch
-    const nextModel = updated.model
     const hasThinking = 'thinkingLevel' in patch
-    const nextThinking = updated.thinkingLevel
     if (hasModel || hasThinking) {
-      const sync = async (): Promise<void> => {
-        if (hasModel) {
-          if (nextModel) await rememberDefaultModelAsync(nextModel)
-          else await forgetDefaultModelAsync()
+      const sync = () => syncAgentDefaults(() => {
+        const saved = readSettingsFile(this.file)
+        if (!saved) return undefined
+        return {
+          ...(hasModel ? { model: saved.model } : {}),
+          ...(hasThinking ? { thinkingLevel: saved.thinkingLevel } : {})
         }
-        if (hasThinking) {
-          await rememberDefaultThinkingLevelAsync(nextThinking)
-        }
-      }
+      })
       this.piDefaultSync = this.piDefaultSync
         .then(sync, sync)
         .catch((error: unknown) => {

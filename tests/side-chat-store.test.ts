@@ -671,12 +671,11 @@ test('Side Chat model and thinking isolation: rememberDefaults false, zero cold 
   assert.equal(resolveEffectiveSessionModel(useAppStore.getState(), sideDraft, SAMPLE_MODELS)?.id, 'claude-haiku-4-5')
   assert.equal(resolveEffectiveThinkingLevel(useAppStore.getState(), sideDraft), 'medium')
 
-  // Launching Side draft passes its override + role:'side' + parentSessionKey + rememberDefaults:false
+  // Launching Side draft passes its override, role and Main conversation key.
   await useAppStore.getState().ensureRuntime(sideDraft, 'side-prompt-send')
   assert.equal(ensureCalls.length, 1)
   assert.equal(ensureCalls[0].role, 'side')
   assert.equal(ensureCalls[0].parentSessionKey, mainKey)
-  assert.equal(ensureCalls[0].rememberDefaults, false)
   assert.equal(ensureCalls[0].model, 'anthropic/claude-haiku-4-5')
   assert.equal(ensureCalls[0].thinkingLevel, 'medium')
 
@@ -703,18 +702,31 @@ test('Side Chat model and thinking isolation: rememberDefaults false, zero cold 
       await mainBlocked
       return {}
     }
-    if (command === 'get_state') return { sessionFile: key, isStreaming: false }
+    if (command === 'get_state') return {
+      sessionFile: key,
+      isStreaming: false,
+      model: SAMPLE_MODELS[0],
+      thinkingLevel: 'low'
+    }
     if (command === 'get_available_models') return { models: SAMPLE_MODELS }
     return {}
   }
+  const { refreshState } = useAppStore.getState()
+  let refreshed: Promise<void> | undefined
+  useAppStore.setState({ refreshState: (...args) => (refreshed = refreshState(...args)) })
   const mainChange = useAppStore.getState().setModel(SAMPLE_MODELS[0], { sessionKey: mainKey })
-  const sideChangedWhileMainInFlight = await useAppStore.getState().setModel(SAMPLE_MODELS[1], {
-    sessionKey: sideDraft,
-    rememberDefaults: false
-  })
-  assert.equal(sideChangedWhileMainInFlight, true, 'Side Chat picker is not blocked by Main picker lock')
-  releaseMain()
-  await mainChange
+  try {
+    const sideChangedWhileMainInFlight = await useAppStore.getState().setModel(SAMPLE_MODELS[1], {
+      sessionKey: sideDraft,
+      rememberDefaults: false
+    })
+    assert.equal(sideChangedWhileMainInFlight, true, 'Side Chat picker is not blocked by Main picker lock')
+  } finally {
+    releaseMain()
+    await mainChange
+    await refreshed
+    useAppStore.setState({ refreshState })
+  }
 })
 
 test('handoffSideToMain strictly never steers Main (draft insert = 0 RPCs, queue-followup only while Main runs)', async () => {
@@ -752,7 +764,7 @@ test('handoffSideToMain strictly never steers Main (draft insert = 0 RPCs, queue
     mode: 'draft-append'
   })
   assert.equal(r1, 'inserted')
-  assert.equal(rpcCalls.length, 0)
+  assert.deepEqual(rpcCalls, [])
   assert.equal(useAppStore.getState().drafts[mainKey]?.text, 'Check auth.ts line 42')
   assert.equal(useAppStore.getState().composerInserts[mainKey]?.text, 'Check auth.ts line 42')
   assert.equal(focusEvents.length, 1)
@@ -764,7 +776,7 @@ test('handoffSideToMain strictly never steers Main (draft insert = 0 RPCs, queue
     mode: 'draft-replace'
   })
   assert.equal(r2, 'inserted')
-  assert.equal(rpcCalls.length, 0)
+  assert.deepEqual(rpcCalls, [])
   assert.equal(useAppStore.getState().drafts[mainKey]?.text, 'Run npm test after fixing auth.ts')
 
   // 3. queue-followup while Main is IDLE returns 'noop' and makes 0 RPCs
@@ -774,20 +786,57 @@ test('handoffSideToMain strictly never steers Main (draft insert = 0 RPCs, queue
     mode: 'queue-followup'
   })
   assert.equal(r3, 'noop')
-  assert.equal(rpcCalls.length, 0)
+  assert.deepEqual(rpcCalls, [])
 
-  // 4. queue-followup while Main is RUNNING sends explicit streamingBehavior: 'followUp'
+  // 4. A running Main receives only the native follow-up RPC.
   emit({ ownerId: mainKey, event: { type: 'agent_start' } })
+  rpcImpl = async () => ({ disposition: 'queued' })
   const r4 = await useAppStore.getState().handoffSideToMain({
     sideSessionKey: sideKey,
     text: 'Follow up with regression tests',
     mode: 'queue-followup'
   })
   assert.equal(r4, 'queued')
-  const promptCall = rpcCalls.find((c) => c.command === 'prompt' && c.key === mainKey)
-  assert.ok(promptCall, 'sent prompt RPC to parent Main session')
-  assert.equal(promptCall.payload?.message, 'Follow up with regression tests')
-  assert.equal(promptCall.payload?.streamingBehavior, 'followUp', 'MUST use followUp, never steer')
+  assert.deepEqual(rpcCalls, [{
+    command: 'follow_up', key: mainKey, payload: { message: 'Follow up with regression tests' }
+  }])
+  assert.deepEqual(ensureCalls, [])
+
+  // 5. Main settled before the supervisor could forward the follow-up.
+  useAppStore.setState({ toast: undefined })
+  rpcImpl = async () => ({ disposition: 'handled', cancelled: true })
+  assert.equal(await useAppStore.getState().handoffSideToMain({
+    sideSessionKey: sideKey,
+    text: 'Main just finished',
+    mode: 'queue-followup'
+  }), 'noop')
+  assert.equal(useAppStore.getState().toast, undefined)
+})
+
+test('a stale side chat card cannot insert or queue a prompt in the currently viewed conversation', async () => {
+  resetTestState()
+  const mainKey = '/sessions/current-main.jsonl'
+  const currentSideKey = 'draft:side:current'
+  const staleSideKey = 'draft:side:cleared'
+  useAppStore.setState({
+    activeSessionFile: mainKey,
+    sideChatOpen: true,
+    sideSessionKey: currentSideKey,
+    sideByMainKey: { [mainKey]: currentSideKey },
+    sideParentByKey: { [currentSideKey]: mainKey },
+    drafts: { [mainKey]: { text: 'Keep this draft', images: [] } }
+  })
+  emit({ ownerId: mainKey, event: { type: 'agent_start' } })
+  rpcImpl = async () => ({ disposition: 'queued' })
+
+  const { handoffSideToMain } = useAppStore.getState()
+  const insert = await handoffSideToMain({ sideSessionKey: staleSideKey, text: 'Stale draft', mode: 'draft-replace' })
+  const queue = await handoffSideToMain({ sideSessionKey: staleSideKey, text: 'Stale request', mode: 'queue-followup' })
+
+  assert.deepEqual([insert, queue], ['noop', 'noop'])
+  assert.equal(useAppStore.getState().drafts[mainKey]?.text, 'Keep this draft')
+  assert.deepEqual(ensureCalls, [])
+  assert.deepEqual(rpcCalls, [])
 })
 
 test('reference chip lifecycle, failed-send preservation, live/hydrated sideRefs, and parallel side commands', async () => {

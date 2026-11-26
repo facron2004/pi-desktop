@@ -28,10 +28,10 @@ export function registerProviderIpc({ supervisor, settings }: IpcContext): void 
     input = { ...input, selectedModel: input.selectedModel.trim() }
     const { provider, settings: updated } = store.withMutation(() => {
       const provider = store.save(input)
-      invalidateModelThinkingLevels()
       const updated = settings.patch({ provider: provider.id, model: `${provider.id}/${input.selectedModel}` })
       return { provider, settings: updated }
     })
+    invalidateModelThinkingLevels()
     let applied = false
     let applyError: string | undefined
     if (sessionKey && supervisor.has(sessionKey)) {
@@ -64,12 +64,13 @@ export function registerProviderIpc({ supervisor, settings }: IpcContext): void 
   })
   ipcMain.handle('providers:remove', (_event, id: string) => {
     if (typeof id !== 'string') throw new Error('Invalid provider ID')
-    return store.withMutation(() => {
+    const result = store.withMutation(() => {
       store.remove(id)
-      invalidateModelThinkingLevels()
       const current = settings.get()
       const selected = current.provider === id || Boolean(current.model?.startsWith(`${id}/`))
       return { settings: selected ? settings.patch({ provider: undefined, model: undefined }) : current }
     })
+    invalidateModelThinkingLevels()
+    return result
   })
 }

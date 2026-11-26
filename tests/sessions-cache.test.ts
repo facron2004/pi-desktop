@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
 import fsPromises, { open, writeFile } from 'node:fs/promises'
 import { syncBuiltinESMExports } from 'node:module'
@@ -1604,6 +1605,55 @@ test('searchSessions rebuilds an index when a same-size session path is replaced
     rmSync(parent, { recursive: true, force: true })
   }
 })
+
+for (const cold of [false, true]) {
+  test(`searchSessions rebuilds ${cold ? 'a persisted' : 'an in-memory'} index after Pi migrates its file in place`, async () => {
+    const parent = mkdtempSync(path.join(tmpdir(), 'pi-search-v1-migration-'))
+    const root = path.join(parent, 'sessions')
+    const indexDir = path.join(parent, 'indexes')
+    mkdirSync(root)
+    const file = path.join(root, 'legacy.jsonl')
+    const workspace = { sessionRoots: [root] }
+    const records = [
+      { type: 'session', version: 1, id: 'legacy', timestamp: '2020-01-01T00:00:00.000Z', cwd: root },
+      { type: 'message', message: { role: 'toolResult', content: 'x'.repeat(9 * 1024 * 1024), timestamp: 1 } },
+      ...Array.from({ length: 64 }, (_, i) => ({
+        type: 'message', message: { role: 'user', content: `Legacy text ${i + 1}`, timestamp: 2 + i }
+      }))
+    ]
+    configureSessionSearchIndex(indexDir)
+    try {
+      writeFileSync(file, records.map((entry) => JSON.stringify(entry)).join('\n') + '\n')
+      assert.equal((await searchSessions('Legacy text 64', 10, workspace))[0]?.messageIndex, 64)
+      const original = statSync(file)
+      if (cold) {
+        assert.ok(readdirSync(indexDir).some((entry) => entry.endsWith('.json')))
+        clearSessionCache()
+      }
+
+      execFileSync(process.execPath, ['--input-type=module', '-e', `
+        import { SessionManager } from './node_modules/@earendil-works/pi-coding-agent/dist/core/session-manager.js'
+        const session = SessionManager.open(process.argv[1])
+        session.appendMessage({ role: 'user', content: 'after migration marker', timestamp: 1000 })
+      `, file], { timeout: 10_000 })
+      const migrated = statSync(file)
+      assert.equal(migrated.ino, original.ino)
+      assert.ok(migrated.size > original.size)
+
+      const hits = await searchSessions('after migration marker', 10, workspace)
+      assert.equal(hits.length, 1)
+      assert.equal(hits[0]?.messageIndex, 65)
+
+      const appended = { type: 'message', id: 'follow-up', message: { role: 'user', content: 'normal append marker' } }
+      writeFileSync(file, JSON.stringify(appended) + '\n', { flag: 'a' })
+      const appendedHits = await searchSessions('normal append marker', 10, { ...workspace, budgetBytes: 8192 })
+      assert.equal(appendedHits[0]?.messageIndex, 66, 'a normal append can reuse the index within a small budget')
+    } finally {
+      configureSessionSearchIndex(null)
+      rmSync(parent, { recursive: true, force: true })
+    }
+  })
+}
 
 test('searchSessions: oversized sidecars stay out of the per-query work budget', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'pi-search-index-sidecar-limit-'))

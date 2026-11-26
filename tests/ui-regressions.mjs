@@ -725,6 +725,50 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
       await pause(300)
       check([...outputs.keys()].join(',') === allShellIds.join(','), 'Changing the project back restarted the terminal')
       passed.push('terminal hand-offs follow the selected project while existing terminals survive')
+
+      const terminalText = () => document.querySelector('.terminal__pane[data-active="true"] .xterm-rows')?.textContent ?? ''
+      document.querySelector('.terminal__tab-main').click()
+      await until(() => terminalText().includes('PI_UI_HANDOFF_347'), 'Existing terminal output was not visible before changing settings')
+      try {
+        await store.getState().updateSettings({ terminalShell: 'powershell' })
+        window.dispatchEvent(new CustomEvent('pi:terminal-run', {
+          detail: { command: 'echo PI_UI_SHELL_STAYS_847' }
+        }))
+        await until(() => (outputs.get(shellIds[0])?.match(/PI_UI_SHELL_STAYS_847/g) ?? []).length >= 2,
+          'Changing the default shell replaced the existing CMD process', 8000)
+        await until(() => terminalText().includes('PI_UI_SHELL_STAYS_847'), 'The existing CMD stopped painting output')
+        check(terminalText().includes('PI_UI_HANDOFF_347'), 'Changing the default shell cleared the existing terminal output')
+        check([...outputs.keys()].join(',') === allShellIds.join(','), 'Changing the default shell restarted a background terminal')
+
+        document.querySelector('.terminal__new').click()
+        await until(() => document.querySelector('.terminal__tab[data-active="true"] .terminal__tab-label')?.textContent === 'PowerShell',
+          'A new terminal ignored the updated default shell')
+        passed.push('the default shell applies to new tabs while open terminals keep their process and output')
+      } finally {
+        await store.getState().updateSettings({ terminalShell: 'cmd' })
+      }
+
+      document.querySelector('.terminal__tab-main').click()
+      window.dispatchEvent(new CustomEvent('pi:terminal-run', { detail: { command: 'exit 0' } }))
+      await until(() => document.querySelector('.terminal__pane[data-active="true"] .terminal__notice-title')?.textContent === 'The shell has exited',
+        'The original CMD did not exit')
+      const beforeReplacement = new Set(outputs.keys())
+      const markers = ['PI_UI_REPLACE_SHELL_A_481', 'PI_UI_REPLACE_SHELL_B_481']
+      for (const marker of markers) {
+        window.dispatchEvent(new CustomEvent('pi:terminal-run', { detail: { command: `echo ${marker}` } }))
+      }
+      const replacement = await until(() => [...outputs].find(([id, output]) =>
+        !beforeReplacement.has(id) && markers.every((marker) => (output.split(marker).length - 1) === 2)
+      ), 'Commands handed off to an exited terminal did not run once each in a replacement', 8000)
+      check([...outputs.keys()].filter((id) => !beforeReplacement.has(id)).join(',') === replacement[0],
+        'A single terminal hand-off batch opened multiple replacements')
+      check(replacement[1].indexOf(markers[0]) < replacement[1].indexOf(markers[1]),
+        'The replacement received the two hand-offs out of order')
+      check(document.querySelectorAll('.terminal__tab-main').length === beforeReplacement.size + 1,
+        'Opening the replacement discarded the exited tab')
+      document.querySelector('.terminal__tab-main').click()
+      await until(() => terminalText().includes('PI_UI_HANDOFF_347'), 'The exited terminal lost its previous output')
+      passed.push('rapid terminal hand-offs queue in order and replace an exited shell without discarding its tab')
     } finally {
       off()
       const panel = visibleToolPanel()
@@ -2489,7 +2533,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 45 : 43)
+  assert.equal(passed.length, process.platform === 'win32' ? 47 : 43)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

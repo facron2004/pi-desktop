@@ -213,7 +213,7 @@ const bridge: PiDesktopBridge = {
   },
   terminal: {
     create: (options: TerminalCreateOptions) => ipcRenderer.invoke('terminal:create', options),
-    write: (id: string, data: string): Promise<void> => ipcRenderer.invoke('terminal:write', id, data),
+    write: (id: string, data: string): Promise<boolean> => ipcRenderer.invoke('terminal:write', id, data),
     resize: (id: string, cols: number, rows: number): Promise<void> =>
       ipcRenderer.invoke('terminal:resize', id, cols, rows),
     kill: (id: string): Promise<void> => ipcRenderer.invoke('terminal:kill', id),

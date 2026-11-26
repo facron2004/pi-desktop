@@ -90,6 +90,51 @@ function forbidden(runtime: FakeRuntime): string[] {
     .filter((command) => command === 'abort' || command === 'abort_retry' || command === 'switch_session')
 }
 
+test('follow-up reaches Pi only for the same still-streaming run', async () => {
+  const runtime = new FakeRuntime()
+  const supervisor = supervisorOf([runtime])
+  const key = 'main.jsonl'
+  const message = { message: 'Review the result' }
+  const cancelled = { disposition: 'handled', cancelled: true }
+  const request = () => supervisor.request(key, 'follow_up', message)
+  try {
+    assert.deepEqual(await request(), cancelled)
+    await supervisor.ensure({ sessionKey: key, cwd: 'C:/a', sessionFile: key })
+    assert.deepEqual(await request(), cancelled)
+    assert.deepEqual(runtime.commands, [])
+
+    let snapshot = Promise.withResolvers<{ isStreaming: boolean }>()
+    runtime.request = async <T>(command: string, payload: Record<string, unknown> = {}): Promise<T> => {
+      runtime.commands.push({ command, payload })
+      if (command === 'get_state') return await snapshot.promise as T
+      return { disposition: 'queued' } as T
+    }
+    runtime.emit('event', { type: 'agent_start' } as PiEvent)
+    const pending = request()
+    runtime.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
+    runtime.emit('event', { type: 'agent_start' } as PiEvent)
+    snapshot.resolve({ isStreaming: true })
+    assert.deepEqual(await pending, cancelled)
+
+    snapshot = Promise.withResolvers()
+    snapshot.resolve({ isStreaming: false })
+    assert.deepEqual(await request(), cancelled)
+
+    snapshot = Promise.withResolvers()
+    snapshot.resolve({ isStreaming: true })
+    assert.deepEqual(await request(), { disposition: 'queued' })
+    assert.deepEqual(runtime.commands, [
+      { command: 'get_state', payload: {} },
+      { command: 'get_state', payload: {} },
+      { command: 'get_state', payload: {} },
+      { command: 'follow_up', payload: message }
+    ])
+  } finally {
+    runtime.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
+    await supervisor.stop()
+  }
+})
+
 test('starting B does not abort A, and each session keeps its own runtime', async () => {
   const a = new FakeRuntime()
   const b = new FakeRuntime()
@@ -946,19 +991,52 @@ test('clear_queue cancels prompts still waiting at the directory gate', async ()
     releaseLock = resolve
   }))
   const waiting = supervisor.request<{ cancelled?: boolean }>('B', 'prompt', { message: 'later' })
+  const images = [{ data: 'AA==', mimeType: 'image/png' }]
+  const attachment = supervisor.request<{ cancelled?: boolean }>('B', 'prompt', {
+    message: 'see this', streamingBehavior: 'followUp', images
+  })
   const imageSetup = supervisor.request<{ cancelled?: boolean }>('B', 'prompt',
     { message: '/desktop-image {"prompt":"a sketch"}' }, undefined, { sourceAction: 'image-params' })
   const undo = supervisor.request<{ cancelled?: boolean }>('B', 'prompt',
     { message: '/desktop-undo-rewind' }, undefined, { sourceAction: 'message-undo' })
-  const cleared = await supervisor.request<{ steering: string[] }>('B', 'clear_queue')
+  const cleared = await supervisor.request('B', 'clear_queue')
   releaseLock()
   await locking
   const result = await waiting
   assert.equal(result.cancelled, true)
+  assert.equal((await attachment).cancelled, true)
   assert.equal((await imageSetup).cancelled, true)
   assert.equal((await undo).cancelled, true)
-  assert.deepEqual(cleared.steering, ['later'])
+  assert.deepEqual(cleared, { steering: ['later'], followUp: [{ text: 'see this', images }] })
   assert.equal(b.commands.some(({ command }) => command === 'prompt'), false)
+})
+
+test('clearing the directory queue returns the full prompt even when Pi cannot clear its own queue', async () => {
+  const runtime = new FakeRuntime()
+  const supervisor = supervisorOf([runtime])
+  const request = runtime.request.bind(runtime)
+  runtime.request = async <T>(command: string, payload?: Record<string, unknown>): Promise<T> => {
+    if (command === 'clear_queue') throw new PiRpcCommandError('Pi could not clear its queue', 'clear_queue')
+    return request<T>(command, payload)
+  }
+  await supervisor.ensure({ sessionKey: 'chat', cwd: 'C:/same' })
+  const lock = Promise.withResolvers<void>()
+  const locking = supervisor.withCwdLock('C:/same', () => lock.promise)
+  const images = [{ data: 'AA==', mimeType: 'image/png' }]
+  const queued = supervisor.request('chat', 'prompt', { message: '', streamingBehavior: 'followUp', images })
+  try {
+    assert.deepEqual(await supervisor.request('chat', 'clear_queue'), {
+      steering: [],
+      followUp: [{ text: '', images }],
+      queueError: 'Pi could not clear its queue'
+    })
+    assert.deepEqual(await queued, { disposition: 'handled', cancelled: true })
+  } finally {
+    lock.resolve()
+    await locking
+    await supervisor.stop()
+  }
+  assert.equal(runtime.commands.some(({ command }) => command === 'prompt'), false)
 })
 
 test('stopping cancels a prompt waiting for the cross-process directory registry lock', async (t) => {
@@ -1247,6 +1325,46 @@ test('a closing workspace cannot start a new runtime before its current runtimes
 
   assert.deepEqual(await supervisor.ensure({ sessionKey: 'new', cwd: 'C:/tree/other' }), { ok: true })
   assert.equal(next.starts, 1)
+})
+
+test('a workspace stays closed while one of its runtimes is still stopping after another stop fails', async () => {
+  const failed = new FakeRuntime()
+  const draining = new FakeRuntime()
+  const reopened = new FakeRuntime()
+  const supervisor = supervisorOf([failed, draining, reopened])
+  const entered = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  const failedStop = failed.stop.bind(failed)
+  const drainingStop = draining.stop.bind(draining)
+  failed.stop = async () => {
+    await failedStop()
+    throw new Error('Could not finish cleanup')
+  }
+  draining.stop = async () => {
+    entered.resolve()
+    await release.promise
+    await drainingStop()
+  }
+
+  await supervisor.ensure({ sessionKey: 'failed', cwd: 'C:/tree' })
+  await supervisor.ensure({ sessionKey: 'draining', cwd: 'C:/tree/nested' })
+  const closing = assert.rejects(supervisor.stopCwd('C:/tree'), /Could not finish cleanup/)
+  try {
+    await entered.promise
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.deepEqual(await supervisor.ensure({ sessionKey: 'reopen', cwd: 'C:/tree' }), {
+      ok: false, error: 'Working folder is being closed.'
+    })
+    assert.equal(reopened.starts, 0)
+  } finally {
+    release.resolve()
+    await closing
+    await supervisor.stop('reopen')
+  }
+
+  assert.equal(draining.isRunning, false)
+  assert.deepEqual(await supervisor.ensure({ sessionKey: 'reopen', cwd: 'C:/tree' }), { ok: true })
+  await supervisor.stop()
 })
 
 test('a start completing after a stop cannot resurrect its runtime', async () => {

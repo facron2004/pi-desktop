@@ -204,32 +204,6 @@ async function writeSettingsAsync(file: string, settings: Record<string, unknown
   }
 }
 
-function applyLaunchAgentSettings(
-  current: Record<string, unknown>,
-  options: { model?: string; thinkingLevel?: string; rememberDefaults?: boolean }
-): { settings: Record<string, unknown>; changed: boolean } {
-  const raised = raiseRetryBudget(current)
-  let changed = raised.changed
-  const next = raised.changed ? raised.settings : { ...current }
-  if (options.rememberDefaults !== false) {
-    const parsedModel = splitModelSpec(options.model)
-    if (
-      parsedModel &&
-      (next.defaultProvider !== parsedModel.provider || next.defaultModel !== parsedModel.model)
-    ) {
-      next.defaultProvider = parsedModel.provider
-      next.defaultModel = parsedModel.model
-      changed = true
-    }
-    const level = options.thinkingLevel?.trim().toLowerCase()
-    if (level && THINKING_LEVELS.has(level) && next.defaultThinkingLevel !== level) {
-      next.defaultThinkingLevel = level
-      changed = true
-    }
-  }
-  return { settings: next, changed }
-}
-
 async function withSettingsLockAsync<T>(file: string, operation: () => Promise<T>): Promise<T> {
   await mkdir(path.dirname(file), { recursive: true })
   const release = await properLockfile.lock(file, {
@@ -247,69 +221,61 @@ async function withSettingsLockAsync<T>(file: string, operation: () => Promise<T
   }
 }
 
-export async function rememberDefaultModelAsync(spec: string | undefined, file = agentSettingsPath()): Promise<void> {
-  const parsed = splitModelSpec(spec)
-  if (!parsed) return
-  const initial = await readSettingsAsync(file)
-  if (!initial || (initial.defaultProvider === parsed.provider && initial.defaultModel === parsed.model)) return
-  await withSettingsLockAsync(file, async () => {
-    const current = await readSettingsAsync(file)
-    if (!current) return
-    if (current.defaultProvider === parsed.provider && current.defaultModel === parsed.model) return
-    current.defaultProvider = parsed.provider
-    current.defaultModel = parsed.model
-    await writeSettingsAsync(file, current)
-  })
-}
-
-export async function rememberDefaultThinkingLevelAsync(
-  level: string | undefined,
+/** Sync only the edited defaults. A present field with no value clears its override. */
+export async function syncAgentDefaults(
+  readDefaults: () => { model?: string; thinkingLevel?: string } | undefined,
   file = agentSettingsPath()
 ): Promise<void> {
-  const value = level?.trim().toLowerCase()
-  if (level !== undefined && (!value || !THINKING_LEVELS.has(value))) return
-  const initial = await readSettingsAsync(file)
-  if (!initial || initial.defaultThinkingLevel === value) return
   await withSettingsLockAsync(file, async () => {
     const current = await readSettingsAsync(file)
     if (!current) return
-    if (current.defaultThinkingLevel === value) return
-    if (value === undefined) delete current.defaultThinkingLevel
-    else current.defaultThinkingLevel = value
-    await writeSettingsAsync(file, current)
+    const defaults = readDefaults()
+    if (!defaults) return
+    let changed = false
+
+    if ('model' in defaults) {
+      const spec = defaults.model
+      if (spec === undefined || spec === '') {
+        changed = 'defaultProvider' in current || 'defaultModel' in current
+        delete current.defaultProvider
+        delete current.defaultModel
+      } else if (typeof spec === 'string') {
+        const parsed = splitModelSpec(spec)
+        if (parsed && (current.defaultProvider !== parsed.provider || current.defaultModel !== parsed.model)) {
+          current.defaultProvider = parsed.provider
+          current.defaultModel = parsed.model
+          changed = true
+        }
+      }
+    }
+
+    if ('thinkingLevel' in defaults) {
+      const raw = defaults.thinkingLevel
+      if (raw === undefined && 'defaultThinkingLevel' in current) {
+        delete current.defaultThinkingLevel
+        changed = true
+      } else if (typeof raw === 'string') {
+        const level = raw.trim().toLowerCase()
+        if (THINKING_LEVELS.has(level) && current.defaultThinkingLevel !== level) {
+          current.defaultThinkingLevel = level
+          changed = true
+        }
+      }
+    }
+
+    if (changed) await writeSettingsAsync(file, current)
   })
 }
 
-export async function forgetDefaultModelAsync(file = agentSettingsPath()): Promise<void> {
-  const initial = await readSettingsAsync(file)
-  if (!initial || (!('defaultProvider' in initial) && !('defaultModel' in initial))) return
-  await withSettingsLockAsync(file, async () => {
-    const current = await readSettingsAsync(file)
-    if (!current) return
-    if (!('defaultProvider' in current) && !('defaultModel' in current)) return
-    delete current.defaultProvider
-    delete current.defaultModel
-    await writeSettingsAsync(file, current)
-  })
-}
-
-/**
- * Non-blocking launch preparation: checks retry floor + default model/thinking
- * asynchronously without locking or Atomics.wait unless a write is actually needed,
- * coalescing all three mutations into one async lock + atomic write.
- */
-export async function prepareLaunchAgentSettings(
-  options: { model?: string; thinkingLevel?: string; rememberDefaults?: boolean },
-  file = agentSettingsPath()
-): Promise<void> {
+/** Raise Pi's retry floor before launch, acquiring the lock only for a write. */
+export async function ensurePatientRetrySettingsAsync(file = agentSettingsPath()): Promise<void> {
   const current = await readSettingsAsync(file)
-  if (!current) return
-  if (!applyLaunchAgentSettings(current, options).changed) return
+  if (!current || !raiseRetryBudget(current).changed) return
 
   await withSettingsLockAsync(file, async () => {
     const latest = await readSettingsAsync(file)
     if (!latest) return
-    const next = applyLaunchAgentSettings(latest, options)
+    const next = raiseRetryBudget(latest)
     if (!next.changed) return
     await writeSettingsAsync(file, next.settings)
   })

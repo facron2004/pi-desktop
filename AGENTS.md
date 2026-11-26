@@ -321,7 +321,13 @@ across app processes. Parent and nested folders overlap; sibling folders remain
 independent. A Git write started during local lease cleanup waits for that
 cleanup before checking whether it can claim the directory.
 Switching projects is also only a view change. Closing or removing a workspace
-is what stops that folder's processes.
+is what stops that folder's processes — but **removal never waits for them**:
+`workspaces:remove` writes the settings first and lets `stopCwd` drain behind
+it, because a busy agent can spend its whole seven-second abort timeout and the
+row used to sit on screen for all of it. `stopCwd` claims the folder
+synchronously, so nothing new starts there while the old runtimes shut down.
+The removal also answers with the settings it wrote, so the renderer does not
+re-read them under the settings lock a second time.
 
 The sidebar running mark reads `threads[file].isStreaming`. `stop()` aborts the
 conversation on screen, not whichever one happens to be running in the
@@ -506,9 +512,8 @@ An I/O error preserves the last successfully loaded list until refresh succeeds.
 
 A scheduled task carries its own project, prompt, schedule, **model and
 reasoning effort**. Empty model/effort fields mean "follow the app's saved
-default" and must stay absent from `scheduled-tasks.json`; a pinned choice is
-passed to that run only and must not be written into Pi's global agent
-defaults (`rememberDefaults: false`). Editing is allowed while a task runs
+default" and must stay absent from `scheduled-tasks.json`. The effective choices
+are passed as Pi arguments for that run. Editing is allowed while a task runs
 (the change reaches the next run). A finished one-time task keeps its past
 date so its title, prompt, model or effort can be edited without
 rescheduling; an enabled task still has to point at the future, and editing
@@ -553,18 +558,34 @@ retry with still-attached images from the last saved snapshot before falling
 back to text and file references. An oversized new attachment should leave
 older saved drafts recoverable.
 
-**A model or reasoning pick never waits with its menu open.** The switch can
-talk to a busy, wedged or gone Pi process, and `runtime:has` / `ensure` /
-`set_model` used to be able to stack their 30 s timeouts — the picker stayed
-open (and the module-wide "already in progress" flag blocked every later
-attempt) while that happened, which reads as a frozen app. The picker now
-closes and dismisses `showModels` before it calls the store, the chip shows a
-spinner while the change is in flight, and every wait behind `setModel` /
-`setThinkingLevel` has a deadline (`lib/with-timeout.ts`: 5 s for
-`runtime:has`, 25 s for a cold start, 15 s for the command, 8 s for a settings
-write). A deadline only stops the UI waiting; the operation itself still owns
-its state guards, and a late snapshot refresh cannot turn an applied switch into
-a reported failure.
+**A model pick is one round trip, and never waits for a boot.** The switch
+talks to a live Pi process, and `runtime:has` / `ensure` / `set_model` used to
+be able to stack their timeouts — the picker stayed open (and the module-wide
+"already in progress" flag blocked every later attempt) while that happened,
+which reads as a frozen app. Three rules keep a pick under a frame:
+
+- `setModel` updates the chip, session row, side override and draft default
+  from a successful `set_model` response. A rejected pick shows an error and
+  keeps the confirmed model and saved preferences.
+- It **never calls `ensureRuntime`**. Opening a conversation prewarms Pi, so the
+  first pick after a switch lands mid-boot; waiting for that start made one pick
+  cost the whole cold start (measured: 1.3 s, and 9.9 s on a slow boot with the
+  registry refresh in front of it). A pick during an in-flight start records a
+  pending choice and returns. The existing `ensureRuntime` applies the choice
+  once Pi is ready. A first send that joins the startup waits for the same
+  model confirmation and keeps its draft if Pi rejects it.
+- It **does not await a state snapshot**. `refreshState` follows at its own
+  pace; a slow read is not a failed switch. Measured on a ready process: 6 ms.
+- A model the running process does not know yet (a provider just saved) still
+  gets `/desktop-refresh-models` first — but only for an idle, ready process,
+  and again as the fallback when `set_model` answers "unknown model". Never for
+  a booting one: its registry is not written yet.
+
+Every wait behind `setModel` / `setThinkingLevel` keeps a deadline
+(`lib/with-timeout.ts`): 5 s for `runtime:has`, 5 s for `set_model`, 15 s for the
+catalogue refresh, 8 s for a settings write. The picker closes and dismisses
+`showModels` before it calls the store, and the chip shows a spinner only while
+the command is really in flight.
 
 The model is a per-conversation choice: picking a model in a session sends
 `set_model` to that process and never writes the app default — only a draft
@@ -811,6 +832,9 @@ request shape; `App.tsx` stamps every request with a new `seq` so repeating
 the same question still runs.
 
 ### Model and reasoning
+
+Runtime launch passes a model and reasoning level as `--model` and `--thinking`
+for that process. Explicit preference saves synchronize Pi's global defaults.
 
 A side chat keeps its own model and reasoning level: `sideModelOverrides` /
 `sideThinkingOverrides` in the store, and `pendingModelSelections` /
@@ -1135,7 +1159,8 @@ Full-text search does not skip a long session: above the 8 MB direct-scan window
 it uses a per-session index in `<userData>/session-search-index/`, holding only
 the user/assistant text with a lower-case copy for matching. The first query
 builds it from the newest 64 MB; later queries scan the snapshot, and an append
-is picked up from the last complete JSONL record. An unterminated tail is
+is picked up from the last complete JSONL record. A changed source header
+rebuilds the index because Pi can rewrite legacy files in place. An unterminated tail is
 retried on the next query, so a write racing the index build is not lost.
 Entries whose source records move before the newest 64 MB window are evicted
 when that append is indexed, so a live session's index stays bounded.
@@ -1434,8 +1459,9 @@ stream or the model's context. The native binaries live in
 because the prebuilds target Electron 44 and rebuilding needs the VS Spectre
 libraries).
 
-The shell follows the `terminalShell` setting: PowerShell (default), CMD,
-Git Bash or WSL. Adding a shell means adding it in `resolveShellSpec`
+New terminal tabs use the `terminalShell` setting: PowerShell (default), CMD,
+Git Bash or WSL. Each tab keeps its shell for its lifetime, including an
+explicit restart. Adding a shell means adding it in `resolveShellSpec`
 (`src/main/shell.ts`) and in the Settings select.
 
 A card in the transcript (the bash tool card, or a bash execution card) can hand
@@ -1443,6 +1469,8 @@ its command to the terminal by dispatching `pi:terminal-run` with `{ command }`.
 `App` captures the workspace in a `{ command, cwd, seq }` request. Terminal
 tabs keep the directory they started in. A hand-off to a different project
 opens a new tab in the requested directory and leaves the old PTY running.
+Hand-offs are sent in order. An exited terminal keeps its output and a new
+tab handles the next request. A rejected PTY write surfaces an error.
 
 On Windows, closing a terminal ends its process tree before releasing the PTY.
 Closing the console alone can leave a background descendant running. Shutdown

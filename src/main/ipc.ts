@@ -1661,7 +1661,8 @@ export function registerIpc(context: IpcContext): void {
       }
     }
     if ('trayPersistent' in patch || 'language' in patch) context.syncTray?.()
-    return next
+    // Other saves can finish while this request is waiting for Pi's settings.
+    return 'thinkingLevel' in patch ? settings.get() : next
   })
 
   ipcMain.handle('remote:status', async () => {
@@ -1762,12 +1763,16 @@ export function registerIpc(context: IpcContext): void {
       return settings.removeWorkspace(workspaceId)
     }
     await waitForSettingsLock()
-    return serializeWorkspaceMutation(targetPath, async () => {
+    return serializeWorkspaceMutation(targetPath, () => {
       const workspace = settings.get().workspaces.find(entry => entry.id === workspaceId)
-      const remove = () => settings.removeWorkspace(workspaceId, hidden)
-      if (workspace) await supervisor.stopCwd(workspace.path, remove)
-      else remove()
-      return settings.get()
+      const next = settings.removeWorkspace(workspaceId, hidden)
+      if (!workspace) return next
+      // Only stop a project after its removal is saved. stopCwd claims it
+      // synchronously, and the settings response can return while it drains.
+      void supervisor.stopCwd(workspace.path).catch((error: unknown) => {
+        console.error('[pi-desktop] failed to stop a removed project:', error)
+      })
+      return next
     })
   })
 
@@ -2036,21 +2041,24 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('git:removeWorktree', async (_event, worktreePath: string, expectedRoot: unknown) => {
     try {
-      const root = gitWorkspaceRoot(context, expectedRoot ?? '')
+      const workspace = expectedRoot ?? ''
+      const root = gitWorkspaceRoot(context, workspace)
       return await removeWorktree(
         root,
         worktreePath,
         async (resolved, remove) => {
-          // A parent lock covers a nested worktree. Stop its current process
-          // first so it cannot block that parent lock from being acquired.
-          if (isPathWithin(root, resolved)) {
-            await supervisor.stopCwd(resolved)
-            return supervisor.withCwdLock(root, remove)
+          const removeIfCurrent = () => {
+            gitWorkspaceRoot(context, workspace)
+            return remove()
           }
-          return supervisor.withCwdLock(root, async () => {
-            await supervisor.stopCwd(resolved)
-            return supervisor.withCwdLock(resolved, remove)
-          })
+          // A parent lock covers a nested worktree. Stop its current process
+          // first and keep the folder closed through the Git operation.
+          if (isPathWithin(root, resolved)) {
+            return supervisor.stopCwd(resolved, () => supervisor.withCwdLock(root, removeIfCurrent))
+          }
+          return supervisor.withCwdLock(root, () =>
+            supervisor.stopCwd(resolved, () => supervisor.withCwdLock(resolved, removeIfCurrent))
+          )
         }
       )
     } catch (error) {
@@ -2634,9 +2642,6 @@ export function registerIpc(context: IpcContext): void {
     if (!validated.ok) {
       return { ok: false, error: runtimeSessionFileError(validated.reason) }
     }
-    if (!runtimeCwdStillRegistered(context, resolvedCwd)) {
-      return { ok: false, error: 'Working folder is no longer an available workspace.' }
-    }
     const role: SessionRuntimeRole =
       options.role === 'side' || isSideSessionKey(validated.sessionFile) ? 'side' : 'main'
     let parentSessionKey: string | undefined
@@ -2644,6 +2649,9 @@ export function registerIpc(context: IpcContext): void {
       const validParent = await resolveValidatedParentKey(options.parentSessionKey, cwd, sessionRoots)
       if (!validParent) return { ok: false, error: "Parent conversation file is not in Pi's session store." }
       parentSessionKey = validParent
+    }
+    if (!runtimeCwdStillRegistered(context, resolvedCwd)) {
+      return { ok: false, error: 'Working folder is no longer an available workspace.' }
     }
     const sessionKey = validated.sessionFile || (role === 'side' ? mintSideDraftKey() : `draft:${randomUUID()}`)
     if (role === 'side' && parentSessionKey) {
@@ -2653,7 +2661,6 @@ export function registerIpc(context: IpcContext): void {
       ...options,
       role,
       ...(parentSessionKey ? { parentSessionKey } : {}),
-      rememberDefaults: role === 'side' ? false : options.rememberDefaults,
       sessionFile: validated.sessionFile,
       sessionKey,
       cwd,
@@ -2700,7 +2707,6 @@ export function registerIpc(context: IpcContext): void {
         ...options,
         role,
         ...(parentSessionKey ? { parentSessionKey } : {}),
-        rememberDefaults: role === 'side' ? false : options.rememberDefaults,
         cwd
       })
     }
@@ -2739,7 +2745,6 @@ export function registerIpc(context: IpcContext): void {
       ...options,
       role,
       ...(parentSessionKey ? { parentSessionKey } : {}),
-      rememberDefaults: role === 'side' ? false : options.rememberDefaults,
       sessionFile: validated.ok ? validated.sessionFile : undefined,
       cwd,
       customInstructions: runtimeInstructions(context, cwd)

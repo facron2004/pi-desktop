@@ -370,6 +370,48 @@ test('cancelling a queued composer submission restores a single copy', async () 
   assert.equal(useAppStore.getState().drafts[key]?.text, 'Still in the composer\nEarlier queued message')
 })
 
+test('stopping restores an image-only directory prompt to its owner even if Pi could not clear its queue', async () => {
+  const key = 'restore-queued-image.jsonl'
+  const other = 'viewing-other-chat.jsonl'
+  await useAppStore.getState().selectSession(session(key))
+  emit({ ownerId: key, event: { type: 'agent_start' } })
+  emit({ ownerId: key, event: { type: 'queue_update', steering: ['Still in Pi'], followUp: [] } })
+  useAppStore.getState().updateDraft(key, { text: 'Work in progress' })
+  const cleared = Promise.withResolvers<unknown>()
+  bridge.runtime.request = async (command, ...args) => {
+    if (command === 'clear_queue') return cleared.promise
+    return originalRequest(command, ...args)
+  }
+
+  const stopping = useAppStore.getState().stop()
+  await useAppStore.getState().selectSession(session(other))
+  cleared.resolve({
+    steering: [],
+    followUp: [{ text: '', images: [{ data: 'AA==', mimeType: 'image/png' }] }],
+    queueError: 'Pi could not clear its queue'
+  })
+  await stopping
+
+  const state = useAppStore.getState()
+  assert.equal(state.activeSessionFile, other)
+  assert.equal(state.drafts[other], undefined)
+  assert.equal(state.drafts[key]?.text, 'Work in progress')
+  assert.deepEqual(state.drafts[key]?.images.map(({ data, mimeType, bytes }) => ({ data, mimeType, bytes })), [
+    { data: 'AA==', mimeType: 'image/png', bytes: 1 }
+  ])
+  assert.deepEqual(state.threads[key].queue.steering, ['Still in Pi'])
+  assert.equal(state.threads[key].error, 'Pi could not clear its queue')
+
+  await state.selectSession(session(key))
+  const draft = useAppStore.getState().drafts[key]
+  assert.equal(await state.submitComposerDraft(key, { draft, text: draft.text, kind: 'steer' }), true)
+  assert.deepEqual(calls.find(({ command }) => command === 'prompt')?.payload, {
+    message: 'Work in progress',
+    streamingBehavior: 'steer',
+    images: [{ data: 'AA==', mimeType: 'image/png' }]
+  })
+})
+
 for (const action of ['stop', 'clear queue'] as const) {
   test(`${action} during image setup preserves the draft without sending the generation prompt`, async () => {
     await useAppStore.getState().selectSession(session('cancel-image-setup.jsonl'))

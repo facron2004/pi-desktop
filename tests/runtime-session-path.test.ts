@@ -1,12 +1,18 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { once } from 'node:events'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
-import { ipcMain } from 'electron'
+import { app, ipcMain } from 'electron'
+import type { PiEvent, PiState } from '@shared/types'
 import { registerIpc } from '../src/main/ipc'
 import type { IpcContext } from '../src/main/ipc'
+import { findBundledCli } from '../src/main/pi/locate'
+import { RETRY_FLOOR } from '../src/main/pi/retry-policy'
 import { PiRuntime } from '../src/main/pi/runtime'
+import { SessionSupervisor } from '../src/main/pi/supervisor'
 
 test('runtime IPC blocks direct switch_session RPCs before they reach Pi', async () => {
   const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
@@ -98,6 +104,146 @@ test('runtime refuses a missing session file instead of silently starting a blan
     if (previousRoot === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
     else process.env.PI_CODING_AGENT_SESSION_DIR = previousRoot
     rmSync(parent, { recursive: true, force: true })
+  }
+})
+
+test('a normal conversation launch uses its options without replacing newer Pi defaults', { timeout: 30_000 }, async (t) => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'pi-runtime-defaults-'))
+  const sessions = path.join(directory, 'sessions')
+  const previousAgent = process.env.PI_CODING_AGENT_DIR
+  const previousTrace = process.env.PI_DESKTOP_RPC_TRACE
+  process.env.PI_CODING_AGENT_DIR = directory
+  process.env.PI_DESKTOP_RPC_TRACE = '0'
+  t.mock.method(app, 'getPath', () => directory)
+  const runtime = new PiRuntime({ getSessionDir: () => sessions })
+  t.after(async () => {
+    await runtime.stop()
+    if (previousAgent === undefined) delete process.env.PI_CODING_AGENT_DIR
+    else process.env.PI_CODING_AGENT_DIR = previousAgent
+    if (previousTrace === undefined) delete process.env.PI_DESKTOP_RPC_TRACE
+    else process.env.PI_DESKTOP_RPC_TRACE = previousTrace
+    rmSync(directory, { recursive: true, force: true })
+  })
+
+  mkdirSync(sessions)
+  writeFileSync(path.join(directory, 'models.json'), JSON.stringify({ providers: { fixture: {
+    api: 'openai-completions', baseUrl: 'http://127.0.0.1:1/v1', apiKey: 'local-test',
+    models: ['captured', 'saved'].map((id) => ({
+      id, reasoning: true, input: ['text'], contextWindow: 32000, maxTokens: 1024
+    }))
+  } } }))
+  const settingsFile = path.join(directory, 'settings.json')
+  const saved = { defaultProvider: 'fixture', defaultModel: 'saved', defaultThinkingLevel: 'high' }
+  writeFileSync(settingsFile, JSON.stringify(saved))
+
+  const older = await runtime.start({ cwd: directory, model: 'fixture/captured', thinkingLevel: 'low' })
+  assert.equal(older.ok, true, older.error)
+  const olderState = await runtime.request<PiState>('get_state')
+  assert.equal(olderState.model?.id, 'captured')
+  assert.equal(olderState.thinkingLevel, 'low')
+  assert.deepEqual(JSON.parse(readFileSync(settingsFile, 'utf8')), {
+    ...saved, retry: { enabled: true, ...RETRY_FLOOR }
+  })
+
+  const next = await runtime.start({ cwd: directory })
+  assert.equal(next.ok, true, next.error)
+  const nextState = await runtime.request<PiState>('get_state')
+  assert.equal(nextState.model?.id, 'saved')
+  assert.equal(nextState.thinkingLevel, 'high')
+
+  await t.test('a live registry is refreshed before selecting a newly added provider', async () => {
+    const modelsFile = path.join(directory, 'models.json')
+    const config = JSON.parse(readFileSync(modelsFile, 'utf8'))
+    config.providers.added = { ...config.providers.fixture }
+    writeFileSync(modelsFile, JSON.stringify(config))
+
+    const selection = { provider: 'added', modelId: 'saved' }
+    await assert.rejects(runtime.request('set_model', selection), /Model not found/)
+    assert.deepEqual(await runtime.request('prompt', { message: '/desktop-refresh-models' }), { disposition: 'handled' })
+    const confirmed = await runtime.request<NonNullable<PiState['model']>>('set_model', selection)
+    assert.equal(confirmed.provider, 'added')
+    assert.equal(confirmed.id, 'saved')
+    assert.equal((await runtime.request<PiState>('get_state')).model?.provider, 'added')
+  })
+})
+
+test('bundled Pi delivers a side follow-up in the active run and rejects one after settle', { timeout: 30_000 }, async (t) => {
+  const cli = findBundledCli()
+  assert.ok(cli)
+  const directory = mkdtempSync(path.join(tmpdir(), 'pi-runtime-follow-up-'))
+  const sessions = path.join(directory, 'sessions')
+  const previousAgent = process.env.PI_CODING_AGENT_DIR
+  const previousTrace = process.env.PI_DESKTOP_RPC_TRACE
+  process.env.PI_CODING_AGENT_DIR = directory
+  process.env.PI_DESKTOP_RPC_TRACE = '0'
+  t.mock.method(app, 'getPath', () => directory)
+  const supervisor = new SessionSupervisor(() => new PiRuntime({ customPiPath: cli, getSessionDir: () => sessions }))
+  const firstRequest = Promise.withResolvers<void>()
+  const releaseFirst = Promise.withResolvers<void>()
+  let requests = 0
+  const server = createServer(async (request, response) => {
+    for await (const _chunk of request) { /* Read the whole request before replying. */ }
+    if (++requests === 1) {
+      firstRequest.resolve()
+      await releaseFirst.promise
+    }
+    response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+    for (const [delta, finish_reason] of [[{ role: 'assistant', content: 'Reply' }, null], [{}, 'stop']]) {
+      const event = {
+        id: 'follow-up-fixture', object: 'chat.completion.chunk', created: 1, model: 'test',
+        choices: [{ index: 0, delta, finish_reason }]
+      }
+      response.write(`data: ${JSON.stringify(event)}\n\n`)
+    }
+    response.end('data: [DONE]\n\n')
+  })
+  try {
+    server.listen(0, '127.0.0.1')
+    await once(server, 'listening')
+    const address = server.address()
+    assert.ok(address && typeof address === 'object')
+    mkdirSync(sessions)
+    writeFileSync(path.join(directory, 'models.json'), JSON.stringify({ providers: { fixture: {
+      api: 'openai-completions', baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: 'local-test',
+      models: [{ id: 'test', input: ['text'], contextWindow: 32000, maxTokens: 1024 }]
+    } } }))
+
+    const key = 'draft:follow-up-test'
+    const settled = Promise.withResolvers<void>()
+    const events: PiEvent[] = []
+    supervisor.on('event', ({ event }: { event: PiEvent }) => {
+      events.push(event)
+      if (event.type === 'agent_settled') settled.resolve()
+    })
+    const started = await supervisor.ensure({ sessionKey: key, cwd: directory, model: 'fixture/test' })
+    assert.equal(started.ok, true, started.error)
+    assert.deepEqual(await supervisor.request(key, 'prompt', { message: 'First task' }), { disposition: 'started' })
+    await firstRequest.promise
+    assert.deepEqual(await supervisor.request(key, 'follow_up', { message: 'Review the result' }), { disposition: 'queued' })
+    releaseFirst.resolve()
+    await settled.promise
+    assert.equal(requests, 2)
+    assert.equal(events.filter((event) => event.type === 'agent_start').length, 1)
+
+    assert.deepEqual(await supervisor.request(key, 'follow_up', { message: 'Too late' }), {
+      disposition: 'handled', cancelled: true
+    })
+    const state = await supervisor.request<PiState>(key, 'get_state')
+    assert.equal(state.isStreaming, false)
+    assert.equal(state.pendingMessageCount, 0)
+  } finally {
+    releaseFirst.resolve()
+    try {
+      await supervisor.stop()
+    } finally {
+      server.close()
+      server.closeAllConnections()
+      if (previousAgent === undefined) delete process.env.PI_CODING_AGENT_DIR
+      else process.env.PI_CODING_AGENT_DIR = previousAgent
+      if (previousTrace === undefined) delete process.env.PI_DESKTOP_RPC_TRACE
+      else process.env.PI_DESKTOP_RPC_TRACE = previousTrace
+      rmSync(directory, { recursive: true, force: true })
+    }
   }
 })
 

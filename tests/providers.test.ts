@@ -1,7 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import fs from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { enrichModels, parseModel } from '../src/main/providers/metadata'
@@ -224,6 +226,75 @@ test('explicit connection changes replace old model endpoints and the effective 
   assert.equal(updated.models[0].baseUrl, undefined)
   assert.equal(store.key({ id: saved.id, api: 'openai-responses', baseUrl: updated.baseUrl }), 'new-key')
   assert.equal(JSON.parse(readFileSync(path.join(root, 'auth.json'), 'utf8')).untouched.key, 'leave-alone')
+})
+
+for (const blocked of ['models.desktop.json', 'auth.json']) {
+  test(`a failed provider write to ${blocked} restores the previous configuration`, t => {
+    const root = directory(t)
+    const store = new ProviderStore(root)
+    const saved = store.save(input())
+    const authFile = path.join(root, 'auth.json')
+    writeFileSync(authFile, JSON.stringify({
+      [saved.id]: { type: 'api_key', key: 'original-test-key' },
+      other: { type: 'api_key', key: 'other-test-key' }
+    }))
+    const files = [store.file, path.join(root, 'models.desktop.json'), authFile]
+    const snapshots = files.map(file => readFileSync(file, 'utf8'))
+    const next = {
+      ...input(), id: saved.id, revision: saved.revision,
+      baseUrl: 'https://other-endpoint.example/v1', apiKey: 'replacement-test-key'
+    }
+    const rename = fs.renameSync
+    const write = t.mock.method(fs, 'renameSync', (from, to) => {
+      if (to === path.join(root, blocked)) throw new Error('Simulated file write failure')
+      rename(from, to)
+    })
+    syncBuiltinESMExports()
+    try {
+      assert.throws(() => store.save(next), /Simulated file write failure/)
+    } finally {
+      write.mock.restore()
+      syncBuiltinESMExports()
+    }
+    assert.deepEqual(files.map(file => readFileSync(file, 'utf8')), snapshots)
+
+    assert.equal(store.save(next).baseUrl, next.baseUrl)
+    assert.equal(store.savedKey(saved.id), next.apiKey)
+  })
+}
+
+test('a failed settings write rolls back provider changes within the same mutation', t => {
+  const root = directory(t)
+  const store = new ProviderStore(root)
+  const saved = store.save(input())
+  const authFile = path.join(root, 'auth.json')
+  writeFileSync(authFile, JSON.stringify({ [saved.id]: { type: 'api_key', key: 'original-test-key' } }))
+  const files = [store.file, path.join(root, 'models.desktop.json'), authFile]
+  const snapshots = files.map(file => readFileSync(file, 'utf8'))
+  const edit = () => store.save({
+    ...input(), id: saved.id, revision: saved.revision, apiKey: 'replacement-test-key'
+  })
+  for (const mutate of [edit, () => store.remove(saved.id)]) {
+    assert.throws(() => store.withMutation(() => {
+      mutate()
+      throw new Error('Could not save the selected model')
+    }), /Could not save the selected model/)
+    assert.deepEqual(files.map(file => readFileSync(file, 'utf8')), snapshots)
+  }
+})
+
+test('a failed first save leaves no provider definitions to duplicate on retry', t => {
+  const root = directory(t)
+  const store = new ProviderStore(root)
+  assert.throws(() => store.withMutation(() => {
+    store.save(input())
+    throw new Error('Could not save the selected model')
+  }), /Could not save the selected model/)
+  assert.equal(existsSync(store.file), false)
+  assert.equal(existsSync(path.join(root, 'models.desktop.json')), false)
+  assert.equal(store.list().length, 0)
+  store.save(input())
+  assert.equal(store.list().length, 1)
 })
 
 test('removing a provider drops its models.json entry and api key, and leaves other credentials', t => {

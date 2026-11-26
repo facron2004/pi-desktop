@@ -48,6 +48,33 @@ test('adding the same path twice keeps one chip', () => {
   assert.equal(merged[0], first)
 })
 
+test('POSIX files that differ only in case both stay attached', () => {
+  const upper = makeComposerFile('/workspace/README.md')
+  const lower = makeComposerFile('/workspace/readme.md')
+  const duplicate = makeComposerFile(lower.path)
+  assert.deepEqual(mergeComposerFiles([upper], [lower, duplicate]), [upper, lower])
+})
+
+test('a literal POSIX backslash survives file naming, sending and draft restoration', () => {
+  const file = makeComposerFile('/workspace/a\\b.md')
+  const nested = makeComposerFile('/workspace/a/b.md')
+  const token = composerFileToken(file)
+  assert.equal(file.name, 'a\\b.md')
+  assert.equal(token, '@"/workspace/a\\\\b.md"')
+  assert.equal(extractFilePathMentions(token).files[0]?.path, file.path)
+  assert.deepEqual(mergeComposerFiles([file], [nested]), [file, nested])
+})
+
+test('equivalent Windows network paths still keep one attachment chip', () => {
+  const file = makeComposerFile('\\\\server\\share\\Docs\\Report.md')
+  const alternate = makeComposerFile('//SERVER/SHARE/docs/report.md')
+  const token = composerFileToken(file)
+  assert.equal(file.name, 'Report.md')
+  assert.equal(token, '@"//server/share/Docs/Report.md"')
+  assert.equal(extractFilePathMentions(token).files[0]?.path, '//server/share/Docs/Report.md')
+  assert.deepEqual(mergeComposerFiles([file], [alternate]), [file])
+})
+
 function memoryStorage(): Pick<Storage, 'getItem' | 'setItem'> & { values: Map<string, string> } {
   const values = new Map<string, string>()
   return {

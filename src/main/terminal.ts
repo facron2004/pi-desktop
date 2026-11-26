@@ -138,13 +138,14 @@ export class TerminalManager {
     return { id, pid: processHandle.pid, shell: shell.label, cwd }
   }
 
-  write(id: string, data: string): void {
+  write(id: string, data: string): boolean {
     const session = this.sessions.get(id)
-    if (!session || session.closing || typeof data !== 'string') return
+    if (!session || session.closing || typeof data !== 'string') return false
     try {
       session.process.write(data)
+      return true
     } catch {
-      /* the shell may have exited between the keystroke and this write */
+      return false
     }
   }
 
@@ -220,12 +221,30 @@ export class TerminalManager {
     const disposal = this.disposal
     await disposal
     if (disposal !== this.disposal) throw new Error('The terminal view was replaced before the shell could open.')
+
+    const closing = new Set(this.pendingStops.keys())
+    for (const [id, session] of this.sessions) {
+      if (session.closing) closing.add(id)
+    }
+    if (closing.size === 0) return
+    await this.finishClosing([...closing])
+    if (disposal !== this.disposal) throw new Error('The terminal view was replaced before the shell could open.')
   }
 
   disposeAll(): Promise<void> {
-    const ids = new Set([...this.sessions.keys(), ...this.pendingStops.keys()])
-    this.disposal = Promise.all([...ids].map(id => this.kill(id))).then(() => undefined)
-    return this.disposal
+    const ids = [...new Set([...this.sessions.keys(), ...this.pendingStops.keys()])]
+    const disposal = Promise.all(ids.map(id => this.kill(id))).then(() => this.finishClosing(ids))
+    // Report a failed disposal to its caller; a later terminal open can retry
+    // the retained handles through waitForDisposal.
+    this.disposal = disposal.catch(() => {})
+    return disposal
+  }
+
+  private async finishClosing(ids: string[]): Promise<void> {
+    await Promise.all(ids.map(id => this.kill(id)))
+    if (ids.some(id => this.sessions.has(id))) {
+      throw new Error('Could not close a previous terminal. Try again.')
+    }
   }
 }
 

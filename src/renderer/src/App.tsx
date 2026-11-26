@@ -154,10 +154,12 @@ export default function App() {
   const [availableUpdate, setAvailableUpdate] = useState(() => availableAppUpdate())
   const deskPage = useAppStore((state) => state.deskPage)
   const setDeskPage = useAppStore((state) => state.setDeskPage)
-  // A command headed for the drawer. `seq` makes the same command twice two
-  // requests instead of one the drawer already ran.
-  const [terminalRequest, setTerminalRequest] = useState<TerminalRunRequest | null>(null)
+  // Keep requests in order until the terminal accepts or rejects the write.
+  const [terminalRequests, setTerminalRequests] = useState<TerminalRunRequest[]>([])
   const terminalSeqRef = useRef(0)
+  const finishTerminalRequest = useCallback((seq: number) => {
+    setTerminalRequests((pending) => pending[0]?.seq === seq ? pending.slice(1) : pending)
+  }, [])
   // A URL the Browser page was asked to load. `seq` makes the same link twice
   // two loads instead of one the page already shows.
   const [browserUrl, setBrowserUrl] = useState<{ url: string; seq: number } | null>(null)
@@ -934,11 +936,12 @@ export default function App() {
       if (typeof command !== 'string' || !command.trim()) return
       setDeskPage(null)
       terminalSeqRef.current += 1
-      setTerminalRequest({
+      const request = {
         command,
         cwd: useAppStore.getState().workspace?.path ?? '',
         seq: terminalSeqRef.current
-      })
+      }
+      setTerminalRequests((pending) => [...pending, request])
       setPanelView('terminal')
       setChangesOpen(true)
     }
@@ -982,13 +985,6 @@ export default function App() {
     toggleSideChat,
     setDeskPage
   ])
-
-  // The handed-over command is a one-shot. Once the terminal is no longer the
-  // panel's tool, the request is dropped so coming back to it later does not
-  // replay the command.
-  useEffect(() => {
-    if (!changesOpen || panelView !== 'terminal') setTerminalRequest(null)
-  }, [changesOpen, panelView])
 
   // An extension can rename the session window through `setTitle`.
   useEffect(() => {
@@ -1261,7 +1257,10 @@ export default function App() {
             onViewClosed={(closed) => {
               if (closed === 'side-chat') setSideChatMounted(false)
               if (closed === 'browser') setBrowserMounted(false)
-              if (closed === 'terminal') setTerminalMounted(false)
+              if (closed === 'terminal') {
+                setTerminalMounted(false)
+                setTerminalRequests([])
+              }
             }}
             concealed={panelConcealed}
             className={[inspectorOverlay ? 'tool-panel--overlay' : '', panelClosing ? 'tool-panel--closing' : '']
@@ -1325,7 +1324,8 @@ export default function App() {
                 <Suspense fallback={<FeatureLoading />}>
                   <TerminalPanel
                     embedded
-                    request={panelView === 'terminal' ? terminalRequest : null}
+                    request={terminalRequests[0]}
+                    onRequestHandled={finishTerminalRequest}
                     onClose={closeChanges}
                   />
                 </Suspense>

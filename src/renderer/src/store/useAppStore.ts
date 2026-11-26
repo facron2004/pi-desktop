@@ -18,6 +18,7 @@ import type {
   AgentMode,
   AppInfo,
   AppSettings,
+  ClearedRuntimeQueue,
   ContextBreakdown,
   ExtensionUiRequest,
   ExtensionUiResponse,
@@ -29,6 +30,7 @@ import type {
   PiCommand,
   PiEvent,
   PiState,
+  RuntimeEnsureOptions,
   RuntimeQueueEvent,
   RuntimeStatus,
   SessionHydrationResult,
@@ -588,19 +590,39 @@ function composerClientKey(state: AppStore, key: string): string {
 function restoreCancelledPrompts(
   state: AppStore,
   key: string,
-  removed: { steering: string[]; followUp: string[] } | undefined,
+  removed: ClearedRuntimeQueue | undefined,
   submission: ComposerSubmission | undefined
 ): void {
-  const prompts = [...(removed?.steering ?? []), ...(removed?.followUp ?? [])]
-    .map((entry) => entry.trim())
-    .filter(Boolean)
+  const steering = [...(removed?.steering ?? [])]
+  const followUp = [...(removed?.followUp ?? [])]
   if (submission && state.drafts[threadKey(key)] === submission.draft) {
     // One cancelled prompt already survives in the editor until acceptance.
     const text = normalizeAppCommandInput(submission.text.trim())
-    const index = prompts.lastIndexOf(text)
+    const images = submission.draft.images
+    const prompts = submission.kind === 'followUp' ? followUp : steering
+    const index = prompts.findLastIndex((prompt) => {
+      if (typeof prompt === 'string') return prompt.trim() === text
+      return prompt.text.trim() === text && prompt.images.length === images.length &&
+        prompt.images.every((image, i) => image.data === images[i].data && image.mimeType === images[i].mimeType)
+    })
     if (index >= 0) prompts.splice(index, 1)
   }
-  if (prompts.length) state.insertIntoComposer(prompts.join('\n'), 'append', key)
+  const prompts = [...steering, ...followUp]
+  const text = prompts.map((prompt) => (typeof prompt === 'string' ? prompt : prompt.text).trim())
+    .filter(Boolean).join('\n')
+  if (text) state.insertIntoComposer(text, 'append', key)
+  const images = prompts.flatMap((prompt) => typeof prompt === 'string' ? [] : prompt.images)
+  if (!images.length) return
+  state.updateDraft(key, (draft) => {
+    const restored = images.filter((image) => !draft.images.some((existing) =>
+      existing.data === image.data && existing.mimeType === image.mimeType
+    )).map(({ data, mimeType }) => {
+      const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0
+      const bytes = Math.max(0, Math.floor(data.length * 3 / 4) - padding)
+      return { type: 'image' as const, id: nextId('draft-image'), data, mimeType, bytes, name: 'image' }
+    })
+    return restored.length ? { ...draft, images: [...draft.images, ...restored] } : draft
+  })
 }
 
 let draftPersistenceWarning: Exclude<DraftSaveResult, 'saved'> | undefined
@@ -1274,14 +1296,19 @@ let scheduledPrewarmTimer: ReturnType<typeof setTimeout> | null = null
 let scheduledPrewarmKey: string | null = null
 let scheduledSidePrewarmTimer: ReturnType<typeof setTimeout> | null = null
 let scheduledSidePrewarmKey: string | null = null
-/**
- * A model chosen while the conversation was cold.
- *
- * There is no process to hear `set_model` yet. Starting one just to store the
- * choice is a multi-second cold boot; the next launch reads the saved default
- * and this map applies it to a resumed session before its first prompt.
- */
-const pendingModelSelections = new Map<string, { provider: string; id: string }>()
+interface PendingModelSelection {
+  apply: (key: string) => Promise<unknown>
+  duringStartup?: true
+  result?: Promise<unknown>
+}
+const pendingModelSelections = new Map<string, PendingModelSelection>()
+const runtimeEnsuresInFlight = new Set<{ key: string }>()
+function hasRuntimeEnsure(key: string): boolean {
+  for (const ensure of runtimeEnsuresInFlight) {
+    if (threadKey(ensure.key) === key) return true
+  }
+  return false
+}
 /** A reasoning effort chosen for a cold resumed Side Chat session. */
 const pendingThinkingSelections = new Map<string, string>()
 
@@ -2659,8 +2686,10 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     const epoch = projectEpoch
     // Removing a project that is not the active one must not move the user
     // somewhere else; only the project that goes away needs a replacement.
-    await window.pi.workspaces.remove(target.id, path)
-    const settings = await window.pi.settings.get()
+    // The removal answers with the settings it wrote: re-reading them here
+    // waited on the settings lock a second time for a value this call already
+    // had, which is the second half of "deleting a project is slow".
+    const settings = await window.pi.workspaces.remove(target.id, path)
     set({ settings })
     applyAppearance(settings, get().info?.forcedTheme)
     if (epoch !== projectEpoch) return
@@ -3291,15 +3320,14 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     const cwd = isSide
       ? (thread?.status.cwd ?? parentThread?.status.cwd ?? parentSession?.cwd ?? state.workspace?.path ?? '')
       : (thread?.status.cwd ?? session?.cwd ?? (viewKeyOf(state) === key ? state.workspace?.path : '') ?? '')
-    const ensured = await window.pi.runtime.ensure({
+    const ensureOptions: RuntimeEnsureOptions = {
       sessionKey: key,
       cwd,
       sessionFile: fresh ? undefined : key,
       ...(isSide
         ? {
             role: 'side' as const,
-            parentSessionKey: parentCanonical || undefined,
-            rememberDefaults: false
+            parentSessionKey: parentCanonical || undefined
           }
         : {}),
       // A resumed conversation restores its own model and reasoning from Pi.
@@ -3307,23 +3335,26 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       thinkingLevel: launchThinking,
       ...(isPrewarm ? { prewarm: true } : {}),
       trace: { sourceAction, uiSessionId: key }
-    })
-    if (!ensured.ok) throw new Error(ensured.error ?? 'Pi did not start')
-    const liveKey = threadKey(key)
-    // A model picked while this conversation was cold had no process to hear
-    // `set_model`. Apply it before the first prompt runs on the old model.
-    const pendingModel = pendingModelSelections.get(liveKey) ?? pendingModelSelections.get(key)
-    if (pendingModel) {
-      pendingModelSelections.delete(key)
-      pendingModelSelections.delete(liveKey)
-      await tracedRpc(
-        liveKey,
-        'set_model',
-        { provider: pendingModel.provider, modelId: pendingModel.id },
-        undefined,
-        'restore-model'
-      )
     }
+    const ensure = { key }
+    runtimeEnsuresInFlight.add(ensure)
+    try {
+      const ensured = await window.pi.runtime.ensure(ensureOptions)
+      if (!ensured.ok) throw new Error(ensured.error ?? 'Pi did not start')
+      const liveKey = threadKey(key)
+      // Prewarm and the first send can await the same start. Share the model
+      // change so each caller waits for confirmation before it sends a prompt.
+      const pending = pendingModelSelections.get(liveKey)
+      if (pending) await (pending.result ??= pending.apply(liveKey))
+    } finally {
+      runtimeEnsuresInFlight.delete(ensure)
+      const owner = threadKey(key)
+      const pending = pendingModelSelections.get(owner)
+      if ((pending?.duringStartup || pending?.result) && !hasRuntimeEnsure(owner)) {
+        pendingModelSelections.delete(owner)
+      }
+    }
+    const liveKey = threadKey(key)
     const pendingThinking = pendingThinkingSelections.get(liveKey) ?? pendingThinkingSelections.get(key)
     if (pendingThinking) {
       pendingThinkingSelections.delete(key)
@@ -4049,9 +4080,10 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       : state.sideSessionKey
         ? threadKey(state.sideSessionKey)
         : ''
-    const targetMainRaw = (sourceSide ? state.sideParentByKey[sourceSide] : undefined) || viewKeyOf(state)
-    const mainKey = targetMainRaw ? threadKey(targetMainRaw) : ''
-    if (!mainKey) return 'noop'
+    // Clearing or removing a side chat can leave an old card without a binding.
+    const parentKey = state.sideParentByKey[sourceSide]
+    if (!parentKey) return 'noop'
+    const mainKey = threadKey(parentKey)
 
     if (mode === 'draft-append' || mode === 'draft-replace') {
       get().insertIntoComposer(cleaned, mode === 'draft-replace' ? 'replace' : 'append', mainKey)
@@ -4061,19 +4093,20 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       return 'inserted'
     }
 
-    // Strict non-steering guarantee: queue-followup only submits with explicit
-    // `streamingBehavior: 'followUp'` while Main is actively streaming, and
-    // NEVER consults `settings.followUpMode` or interrupts an active turn.
-    const latest = get()
-    const mainThread = latest.threads[mainKey]
-    const isMainView = threadKey(viewKeyOf(latest)) === mainKey
-    const mainStreaming = mainThread
-      ? mainThread.isStreaming || !mainThread.run.settled
-      : isMainView && (latest.isStreaming || !latest.run.settled)
-    if (!mainStreaming) return 'noop'
+    const { isStreaming, run } = bindGet(get, mainKey)()
+    if (run.phase === 'aborting' || (!isStreaming && run.settled)) return 'noop'
 
-    const accepted = await get().sendPrompt(mainKey, cleaned, [], 'followUp')
-    if (!accepted) return 'noop'
+    // A normal prompt with streamingBehavior can start a run if Pi is idle.
+    try {
+      const result = await tracedRpc<{ disposition?: string }>(
+        mainKey, 'follow_up', { message: cleaned }, undefined, 'side-handoff'
+      )
+      if (result?.disposition !== 'queued') return 'noop'
+    } catch (error) {
+      bindSet(set, get, mainKey)({ error: messageOf(error) })
+      return 'noop'
+    }
+    pinScrollToBottom(mainKey)
     get().showToast('Queued for the next turn in main chat')
     return 'queued'
   },
@@ -4602,21 +4635,21 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         }))
         return
       }
-      const removed = await tracedRpc<{ steering: string[]; followUp: string[] }>(
+      const removed = await tracedRpc<ClearedRuntimeQueue>(
         threadKey(key),
         'clear_queue',
         undefined,
         undefined,
         'user-stop'
       )
-      // A prompt still waiting for the folder lock was cancelled with the
-      // queue; its bubble goes back to being the composer text below.
+      // A prompt still waiting for the folder lock goes back to the composer.
       queuedPromptDrafts.delete(threadKey(key))
       update((state) => ({
-        queue: { steering: [], followUp: [] },
+        ...(removed?.queueError === undefined ? { queue: { steering: [], followUp: [] } } : {}),
         items: clearPendingPrompts(state.items)
       }))
       restoreCancelledPrompts(get(), key, removed, submission)
+      if (removed?.queueError !== undefined) throw new Error(removed.queueError)
       if ((inlineBashCounts.get(threadKey(key)) ?? 0) > 0 && !ownGet().run.runId) {
         void tracedRpc(threadKey(key), 'abort_bash', undefined, undefined, 'user-stop').catch(() => {})
       }
@@ -4646,7 +4679,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     const submission = state.submittingDrafts[composerClientKey(state, threadKey(key))]
     const update = bindSet(set, get, key)
     try {
-      const removed = await tracedRpc<{ steering: string[]; followUp: string[] }>(
+      const removed = await tracedRpc<ClearedRuntimeQueue>(
         key,
         'clear_queue',
         undefined,
@@ -4654,7 +4687,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         'clear-queue'
       )
       update((state) => ({
-        queue: { steering: [], followUp: [] },
+        ...(removed?.queueError === undefined ? { queue: { steering: [], followUp: [] } } : { error: removed.queueError }),
         items: clearPendingPrompts(state.items)
       }))
       if (key) queuedPromptDrafts.delete(threadKey(key))
@@ -4670,7 +4703,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     const owner = options?.sessionKey?.trim() || viewKeyOf(get())
     const key = owner ? threadKey(owner) : ''
     const lockKey = key || '__main__'
-    if (agentSettingSelectionsInFlight.has(lockKey)) {
+    if (agentSettingSelectionsInFlight.has(lockKey) || pendingModelSelections.get(key)?.duringStartup) {
       get().showToast('A model or reasoning change is already in progress', 'warning')
       return false
     }
@@ -4679,7 +4712,6 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     const rememberDefaults = !isSide && options?.rememberDefaults !== false
     const spec = `${model.provider}/${model.id}`
     const selection = rememberDefaults ? ++modelPreferenceSequence : modelPreferenceSequence
-    if (rememberDefaults) modelPreferenceValue = spec
     try {
       // Pi starts when a message is sent, not when a picker changes. A cold
       // conversation has no process to hear `set_model`, so store the choice
@@ -4688,116 +4720,123 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       // start feel like a cold start, because it was one.
       const running = isSide
         ? Boolean(key && typeof window.pi.runtime.has === 'function'
-            ? await withTimeout(window.pi.runtime.has(key), 5_000, 'Pi did not answer. Try switching the model again.')
-            : false)
+          ? await withTimeout(window.pi.runtime.has(key), 5_000, 'Pi did not answer. Try switching the model again.')
+          : false)
         : owner && typeof window.pi.runtime.has === 'function'
           ? await withTimeout(window.pi.runtime.has(owner), 5_000, 'Pi did not answer. Try switching the model again.')
           : true
-      // A process that is already booting will not read a settings change it
-      // missed. Treat it as live so `ensureRuntime` waits for it and sends
-      // `set_model` instead of leaving the first prompt on the old model.
-      const starting = Boolean(key && get().threads[key]?.status.phase === 'starting')
+      // Speculative starts deliberately hide their "starting" status. Track
+      // the actual ensure call, including a draft promoted to a session file.
+      const starting = hasRuntimeEnsure(threadKey(key))
       // A conversation keeps its own model: only a Main draft — a conversation
       // that does not exist yet — writes the app default. Side Chat never
       // mutates the app default (`rememberDefaults: false`).
       const fresh = !key || key.startsWith('draft:')
-      if (!running && !starting) {
-        if (isSide && key) {
+      /** Record the pick so the chip, the session row and the next launch agree. */
+      const rememberChoice = async (liveKey: string): Promise<void> => {
+        if (isSide) {
           set((state) => ({
             sideModelOverrides: {
               ...state.sideModelOverrides,
-              [key]: { provider: model.provider, id: model.id, spec }
+              [liveKey]: { provider: model.provider, id: model.id, spec }
             }
           }))
-          if (!fresh) {
-            pendingModelSelections.set(key, { provider: model.provider, id: model.id })
-          }
-          recordModelUse(model)
-          return true
+          return
         }
-        if (rememberDefaults && selection === modelPreferenceSequence) {
+        if (!fresh) {
+          rememberSessionModel(set, liveKey, spec)
+          return
+        }
+        if (!rememberDefaults || selection !== modelPreferenceSequence) return
+        const shouldWrite = get().settings.model !== spec ||
+          get().settings.provider !== model.provider
+        if (!shouldWrite) return
+        const settings = await withTimeout(
+          window.pi.settings.patch({ provider: model.provider, model: spec }),
+          8_000,
+          'Saving the model selection timed out. Try again.'
+        )
+        if (modelPreferenceSequence === selection) {
           modelPreferenceValue = spec
-          if (fresh) {
-            const shouldWrite = get().settings.model !== spec ||
-              get().settings.provider !== model.provider
-            if (shouldWrite) {
-              const settings = await withTimeout(
-                window.pi.settings.patch({ provider: model.provider, model: spec }),
-                8_000,
-                'Saving the model selection timed out. Try again.'
-              )
-              if (modelPreferenceSequence === selection) {
-                set({ settings: { ...get().settings, provider: settings.provider, model: settings.model } })
-              }
-            }
-          }
+          set({ settings: { ...get().settings, provider: settings.provider, model: settings.model } })
         }
-        // A draft's next launch already receives the saved default through
-        // `ensureRuntime`; only a resumed session needs the extra command.
-        if (key && !fresh) {
-          pendingModelSelections.set(key, { provider: model.provider, id: model.id })
-          if (!isSide) rememberSessionModel(set, key, spec)
-        }
+      }
+      if (!running && !starting) {
+        // Nothing is running to hear the command: record the choice only.
+        await rememberChoice(key)
+        if (key && !fresh) pendingModelSelections.set(threadKey(key), {
+          apply: (liveKey) => tracedRpc(
+            liveKey, 'set_model', { provider: model.provider, modelId: model.id }, 5_000, 'restore-model'
+          )
+        })
         recordModelUse(model)
         return true
       }
-      pendingModelSelections.delete(key)
-      const ensuredKey = await withTimeout(
-        get().ensureRuntime(owner, 'set-model'),
-        25_000,
-        'Pi did not start in time. Try switching the model again.'
-      )
-      const liveKey = threadKey(ensuredKey)
-      const state = bindGet(get, liveKey)()
-      if (!state.models.some(item => item.provider === model.provider && item.id === model.id)) {
-        if (!state.run.settled) {
-          get().showToast('New models can be selected when the current run finishes', 'warning')
-          return false
+      const apply = async (liveKey: string): Promise<boolean> => {
+        const known = get().threads[liveKey]?.models.some(
+          (item) => item.provider === model.provider && item.id === model.id
+        )
+        const refreshModels = async (): Promise<boolean> => {
+          const run = get().threads[threadKey(liveKey)]?.run
+          if (run && !run.settled && !(starting && run.phase === 'queued' && !run.runId)) {
+            get().showToast('New models can be selected when the current run finishes', 'warning')
+            return false
+          }
+          const result = await tracedRpc<{ disposition?: string; cancelled?: boolean }>(
+            liveKey, 'prompt', { message: '/desktop-refresh-models' }, 15_000, 'refresh-models'
+          )
+          if (result?.disposition !== 'handled' || result.cancelled) {
+            throw new Error('Pi did not refresh the model list. Try switching the model again.')
+          }
+          return true
         }
-        await tracedRpc(liveKey, 'prompt', { message: '/desktop-refresh-models' }, undefined, 'refresh-models')
-      }
-      await withTimeout(
-        tracedRpc(liveKey, 'set_model', { provider: model.provider, modelId: model.id }, undefined, 'set-model'),
-        15_000,
-        'Pi did not acknowledge the model change. Try again.'
-      )
-      // The model is applied even if the follow-up snapshot is slow; do not turn
-      // a stale read into a failed switch.
-      await withTimeout(
-        get().refreshState(liveKey),
-        10_000,
-        'Refreshing the conversation timed out.'
-      ).catch(() => undefined)
-      if (isSide) {
-        set((current) => ({
-          sideModelOverrides: {
-            ...current.sideModelOverrides,
-            [liveKey]: { provider: model.provider, id: model.id, spec }
+        const needsRefresh = !starting && !known
+        if (needsRefresh && !await refreshModels()) return false
+        const sendModel = () => withTimeout(
+          tracedRpc<ModelInfo>(threadKey(liveKey), 'set_model', { provider: model.provider, modelId: model.id }, 5_000, 'set-model'),
+          5_000,
+          'Pi did not acknowledge the model change. Try again.'
+        )
+        let confirmed: ModelInfo
+        try {
+          confirmed = await sendModel()
+        } catch (error) {
+          const stale = /unknown model|not found|unavailable|no such model/i.test(String(error ?? ''))
+          if (needsRefresh || !stale) throw error
+          if (!await refreshModels()) return false
+          confirmed = await sendModel()
+        }
+        bindSet(set, get, liveKey)((state) => ({
+          piState: {
+            isStreaming: state.isStreaming,
+            isCompacting: Boolean(state.run.compaction),
+            ...state.piState,
+            model: confirmed?.id && confirmed.provider ? confirmed : model
           }
         }))
-      } else if (rememberDefaults && selection === modelPreferenceSequence) {
-        modelPreferenceValue = spec
-        if (fresh) {
-          const shouldWrite = get().settings.model !== spec ||
-            get().settings.provider !== model.provider
-          if (shouldWrite) {
-            const settings = await withTimeout(
-              window.pi.settings.patch({ provider: model.provider, model: spec }),
-              8_000,
-              'Saving the model selection timed out. Try again.'
-            )
-            if (modelPreferenceSequence === selection) {
-              set({ settings: { ...get().settings, provider: settings.provider, model: settings.model } })
+        void get().refreshState(threadKey(liveKey)).catch(() => undefined)
+        await rememberChoice(threadKey(liveKey))
+        recordModelUse(model)
+        return true
+      }
+      const liveKey = threadKey(key)
+      if (starting) {
+        // The picker can close while the existing startup owns the request.
+        pendingModelSelections.set(liveKey, {
+          duringStartup: true,
+          apply: async (liveKey) => {
+            try {
+              if (!await apply(liveKey)) throw new Error('Pi did not apply the model choice. Try switching the model again.')
+            } catch (error) {
+              bindSet(set, get, liveKey)({ error: messageOf(error) })
+              throw error
             }
           }
-        } else {
-          rememberSessionModel(set, liveKey, spec)
-        }
-      } else if (!fresh && !isSide) {
-        rememberSessionModel(set, liveKey, spec)
+        })
+        return true
       }
-      recordModelUse(model)
-      return true
+      pendingModelSelections.delete(liveKey)
+      return await apply(liveKey)
     } catch (error) {
       bindSet(set, get, owner)({ error: messageOf(error) })
       return false
@@ -4962,7 +5001,9 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       sessionKey: key || undefined,
       rememberDefaults: !isSide
     })
-    if (changed) get().showToast(`Model: ${next.name || next.id}`)
+    if (changed && !pendingModelSelections.get(threadKey(key))?.duringStartup) {
+      get().showToast(`Model: ${next.name || next.id}`)
+    }
   },
 
   async cycleThinkingLevel(direction = 1, sessionKey) {
