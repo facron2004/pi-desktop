@@ -11,6 +11,9 @@
   },
   "license": "MIT",
   "private": true,
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "scripts": {
     "dev": "node scripts/build-lock.mjs dev",
     "dev:desktop": "node scripts/build-lock.mjs dev:desktop",
