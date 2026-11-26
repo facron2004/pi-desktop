@@ -35,6 +35,8 @@ export const ThreadSelectionBar = memo(function ThreadSelectionBar({
 }) {
   const t = useT()
   const [target, setTarget] = useState<SelectionTarget | null>(null)
+  const targetRef = useRef<SelectionTarget | null>(null)
+  targetRef.current = target
   const barRef = useRef<HTMLDivElement>(null)
 
   const readSelection = useCallback(() => {
@@ -117,7 +119,13 @@ export const ThreadSelectionBar = memo(function ThreadSelectionBar({
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setTarget(null)
+      if (event.key !== 'Escape') return
+      // Only consume the key while the bar is actually on screen: with no
+      // selection the reader is pressing Escape for something else, and the
+      // composer stops a run on any Escape that nobody has marked as handled.
+      if (!targetRef.current) return
+      event.preventDefault()
+      setTarget(null)
     }
 
     const onScroll = () => setTarget(null)

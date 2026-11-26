@@ -430,7 +430,11 @@ export const Sidebar = memo(function Sidebar({
     if (!updateTipAnchor) return
     const clear = () => setUpdateTipAnchor(null)
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') clear()
+      if (event.key !== 'Escape') return
+      // Escape closes the topmost thing first: while this tip is up it is the
+      // tip, not the agent's run.
+      event.preventDefault()
+      clear()
     }
     const onVisibility = () => {
       if (document.hidden) clear()
@@ -1719,6 +1723,10 @@ export const Sidebar = memo(function Sidebar({
                                   setRenamingProjectId(null)
                                   if (projectId) requestAnimationFrame(() => projectRowRefs.current.get(projectId)?.focus())
                                 } else if (e.key === 'Escape') {
+                                  // This field owns Escape while it is open: the
+                                  // composer's window handler stops a run on any
+                                  // Escape that nobody has marked as handled.
+                                  e.preventDefault()
                                   setRenamingProjectId(null)
                                   if (projectId) requestAnimationFrame(() => projectRowRefs.current.get(projectId)?.focus())
                                 }

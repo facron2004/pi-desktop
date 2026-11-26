@@ -246,7 +246,11 @@ export function useHoverTip<T>(): {
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') dismiss()
+      if (event.key !== 'Escape') return
+      // The card is the topmost thing while it is up, so it consumes the key:
+      // an unmarked Escape would reach the composer and stop a running agent.
+      event.preventDefault()
+      dismiss()
     }
 
     const onWindowBlur = () => {

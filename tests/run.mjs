@@ -189,7 +189,8 @@ const suites = [
   'tab-focus.test.ts',
   'task-rail.test.ts',
   'list-keys.test.ts',
-  'row-nav.test.ts'
+  'row-nav.test.ts',
+  'escape-ownership.test.ts'
 ]
 const debug = process.argv.includes('--debug')
 // `node tests/run.mjs --only=tray` runs one suite while debugging it, with the

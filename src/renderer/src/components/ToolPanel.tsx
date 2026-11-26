@@ -199,7 +199,11 @@ export const ToolPanel = memo(function ToolPanel({
       if (!target.closest('.tool-tab-menu')) close()
     }
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') close()
+      if (event.key !== 'Escape') return
+      // The menu is the topmost thing while it is open, so it consumes Escape;
+      // otherwise the composer's window handler would stop the running agent.
+      event.preventDefault()
+      close()
     }
     document.addEventListener('pointerdown', onPointerDown)
     document.addEventListener('keydown', onKeyDown)
