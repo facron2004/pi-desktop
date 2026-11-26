@@ -351,6 +351,12 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     !document.getElementById('conversation-search-dialog'),
     'The conversation search dialog did not close'
   )
+  // Closing from the button that opened it must hand the keyboard back; a raw
+  // state toggle leaves focus on <body> and the next Tab starts over.
+  await until(
+    () => document.activeElement === searchToggle,
+    'Closing the conversation search left the keyboard on the page'
+  )
   passed.push('every control is named and every ARIA reference resolves')
 
   // The OS font registry can point at nothing even when the emoji file exists;

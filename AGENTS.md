@@ -519,6 +519,19 @@ element, because a React handler never sees a window-level synthetic key.
 `tests/ui-regressions.mjs` computes the launcher hint's rendered colours against
 its row and fails below 4.5:1.
 
+**Closing from the button that opened a layer hands the keyboard back.** The
+search button toggled `searchOpen` directly and reset the query, so closing from
+it unmounted a focused dialog and left focus on `<body>`: the next Tab started
+from the top of the page. The click now routes through `closeSearch(true)` when
+the dialog is open, which restores the trigger (and `useDialogFocus` also
+captures the opener), while the paths that navigate — opening a hit, switching
+project — still call `closeSearch()` and keep their own focus target.
+`output/audit/check-focus-return.mjs` measures every layer (search by Escape and
+by its toggle, launcher, Settings, session tree, shortcut list, scheduled page)
+and all of them now end on the control that opened them; the toggle path was the
+only one on `<body>`. The UI suite closes the search from its own button and
+requires the trigger to hold focus again.
+
 The app's name is a **drawing, not text**. `PiWordmark`
 (`components/PiWordmark.tsx`) fills "Pi Desktop" one pixel at a time on a
 5-column cell, so it reads like a terminal (TUI) font: no pixel font ships with

@@ -1328,7 +1328,13 @@ export const Sidebar = memo(function Sidebar({
             // absent id is a dangling ARIA relation, so it goes with the dialog.
             aria-controls={searchOpen ? 'conversation-search-dialog' : undefined}
             onClick={() => {
-              setSearchOpen((open) => !open)
+              // Closing has to hand the keyboard back: the dialog takes focus
+              // when it opens, so a raw toggle would leave the reader on <body>.
+              if (searchOpen) {
+                closeSearch(true)
+                return
+              }
+              setSearchOpen(true)
               setQuery('')
             }}
           >
