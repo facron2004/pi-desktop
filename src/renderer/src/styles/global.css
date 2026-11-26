@@ -9827,6 +9827,9 @@ button:focus-visible,
   overflow-y: hidden;
   scrollbar-width: none;
   overscroll-behavior-x: contain;
+  /* The `+` is pinned to this strip's right edge; scrollIntoView honours this
+     padding, so the active tab lands beside the button instead of under it. */
+  scroll-padding-right: calc(var(--toolpanel-tab-h) + var(--sp-1));
 }
 
 .tool-panel__tab-scroll::-webkit-scrollbar {
@@ -9936,7 +9939,9 @@ button:focus-visible,
 }
 
 /* The new-tab button shares the icon-button size and rhythm of the strip's
-   corner controls. */
+   corner controls. It lives inside the scrolling strip, which hides its
+   scrollbar: pinned to the right edge, the one control that opens a page
+   cannot scroll away from the strip it is the door to. */
 .tool-panel__new-tab,
 .tool-panel__all-tabs,
 .tool-panel__action {
@@ -9948,6 +9953,13 @@ button:focus-visible,
   border-radius: var(--r-sm);
   color: var(--text-secondary);
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.tool-panel__new-tab {
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  background: var(--surface-chrome);
 }
 
 .tool-panel__new-tab:hover:not(:disabled),

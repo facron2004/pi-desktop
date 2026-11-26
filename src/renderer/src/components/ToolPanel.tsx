@@ -150,6 +150,10 @@ export const ToolPanel = memo(function ToolPanel({
     // (none), so folding the panel on "File changes" and reopening it from the
     // corner toggle produced an empty drawer.
     if (view === 'start') {
+      // A blank page that is already in front is the start page: `+` adds one
+      // and selects it, and re-selecting the *first* blank tab here made the
+      // press look like it did nothing once a blank tab existed.
+      if (tabs.find((tab) => tab.id === active)?.view === null) return
       const startTab = tabs.find((tab) => tab.view === null)
       if (startTab) {
         setActive((current) => (current === startTab.id ? current : startTab.id))
@@ -167,7 +171,7 @@ export const ToolPanel = memo(function ToolPanel({
     }
     setTabs((current) => [...current, { id: view, view }])
     setActive(view)
-  }, [tabs, view])
+  }, [tabs, view, active])
 
   // Fixed widths are the point: a tab must not grow because its file name is
   // long. Once the strip cannot hold them all, it scrolls and the all-tabs

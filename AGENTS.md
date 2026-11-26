@@ -1474,6 +1474,20 @@ move the reader's keyboard. A terminal's *active* tab is the one exception:
 closing it brings the next shell forward and that pane focuses itself, which is
 where the reader was working.
 
+**The page strip keeps the page it just opened in view.** The strip scrolls
+sideways and hides its scrollbar, so a page tab opened past its right edge used
+to be off-screen while the body below switched to it, and the `+` inside the
+same scroller went with it. The selected page follows into view whenever the
+active tab changes (the same `scrollIntoView` the terminal strip uses), the `+`
+is pinned to the strip's right edge, and the strip carries
+`scroll-padding-right` for the pinned button's width so the active tab lands
+beside it. `+` also selects the tab it adds: the effect that syncs App's view
+back onto a tab used to re-select the *first* blank page, so once a blank tab
+existed the press created a tab and then snapped the highlight back to an older
+one — the page looked inert. `tests/ui-regressions.mjs` opens pages past the
+edge, checks the newest page is the selected one, and measures all three
+rectangles; `output/audit/check-panel-tabs.mjs` prints them.
+
 **A maximized panel makes the conversation behind it inert.** `ToolPanel` reports
 its maximize state through `onMaximizedChange`; `App` sets `inert` and
 `aria-hidden` on `.main__body` and on the task rail, so Tab and clicks cannot

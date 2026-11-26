@@ -3388,6 +3388,40 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     landedTab === tabButtonsAfter[Math.min(backgroundIndex, tabButtonsAfter.length - 1)],
     'The keyboard did not land on the page tab that took the closed one\'s place'
   )
+  // The page strip hides its scrollbar too. Pages added past its edge must
+  // follow into view — the body switched — and the `+` must stay reachable.
+  for (let index = 0; index < 3; index += 1) {
+    document.querySelector('.tool-panel__tab-scroll .tool-panel__new-tab').click()
+    await pause(80)
+  }
+  await pause(200)
+  const pageStrip = document.querySelector('.tool-panel__tab-scroll')
+  const pageTabs = [...pageStrip.querySelectorAll('[role="tab"]')]
+  const activePage = pageStrip.querySelector('[role="tab"][aria-selected="true"]')
+  check(
+    activePage === pageTabs.at(-1),
+    'The new page tab was not selected: the active page snapped back to an older blank tab, so the + looked like it did nothing'
+  )
+  check(
+    pageStrip.scrollWidth > pageStrip.clientWidth + 1,
+    'The page strip did not overflow, so the visibility check proves nothing'
+  )
+  const pageStripBox = pageStrip.getBoundingClientRect()
+  const shownPage = activePage.getBoundingClientRect()
+  const pagePlus = pageStrip.querySelector('.tool-panel__new-tab').getBoundingClientRect()
+  check(
+    shownPage.left >= pageStripBox.left - 1 && shownPage.right <= pageStripBox.right + 1,
+    `The active page tab stayed scrolled out of its strip: ${JSON.stringify({ tab: shownPage.right, strip: pageStripBox.right })}`
+  )
+  check(
+    pagePlus.left >= pageStripBox.left - 1 && pagePlus.right <= pageStripBox.right + 1,
+    'The new-page button scrolled out of its strip'
+  )
+  check(
+    shownPage.right <= pagePlus.left + 1,
+    'The new-page button covers the active page tab instead of sitting beside it'
+  )
+  passed.push('the page strip selects the page just opened and keeps it in view')
   // Closing the last page removes every control in the panel and folds it; the
   // corner toggle is the door back in, so it takes the keyboard.
   for (let guard = 0; guard < 12 && visibleToolPanel(); guard += 1) {
@@ -3568,7 +3602,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 78 : 72)
+  assert.equal(passed.length, process.platform === 'win32' ? 79 : 73)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })
