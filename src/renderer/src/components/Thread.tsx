@@ -1084,7 +1084,13 @@ export const Thread = memo(function Thread() {
         onSelect={jumpToTurnTop}
       />
     ) : null}
-    <div className="thread" ref={scrollRef}>
+    <div
+      className="thread"
+      ref={scrollRef}
+      role="region"
+      aria-label={t('Conversation')}
+      tabIndex={0}
+    >
       {searchOpen ? (
         <div className="thread-search">
           <div className="thread-search__bar">

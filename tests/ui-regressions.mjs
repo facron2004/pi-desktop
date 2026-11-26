@@ -621,6 +621,16 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
       'Replayed thinking lost a fragment')
     passed.push('one folded thinking row keeps readable content through live tool calls and replay')
 
+  // The transcript is a scroll region a keyboard reader can enter: Tab reaches
+  // it before its rows, and PageDown then scrolls the conversation.
+  const threadRegion = document.querySelector('.main__body .thread')
+  check(threadRegion, 'The conversation did not render a transcript region')
+  check(threadRegion.getAttribute('role') === 'region', 'The transcript is not a labelled region')
+  check(threadRegion.tabIndex === 0, 'The transcript cannot take keyboard focus for scrolling')
+  threadRegion.focus()
+  await until(() => document.activeElement === threadRegion, 'The transcript did not take focus')
+  passed.push('the transcript is a focusable scroll region')
+
     await store.getState().newChat()
     await store.getState().send(backgroundFixture.prompt, [])
     const liveCommand = await until(() => store.getState().items.find((item) =>
@@ -3067,7 +3077,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 63 : 58)
+  assert.equal(passed.length, process.platform === 'win32' ? 64 : 59)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

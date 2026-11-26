@@ -2023,6 +2023,13 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   overflow-anchor: auto;
 }
 
+/* The transcript is a scroll region the reader can enter with Tab; its ring
+   sits inside the container so a clipped edge cannot cut the cue off. */
+.thread:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 /* ------------------------------------------------------------------ *
  * In-conversation search
  * ------------------------------------------------------------------ */

@@ -249,6 +249,12 @@ every update; expanding a tool body must not move the reader's viewport.
 Per-conversation tool/file/process/history expansion lives in
 `lib/view-state.ts`, not in component-local state.
 
+**The transcript is a focusable scroll region.** `.thread` carries
+`role="region"`, `aria-label="Conversation"` and `tabIndex={0}`: Tab reaches it
+before its rows, and PageUp/PageDown/Home/End then scroll the reading surface
+without a pointer. Its focus ring is drawn inside the container
+(`outline-offset: -2px`) so the scroll edge cannot clip the cue.
+
 **The left-edge turn rail is one keyboard column.** Its ticks carry
 `data-rail-marker`: Up/Down walk them and Home/End jump to the ends; each tick
 is a button, so Enter jumps to that turn. The rail is covered by the maximized
