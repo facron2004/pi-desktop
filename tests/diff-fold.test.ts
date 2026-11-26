@@ -96,9 +96,10 @@ test('DiffView/ReviewView gap toggling, BrowserView listener re-attach, ToolPane
   assert.match(diffView, /if \(expandAll\) \{[\s\S]*?next\.delete\(key\)[\s\S]*?\} else \{[\s\S]*?next\.add\(key\)/)
   // A diff's line links are one keyboard column: the first line of a block takes
   // the Tab stop, the arrows walk the rest, and the roving stop follows. A stop
-  // per line made an 80-line edit cost 160 presses of Tab (measured).
-  assert.match(diffView, /data-diff-line=""/)
-  assert.match(diffView, /tabIndex=\{first \? 0 : -1\}/)
+  // per line made an 80-line edit cost 160 presses of Tab (measured), and a
+  // split row with two stops made Down move twice per row.
+  assert.match(diffView, /data-diff-line=\{keyboard \? '' : undefined\}/)
+  assert.match(diffView, /tabIndex=\{keyboard && first \? 0 : -1\}/)
   assert.match(diffView, /rowIndexAfterKey\(event\.key, index, handles\.length\)/)
   assert.match(diffView, /current\.tabIndex = -1/)
   assert.match(diffView, /target\.tabIndex = 0/)

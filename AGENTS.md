@@ -184,8 +184,12 @@ every line number is a link to the file. A Tab stop on each of them made an
 arrow keys do nothing). Only the first line of each block is in the Tab order;
 Up/Down/Home/End walk that block through `lib/row-nav.ts`, Enter or Space still
 opens the file, and the roving stop moves on the DOM node so a stream update does
-not reset the reader's place. The same audit now reads one tabbable gutter and
-`arrowMoved: true`.
+not reset the reader's place. In split mode a row shows two line numbers, and
+only the **new** side belongs to the column — the old side is click-only, because
+the line it names no longer exists — so Down moves one row at a time instead of
+stopping twice per row. The same audit now reads one tabbable gutter,
+`arrowMoved: true`, and a split step that lands on the next row (`arrowSameRow:
+false`).
 
 A row in the stream is a link, not a card, so it carries no surface of its
 own: the pointer must not paint a gray band across the column. The hover

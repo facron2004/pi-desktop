@@ -348,20 +348,23 @@ export const DiffView = memo(function DiffView({
 
   // A line number becomes a link to the file itself, so a diff can be
   // followed into the code around it. `stops` is the block's roving Tab stop:
-  // only the first line it renders takes it.
-  const gutter = (line: number | null | undefined, stops?: { first: boolean }) => {
+  // only the first line whose gutter belongs to the column takes it. `null`
+  // marks a gutter the column does not visit — the old side of a split row is
+  // click-only, because the new side is the line that still exists.
+  const gutter = (line: number | null | undefined, stops?: { first: boolean } | null) => {
     if (!onOpenLine || line === null || line === undefined) {
       return <span className="diff__gutter">{line ?? ''}</span>
     }
+    const keyboard = stops !== null
     const first = stops?.first ?? false
     if (stops) stops.first = false
     return (
       <button
         className="diff__gutter diff__gutter--link"
-        data-diff-line=""
-        tabIndex={first ? 0 : -1}
+        data-diff-line={keyboard ? '' : undefined}
+        tabIndex={keyboard && first ? 0 : -1}
         onClick={() => onOpenLine(line)}
-        onKeyDown={walkDiffGutters}
+        onKeyDown={keyboard ? walkDiffGutters : undefined}
         title={`${t('Open the file at line')} ${line}`}
         aria-label={`${t('Open the file at line')} ${line}`}
       >
@@ -513,7 +516,7 @@ export const DiffView = memo(function DiffView({
                   ) : (
                     <div className="diff__split" key={`${row.left?.line}-${row.right?.line}`}>
                       <div className="diff__side" data-kind={row.left?.kind ?? 'empty'}>
-                        {gutter(row.left?.line, stops)}
+                        {gutter(row.left?.line, row.right?.line === null || row.right?.line === undefined ? stops : null)}
                         <span className="diff__code">
                           {row.left ? (row.left.kind === 'del' ? '- ' : '  ') + row.left.text : ''}
                         </span>
