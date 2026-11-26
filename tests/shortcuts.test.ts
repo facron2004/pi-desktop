@@ -207,6 +207,17 @@ test('the app-wide chord guard keeps fields and exempts the composer', () => {
   // Opening a layer is allowed from a field; changing the view is not.
   assert.match(app, /!matches\('command-palette'\)/, 'the palette is blocked from a field')
   assert.match(app, /!matches\('open-settings'\)/, 'settings are blocked from a field')
+  // The terminal is a field for every other chord, but opening it puts the
+  // keyboard in the shell — its own toggle has to bring it back out.
+  assert.match(
+    app,
+    /!matches\('toggle-terminal'\)/,
+    'the terminal chord is blocked while the terminal itself holds the keyboard'
+  )
+  // Closing the terminal from inside it removes the control that had focus;
+  // the panel's door takes the keyboard back instead of <body>.
+  assert.match(app, /requestAnimationFrame\(\(\) => panelToggleRef\.current\?\.focus\(\)\)/)
+  assert.match(app, /if \(changesOpen && panelView === 'terminal'\) \{[\s\S]{0,160}?closeChanges\(\)/)
   // `Ctrl+F` is a view change too: a find box or a rename keeps it.
   assert.match(
     thread,

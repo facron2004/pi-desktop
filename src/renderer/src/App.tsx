@@ -498,6 +498,21 @@ export default function App() {
   const searchConversation = useCallback(() => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }))
   }, [])
+  const closeChanges = useCallback(() => {
+    // A close the reader aimed at (the panel's own X, Escape, its last page, the
+    // chord that opened it) removes the control that held the keyboard, and the
+    // next Tab then starts at the top of the app. The corner toggle is the
+    // panel's door in both directions, so focus comes back to it. A close driven
+    // from elsewhere — a conversation switch, a desk page — keeps the focus
+    // where the reader put it, and a floating panel is a dialog whose own hook
+    // already returns focus to the control that opened it.
+    const active = document.activeElement
+    const fromPanel = active instanceof HTMLElement && Boolean(active.closest('.tool-panel'))
+    setChangesOpen(false)
+    if (fromPanel && !inspectorOverlay) {
+      requestAnimationFrame(() => panelToggleRef.current?.focus())
+    }
+  }, [inspectorOverlay])
   /**
    * Open one tool of the side panel.
    *
@@ -534,11 +549,13 @@ export default function App() {
   const toggleSideChat = useCallback(() => {
     setDeskPage(null)
     if (changesOpen && !panelConcealed && panelView === 'side-chat') {
-      setChangesOpen(false)
+      // Closing from inside the side chat removes the control that held the
+      // keyboard: `closeChanges` hands it back to the panel's corner toggle.
+      closeChanges()
       return
     }
     openSideChat({ mode: 'open', focus: true })
-  }, [changesOpen, openSideChat, panelConcealed, panelView, setDeskPage])
+  }, [changesOpen, closeChanges, openSideChat, panelConcealed, panelView, setDeskPage])
   /**
    * One child's transcript, opened on the Subagents page of the side panel.
    * The title badge and the task rail share this door, so neither keeps a
@@ -561,12 +578,14 @@ export default function App() {
   const toggleTerminal = useCallback(() => {
     setDeskPage(null)
     if (changesOpen && panelView === 'terminal') {
-      setChangesOpen(false)
+      // Focus is in the shell, which is about to go: hand the keyboard back to
+      // the panel's corner toggle instead of dropping it on <body>.
+      closeChanges()
       return
     }
     setPanelView('terminal')
     setChangesOpen(true)
-  }, [changesOpen, panelView, setDeskPage])
+  }, [changesOpen, closeChanges, panelView, setDeskPage])
   const openGeneralSettings = useCallback(() => openSettings(), [openSettings])
   const toggleMarketplace = useCallback(
     () => setDeskPage(useAppStore.getState().deskPage === 'marketplace' ? null : 'marketplace'),
@@ -582,21 +601,6 @@ export default function App() {
   const closeShortcuts = useCallback(() => setShortcutsOpen(false), [])
   const closeSessionTree = useCallback(() => setSessionTreeOpen(false), [])
   const closeMcp = useCallback(() => setMcpOpen(false), [])
-  const closeChanges = useCallback(() => {
-    // A close the reader aimed at (the panel's own X, Escape, its last page)
-    // removes the control that held the keyboard, and the next Tab then starts
-    // at the top of the app. The corner toggle is the panel's door in both
-    // directions, so focus comes back to it. A close driven from elsewhere — a
-    // conversation switch, a desk page — keeps the focus where the reader put
-    // it, and a floating panel is a dialog whose own hook already returns focus
-    // to the control that opened it.
-    const active = document.activeElement
-    const fromPanel = active instanceof HTMLElement && Boolean(active.closest('.tool-panel'))
-    setChangesOpen(false)
-    if (fromPanel && !inspectorOverlay) {
-      requestAnimationFrame(() => panelToggleRef.current?.focus())
-    }
-  }, [inspectorOverlay])
   const handlePanelViewChange = useCallback((view: ToolPanelView) => {
     setPanelView(view)
     // The Files page keeps the open file while the reader visits
@@ -823,7 +827,11 @@ export default function App() {
         !matches('command-palette') &&
         !matches('open-settings') &&
         !matches('shortcut-list') &&
-        !matches('session-tree')
+        !matches('session-tree') &&
+        // The terminal is a field to every other chord, but its own toggle has
+        // to keep working from inside it: opening it moves the keyboard there,
+        // and without this the only way back out was the pointer.
+        !matches('toggle-terminal')
       ) return
       if (matches('new-chat')) {
         event.preventDefault()

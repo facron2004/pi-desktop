@@ -822,6 +822,16 @@ same kind of field: writing a scheduled task's prompt and pressing `Ctrl+N` used
 to leave the page for a new chat and drop the draft. The composer keeps its
 chords (`.composer__input` is the one textarea exempted), because there they are
 part of writing a prompt and the draft survives a focus move.
+The one other exception is the **terminal's own toggle**: opening the terminal
+moves the keyboard into the shell, so `isEditingField` is true there and
+`Ctrl+`` used to do nothing — the panel could be opened from the keyboard and
+only closed with the pointer. It is exempt like the layer chords, and closing the
+terminal (or the side chat) from its own chord goes through `closeChanges`, which
+hands focus back to the panel's corner toggle instead of letting it fall to
+`<body>` as the shell unmounts. `output/audit/check-terminal-focus.mjs` measures
+both: the chord inside the shell reports `closedFromInside: false` before the
+exemption and `true` after, with the keyboard on
+`.shell__panel-toggle__btn`.
 `Thread.tsx` uses the same predicate for `Ctrl+F` and for the `Alt+Up/Down`
 turn jumps: without it, pressing either in a rename field opened the
 conversation search or scrolled the reading surface away from the caret
