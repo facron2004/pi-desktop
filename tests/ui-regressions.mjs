@@ -3377,6 +3377,40 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   )
   passed.push('closing a tab keeps the keyboard in its strip, and closing the last page returns it to the panel toggle')
 
+  // The command palette is long — 21 app commands before any skill or extension
+  // adds one — and it only honoured Up/Down. Home/End jump, the page keys move
+  // by the rows the list shows, and the focus stays in the box.
+  const paletteInput = await until(
+    () => document.querySelector('.composer__input'),
+    'The composer input is missing'
+  )
+  paletteInput.focus()
+  setInputValue(paletteInput, '/')
+  const palette = await until(() => document.querySelector('.palette'), 'The command palette did not open')
+  const paletteOptions = () => [...palette.querySelectorAll('[role="option"]')]
+  const activePalette = () => palette.querySelector('[role="option"][data-active="true"]')
+  const pressInBox = (key) =>
+    paletteInput.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
+  check(paletteOptions().length > 4, 'The palette has too few commands to walk')
+  pressInBox('End')
+  await until(() => activePalette() === paletteOptions().at(-1), 'End did not reach the last command')
+  check(
+    document.activeElement === paletteInput,
+    'Walking the palette took the focus out of the input box'
+  )
+  pressInBox('Home')
+  await until(() => activePalette() === paletteOptions()[0], 'Home did not return to the first command')
+  pressInBox('PageDown')
+  await until(() => activePalette() !== paletteOptions()[0], 'PageDown did not move down a page')
+  pressInBox('PageUp')
+  await until(() => activePalette() === paletteOptions()[0], 'PageUp did not come back a page')
+  pressInBox('ArrowUp')
+  await until(() => activePalette() === paletteOptions().at(-1), 'ArrowUp did not wrap to the last command')
+  pressInBox('Escape')
+  await until(() => !document.querySelector('.palette'), 'Escape did not close the palette')
+  setInputValue(paletteInput, '')
+  passed.push('the command palette walks with Home, End and the page keys')
+
   return passed
 }
 
@@ -3407,7 +3441,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 75 : 69)
+  assert.equal(passed.length, process.platform === 'win32' ? 76 : 70)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

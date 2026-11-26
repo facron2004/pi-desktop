@@ -674,6 +674,14 @@ and `session-bar__stop` remains available under the box. Both stop controls call
 Acceptance clears the draft that was submitted if it still matches the editor,
 so an edit made while waiting survives.
 
+**Both lists in the box are one keyboard walk.** The command palette and the
+`@` file list take Up/Down (wrapping), Home/End and PageUp/PageDown; the page
+step is read from the list that is open (`listPageSize`), so a short window
+moves fewer rows than a tall one. The keys are only claimed while a list is up:
+with no list, Home/End move the caret and PageUp/PageDown scroll the draft.
+`lib/list-keys.ts` decides the move, `tests/list-keys.test.ts` pins it, and
+`tests/ui-regressions.mjs` walks the real palette to its ends.
+
 **A queued prompt can be taken back without stopping the run.** The rows above
 the box are Pi's queue, and the first one carries two 20px controls: recall
 (`clearQueue(true)`, the prompts go back into the editor) and discard

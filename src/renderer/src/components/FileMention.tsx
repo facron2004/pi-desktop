@@ -40,7 +40,7 @@ export function FileMention({
       {files.length === 0 ? (
         <div className="mention__empty">{t('No file matches that name.')}</div>
       ) : (
-        <div className="mention__list" ref={listRef}>
+        <div className="mention__list" ref={listRef} data-list-rows>
           {files.map((file, index) => {
             const relative = relativePath(root ?? '', file.path)
             const folder = relative

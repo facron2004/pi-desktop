@@ -63,7 +63,7 @@ export function CommandPalette({
           )}
         </div>
       ) : (
-        <div className="palette__list">
+        <div className="palette__list" data-list-rows>
           {commands.map((command, index) => {
             const meta = COMMAND_SOURCE[command.source] ?? COMMAND_SOURCE.extension
             const Icon = commandIcon(command)

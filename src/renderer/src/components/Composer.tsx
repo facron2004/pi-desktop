@@ -56,6 +56,7 @@ import {
   imageRatioLabel
 } from '../lib/image-options'
 import { filterCommands } from '../lib/commands'
+import { listPageSize, listSelectionAfter } from '../lib/list-keys'
 import { relativePath } from '../lib/path'
 import { useT } from '../lib/i18n'
 import { CommandPalette } from './CommandPalette'
@@ -1146,6 +1147,10 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
       event.preventDefault()
       return
     }
+    // Both lists scroll, so the page step is read from the list that is open:
+    // Home/End and PageUp/PageDown move through it, Up/Down keep wrapping.
+    const listRows = (id: string) =>
+      document.getElementById(id)?.querySelector<HTMLElement>('[data-list-rows]') ?? null
     // The file list comes first: an `@` in the text means the user is
     // pointing at a file, not at a command.
     if (mention) {
@@ -1155,14 +1160,15 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
         return
       }
       if (mentionFiles.length > 0) {
-        if (event.key === 'ArrowDown') {
+        const moved = listSelectionAfter(
+          event.key,
+          mentionIndex,
+          mentionFiles.length,
+          listPageSize(listRows(mentionListId))
+        )
+        if (moved !== undefined) {
           event.preventDefault()
-          setMentionIndex((index) => (index + 1) % mentionFiles.length)
-          return
-        }
-        if (event.key === 'ArrowUp') {
-          event.preventDefault()
-          setMentionIndex((index) => (index - 1 + mentionFiles.length) % mentionFiles.length)
+          setMentionIndex(moved)
           return
         }
         if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
@@ -1174,14 +1180,15 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
     }
 
     if (slash && matching.length > 0) {
-      if (event.key === 'ArrowDown') {
+      const moved = listSelectionAfter(
+        event.key,
+        paletteIndex,
+        matching.length,
+        listPageSize(listRows(commandListId))
+      )
+      if (moved !== undefined) {
         event.preventDefault()
-        setPaletteIndex((index) => (index + 1) % matching.length)
-        return
-      }
-      if (event.key === 'ArrowUp') {
-        event.preventDefault()
-        setPaletteIndex((index) => (index - 1 + matching.length) % matching.length)
+        setPaletteIndex(moved)
         return
       }
       if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
