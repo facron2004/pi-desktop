@@ -6673,6 +6673,19 @@ animation: fade var(--dur-fast) var(--ease);
   line-height: var(--leading-small);
 }
 
+/* Present in the accessibility tree, absent from the grid. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* The label a search result named: the page opens at it and it flashes once,
    so the reader's eye lands on the row instead of scanning the whole page. */
 .settings-hit {

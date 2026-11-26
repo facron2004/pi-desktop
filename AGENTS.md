@@ -691,8 +691,9 @@ stayed English in the Chinese interface while `Conversation deleted` did not.
 `tests/i18n.test.ts` pins the placeholder templates.
 
 **A toast that names a file carries `openPath`, and the card offers Open.** The
-Markdown export, and the HTML export whose viewer failed, put the destination on
-the toast; the action calls `shell.openPath` and closes on success. A failure
+Markdown export and both HTML export outcomes put the destination on the toast;
+the action calls `shell.openPath` and closes on success. Its accessible label is
+"Open the exported file" — the visible text stays the short "Open". A failure
 from that retry replaces the toast with the translated "Could not open the
 exported file" line. The path comes from the save dialog, not from the reader's
 text, so the action cannot be used to launch an arbitrary string.
@@ -2061,6 +2062,11 @@ placeholder. The field is also sticky at the top of that scroll — it is the wa
 back to any page, so it must not scroll away with the list. Both are measured
 by resizing the modal in `tests/ui-regressions.mjs`, and
 `output/audit/check-min-window.mjs` captures the whole window at 880×572.
+
+The filtered list writes `{count} settings found` into a `.sr-only` live region:
+the count changes on every keystroke, and a screen-reader user has no other way
+to hear it. The no-results row is its own `role="status"` and is not duplicated
+into the live region.
 
 ## Jumping to a search hit
 

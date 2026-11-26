@@ -3057,7 +3057,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         get().showToast(`${saved}. ${reason}`, 'warning', undefined, result.path)
         return
       }
-      get().showToast(saved)
+      get().showToast(saved, 'info', undefined, result.path)
     } catch (error) {
       bindSet(set, get, owner)({ error: messageOf(error) })
     }

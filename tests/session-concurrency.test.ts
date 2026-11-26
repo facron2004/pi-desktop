@@ -859,6 +859,21 @@ test('session export reports a saved file and a viewer failure separately from c
   assert.equal(useAppStore.getState().toast?.openPath, 'C:/exports/conversation.html')
 })
 
+test('a saved HTML export keeps the destination for the toast action', async (t) => {
+  const owner = 'export-success.jsonl'
+  await useAppStore.getState().selectSession(session(owner))
+  await tick()
+  useAppStore.getState().clearToast()
+  t.mock.method(bridge.sessions, 'exportHtml', async (key): Promise<SessionExportResult> => {
+    assert.equal(key, owner)
+    return { cancelled: false, path: 'C:/exports/conversation.html' }
+  })
+  await useAppStore.getState().exportSession()
+  assert.equal(useAppStore.getState().toast?.text, 'Exported conversation.html')
+  assert.equal(useAppStore.getState().toast?.level, 'info')
+  assert.equal(useAppStore.getState().toast?.openPath, 'C:/exports/conversation.html')
+})
+
 test('exporting Markdown writes the transcript on screen without starting Pi', async () => {
   await useAppStore.getState().newChat()
   const owner = useAppStore.getState().draftId!

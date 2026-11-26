@@ -358,6 +358,11 @@ export function SettingsDialog({
             {pageResults.length === 0 ? (
               <div className="settings-nav__empty" role="status">{t('No settings found')}</div>
             ) : null}
+            {pageQuery.trim() && pageResults.length > 0 ? (
+              <span className="sr-only" role="status" aria-live="polite">
+                {t('{count} settings found').replace('{count}', String(pageResults.length))}
+              </span>
+            ) : null}
           </nav>
 
           <div className="settings-content" ref={contentRef}>

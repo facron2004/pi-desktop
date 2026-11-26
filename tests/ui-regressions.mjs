@@ -1231,6 +1231,10 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   const settingHit = document.querySelector('.settings-nav > button')
   check(settingHit.textContent.includes('Agent and conversation'), 'The setting search did not find its page')
   check(settingHit.textContent.includes('Auto-generate title'), 'The search result does not name the setting it matched')
+  check(
+    document.querySelector('.settings-nav .sr-only')?.textContent?.includes('1'),
+    'The settings search did not announce its result count'
+  )
   // ArrowDown walks from the field into the results; ArrowUp returns.
   settingsSearch.focus()
   settingsSearch.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
@@ -2944,6 +2948,10 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     'An exported-file toast has no Open action'
   )
   check(openAction, 'An exported-file toast has no Open action')
+  check(
+    openAction.getAttribute('aria-label') === 'Open the exported file',
+    'The Open action has no descriptive accessible label'
+  )
   store.getState().clearToast()
   passed.push('a file toast offers to open what it names')
 

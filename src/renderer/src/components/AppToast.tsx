@@ -81,7 +81,12 @@ export function AppToast() {
           <span className="app-toast__text">{t(toast.text)}</span>
         )}
         {openFile ? (
-          <button type="button" className="app-toast__action" onClick={openFile}>
+          <button
+            type="button"
+            className="app-toast__action"
+            onClick={openFile}
+            aria-label={t('Open the exported file')}
+          >
             {t('Open')}
           </button>
         ) : null}
