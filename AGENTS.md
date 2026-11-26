@@ -768,6 +768,19 @@ conversation the main view happens to show. The actions live on the first row
 rather than in a header so the queued block keeps its own height; do not put
 them in the flow of every row, where they would repeat for each prompt.
 
+**A draft belongs to its conversation, and only to it.** The composer's text and
+attachments are saved per conversation key, so switching away and back brings
+them back; `tests/ui-regressions.mjs` types a draft, switches conversations
+twice and fails if the box changes. A launch still starts a new chat by design
+(`bootstrap` reopens the project, not the conversation), so a draft stays with
+the conversation it was written in. Measured with
+`output/audit/check-draft-restart.mjs` (two launches, one profile): a first
+prompt typed in a new chat gets a Pi session file, but that empty session is not
+in the index, so on the next launch the text is still in localStorage under a
+key no row points at and the reader sees an empty new chat. Closing that gap
+means deciding whether a launch may reopen an unread draft — a product
+decision, not another keyboard guard.
+
 If a draft snapshot exceeds browser storage quota, drop sent-prompt history
 before removing any unsent images. If the images still exceed the quota,
 retry with still-attached images from the last saved snapshot before falling

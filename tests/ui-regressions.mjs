@@ -2625,6 +2625,7 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   store.setState({ queue: queueBefore })
   passed.push('queued prompts can be taken back or discarded without stopping the run')
 
+
   // A sidebar row explains itself in a card, not in the native tooltip: the
   // card carries a label column and the details the row cannot show, and it
   // sits beside the row instead of covering it.
@@ -3642,6 +3643,45 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   typeIntoBox('')
   passed.push('the command palette walks with Home, End and the page keys, and Shift+Tab leaves the box')
 
+  // A draft belongs to its conversation, not to the window: switching away and
+  // back has to bring the text into the box again.
+  const draftTargets = store.getState().sessions
+    .filter((session) => session.messageCount > 0)
+    .slice(0, 2)
+  check(draftTargets.length === 2, 'Two conversations are needed for the draft switch check')
+  const openDraftBox = async (session) => {
+    await store.getState().selectSession(session)
+    return until(
+      () => document.querySelector('.composer__input'),
+      'The composer did not render after switching conversations'
+    )
+  }
+  const setDraft = (box, value) => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(box, value)
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+  }
+  const draftText = 'draft kept by its conversation'
+  const draftBox = await openDraftBox(draftTargets[0])
+  setDraft(draftBox, draftText)
+  await pause(250)
+  await openDraftBox(draftTargets[1])
+  await pause(250)
+  check(
+    document.querySelector('.composer__input')?.value !== draftText,
+    'The draft followed the reader into another conversation'
+  )
+  await openDraftBox(draftTargets[0])
+  const restoredDraftBox = await until(
+    () => {
+      const box = document.querySelector('.composer__input')
+      return box && box.value === draftText ? box : null
+    },
+    'The draft did not come back with its conversation'
+  )
+  setDraft(restoredDraftBox, '')
+  await pause(250)
+  passed.push('a draft belongs to its conversation and comes back with it')
+
   // The `@` list did not search at all when no project is open; the old line
   // blamed the file name anyway.
   const workspaceBeforeMention = store.getState().workspace
@@ -3712,7 +3752,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 82 : 76)
+  assert.equal(passed.length, process.platform === 'win32' ? 83 : 77)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })
