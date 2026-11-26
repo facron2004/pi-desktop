@@ -6553,6 +6553,78 @@ animation: fade var(--dur-fast) var(--ease);
   color: var(--accent);
 }
 
+/* The one field above the page list. It is a control inside `button`-styled
+   navigation, so it resets the row look the generic `.settings-nav button`
+   rule gave the clear control. */
+.settings-nav__search {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-3);
+  height: var(--ctl-sm);
+  margin-bottom: var(--sp-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-md);
+  background: var(--surface-sunken);
+  color: var(--text-faint);
+}
+
+.settings-nav__search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-small);
+  outline: none;
+}
+
+.settings-nav__search input::placeholder {
+  color: var(--text-faint);
+}
+
+.settings-nav__search button {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  margin-left: auto;
+  padding: 0;
+  border-radius: var(--r-xs);
+  color: var(--text-faint);
+  white-space: normal;
+}
+
+.settings-nav__search button:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.settings-nav__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.settings-nav__match {
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-nav__empty {
+  padding: var(--sp-3) var(--sp-4);
+  color: var(--text-faint);
+  font-size: var(--text-small);
+  line-height: var(--leading-small);
+}
+
 .settings-content {
   min-width: 0;
   min-height: 0;

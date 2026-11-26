@@ -1920,6 +1920,23 @@ exchange after a quick follow-up; an image-only request uses the first answer to
 title language. If the throwaway model call fails, a secret-redacted prompt title is used.
 Read races get one short retry, and every failure path logs at most one line.
 
+## Settings
+
+The dialog's page ids and English labels live in `lib/settings-pages.ts`; the
+dialog adds only the icons. The search field above the page list reads
+`lib/settings-search.ts`, a hand-written index of the settings readers look for,
+with the words they might type in either language. Do not mount the lazy pages
+to read their labels: opening all twelve would start provider, update and
+memory requests the reader never asked for. A result names the page and, when a
+setting is what matched, that setting's label. An empty query is the ordinary
+navigation, and a miss says so. Every page keeps at least two rows, and
+`tests/settings-search.test.ts` asserts every row points at a real page and has
+a Chinese reading.
+
+Escape in a modal clears a non-empty `type="search"` field before it closes the
+dialog: `useDialogFocus` listens in the capture phase, so the hook has to step
+aside for that field or the key never reaches it. The next Escape closes.
+
 ## Jumping to a search hit
 
 A conversation-search hit becomes a `pendingJump` in the store. The sidebar only

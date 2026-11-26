@@ -109,6 +109,16 @@ export function useDialogFocus<T extends HTMLElement>(
       if (event.isComposing || event.keyCode === 229 || topModalDialog() !== dialog) return
       if (event.key === 'Escape') {
         if (!closeOnEscape) return
+        // A search field clears before the dialog closes: the capture listener
+        // runs before any field handler, so without this exception the filter
+        // could never be cleared from the keyboard. The field clears itself on
+        // the same key, and the next Escape closes the dialog.
+        const active = document.activeElement
+        if (
+          active instanceof HTMLInputElement &&
+          active.type === 'search' &&
+          active.value.trim()
+        ) return
         // A popover opened from this dialog handles Escape before the dialog.
         if (dialog.querySelector('.popover-wrap [aria-expanded="true"]')) return
         if (dialog.querySelector('select:open')) {

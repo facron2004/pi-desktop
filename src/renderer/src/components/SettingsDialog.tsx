@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import type { PiCliUpgradeProgress } from '@shared/types'
 import {
   Archive,
@@ -10,6 +10,7 @@ import {
   Keyboard,
   MessageSquare,
   Palette,
+  Search,
   SlidersHorizontal,
   Smartphone,
   UserRound,
@@ -18,6 +19,9 @@ import {
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { useT } from '../lib/i18n'
 import { useAppStore } from '../store/useAppStore'
+import { searchSettings } from '../lib/settings-search'
+import type { SettingsPage } from '../lib/settings-pages'
+import { SETTINGS_PAGE_LABELS } from '../lib/settings-pages'
 import { FeatureLoading } from './FeatureLoading'
 import {
   checkForAppUpdates,
@@ -38,33 +42,21 @@ const ModelsSettings = lazy(() => import('./models/ModelsSettings').then((m) => 
 const RemoteAccessSettings = lazy(() => import('./RemoteAccessSettings').then((m) => ({ default: m.RemoteAccessSettings })))
 const ImChannelSettings = lazy(() => import('./ImChannelSettings').then((m) => ({ default: m.ImChannelSettings })))
 
-export type SettingsPage =
-  | 'general'
-  | 'agent'
-  | 'models'
-  | 'appearance'
-  | 'usage'
-  | 'shortcuts'
-  | 'personalization'
-  | 'remote'
-  | 'im-channels'
-  | 'memory'
-  | 'archived'
-  | 'about'
+export type { SettingsPage } from '../lib/settings-pages'
 
 const PAGES = [
-  { id: 'general', label: 'General', Icon: SlidersHorizontal },
-  { id: 'agent', label: 'Agent and conversation', Icon: Bot },
-  { id: 'models', label: 'Model management', Icon: Cpu },
-  { id: 'appearance', label: 'Appearance', Icon: Palette },
-  { id: 'usage', label: 'Usage', Icon: Gauge },
-  { id: 'shortcuts', label: 'Keyboard shortcuts', Icon: Keyboard },
-  { id: 'personalization', label: 'Personalization', Icon: UserRound },
-  { id: 'remote', label: 'Remote access', Icon: Smartphone },
-  { id: 'im-channels', label: 'IM channels', Icon: MessageSquare },
-  { id: 'memory', label: 'Memory', Icon: Brain },
-  { id: 'archived', label: 'Archived conversations', Icon: Archive },
-  { id: 'about', label: 'About', Icon: Info }
+  { id: 'general', label: SETTINGS_PAGE_LABELS.general, Icon: SlidersHorizontal },
+  { id: 'agent', label: SETTINGS_PAGE_LABELS.agent, Icon: Bot },
+  { id: 'models', label: SETTINGS_PAGE_LABELS.models, Icon: Cpu },
+  { id: 'appearance', label: SETTINGS_PAGE_LABELS.appearance, Icon: Palette },
+  { id: 'usage', label: SETTINGS_PAGE_LABELS.usage, Icon: Gauge },
+  { id: 'shortcuts', label: SETTINGS_PAGE_LABELS.shortcuts, Icon: Keyboard },
+  { id: 'personalization', label: SETTINGS_PAGE_LABELS.personalization, Icon: UserRound },
+  { id: 'remote', label: SETTINGS_PAGE_LABELS.remote, Icon: Smartphone },
+  { id: 'im-channels', label: SETTINGS_PAGE_LABELS['im-channels'], Icon: MessageSquare },
+  { id: 'memory', label: SETTINGS_PAGE_LABELS.memory, Icon: Brain },
+  { id: 'archived', label: SETTINGS_PAGE_LABELS.archived, Icon: Archive },
+  { id: 'about', label: SETTINGS_PAGE_LABELS.about, Icon: Info }
 ] as const
 
 export function SettingsDialog({
@@ -85,6 +77,11 @@ export function SettingsDialog({
   useDialogFocus(dialogRef, onClose, { initialFocus: 'dialog' })
 
   const [page, setPage] = useState<SettingsPage>(initialPage)
+  const [pageQuery, setPageQuery] = useState('')
+  // The search reads the curated index in lib/settings-search.ts, never the
+  // lazy pages themselves: mounting all twelve to read their labels would
+  // start provider, update and memory requests the reader never asked for.
+  const pageResults = useMemo(() => searchSettings(PAGES, pageQuery, t), [pageQuery, t])
   const [customInstructions, setCustomInstructions] = useState(settings.customInstructions ?? '')
   const customInstructionsRef = useRef(customInstructions)
   customInstructionsRef.current = customInstructions
@@ -203,18 +200,61 @@ export function SettingsDialog({
 
         <div className="settings-layout">
           <nav className="settings-nav" aria-label={t('Settings sections')}>
-            {PAGES.map(({ id, label, Icon }) => (
-              <button
-                key={id}
-                type="button"
-                data-active={page === id}
-                aria-current={page === id ? 'page' : undefined}
-                onClick={() => setPage(id)}
-              >
-                <Icon size={15} />
-                <span>{t(label)}</span>
-              </button>
-            ))}
+            <label className="settings-nav__search">
+              <Search size={13} aria-hidden="true" />
+              <input
+                type="search"
+                value={pageQuery}
+                onChange={(event) => setPageQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Escape' || !pageQuery) return
+                  // The first Escape clears the field; the dialog's own Escape
+                  // only gets the next one.
+                  event.preventDefault()
+                  event.stopPropagation()
+                  setPageQuery('')
+                }}
+                placeholder={t('Search settings…')}
+                aria-label={t('Search settings')}
+                spellCheck={false}
+              />
+              {pageQuery ? (
+                <button
+                  type="button"
+                  onClick={() => setPageQuery('')}
+                  aria-label={t('Clear the search')}
+                  title={t('Clear the search')}
+                >
+                  <X size={12} />
+                </button>
+              ) : null}
+            </label>
+            {pageResults.map((result) => {
+              const target = PAGES.find((entry) => entry.id === result.page)
+              if (!target) return null
+              const Icon = target.Icon
+              return (
+                <button
+                  key={result.page}
+                  type="button"
+                  data-active={page === result.page}
+                  aria-current={page === result.page ? 'page' : undefined}
+                  onClick={() => {
+                    setPage(result.page)
+                    setPageQuery('')
+                  }}
+                >
+                  <Icon size={15} />
+                  <span className="settings-nav__text">
+                    <span>{result.label}</span>
+                    {result.match ? <span className="settings-nav__match">{result.match}</span> : null}
+                  </span>
+                </button>
+              )
+            })}
+            {pageResults.length === 0 ? (
+              <div className="settings-nav__empty" role="status">{t('No settings found')}</div>
+            ) : null}
           </nav>
 
           <div className="settings-content">

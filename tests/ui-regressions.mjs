@@ -1189,6 +1189,50 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   )
   passed.push('the File menu offers the Markdown export beside the HTML one')
 
+  // Settings has twelve pages; the search field finds a page by a setting's
+  // name and says which setting matched. Escape clears the field before it
+  // closes the dialog, so a typed filter is not the only way out.
+  const settingsButton = [...document.querySelectorAll('.sidebar__foot-btn')]
+    .find((node) => node.textContent?.trim() === 'Settings')
+  settingsButton?.click()
+  const settingsNav = await until(() => document.querySelector('.settings-nav'), 'The settings dialog did not open')
+  const settingsSearch = settingsNav.querySelector('.settings-nav__search input')
+  check(Boolean(settingsSearch), 'The settings navigation has no search field')
+  const setSettingsField = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+  setSettingsField.call(settingsSearch, 'auto-generate title')
+  settingsSearch.dispatchEvent(new Event('input', { bubbles: true }))
+  await until(
+    () => document.querySelectorAll('.settings-nav > button').length === 1,
+    'Searching a setting did not narrow the navigation'
+  )
+  const settingHit = document.querySelector('.settings-nav > button')
+  check(settingHit.textContent.includes('Agent and conversation'), 'The setting search did not find its page')
+  check(settingHit.textContent.includes('Auto-generate title'), 'The search result does not name the setting it matched')
+  settingHit.click()
+  await until(
+    () => document.querySelector('.settings-content')?.textContent?.includes('Auto-generate title'),
+    'Clicking a search result did not open the page'
+  )
+  check(settingsSearch.value === '', 'Choosing a result left the query behind')
+  settingsSearch.focus()
+  setSettingsField.call(settingsSearch, 'font')
+  settingsSearch.dispatchEvent(new Event('input', { bubbles: true }))
+  await until(
+    () => document.querySelectorAll('.settings-nav > button').length === 1,
+    'The second search did not narrow the navigation'
+  )
+  settingsSearch.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  await until(
+    () => settingsSearch.value === '' && Boolean(document.querySelector('.settings-nav')),
+    'Escape did not clear the field before closing the dialog'
+  )
+  settingsSearch.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  await until(
+    () => !document.querySelector('.settings-nav'),
+    'The second Escape did not close the settings dialog'
+  )
+  passed.push('settings search finds a page by a setting name, and Escape clears it first')
+
   window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }))
   const streamSearch = await until(() => document.querySelector('.thread-search input'), 'Conversation search did not open')
   const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
@@ -2649,7 +2693,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 50 : 46)
+  assert.equal(passed.length, process.platform === 'win32' ? 51 : 47)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

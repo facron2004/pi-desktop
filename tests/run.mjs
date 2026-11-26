@@ -44,6 +44,7 @@ const suites = [
   'locate.test.ts',
   'session-metrics.test.ts',
   'session-markdown.test.ts',
+  'settings-search.test.ts',
   'session-export.test.ts',
   'session-timing.test.ts',
   'generation-timing.test.ts',
