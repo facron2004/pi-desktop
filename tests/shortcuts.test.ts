@@ -1,5 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import {
   SHORTCUTS,
   activeChords,
@@ -177,4 +179,27 @@ test('entriesForDisplay reflects sendShortcut mode in Composing', () => {
 
   assert.deepEqual(send?.keys, ['Ctrl', 'Enter'])
   assert.deepEqual(newline?.keys, ['Enter'])
+})
+
+/**
+ * The window-level handler must not act on a view-changing chord while the
+ * reader is typing, and the composer is the one textarea that keeps them.
+ *
+ * Both sides matter: a guard that forgets the composer would take `Ctrl+N` away
+ * from the main input, and one that forgets the other fields drops a task
+ * prompt (measured: the page left and the draft vanished).
+ */
+test('the app-wide chord guard keeps fields and exempts the composer', () => {
+  const source = readFileSync(path.resolve(process.cwd(), 'src/renderer/src/App.tsx'), 'utf8')
+  assert.match(source, /active instanceof HTMLInputElement/, 'inputs no longer own the keyboard')
+  assert.match(source, /active instanceof HTMLSelectElement/, 'selects no longer own the keyboard')
+  assert.match(source, /active\.isContentEditable/, 'editable regions no longer own the keyboard')
+  assert.match(
+    source,
+    /active instanceof HTMLTextAreaElement && !active\.matches\('\.composer__input'\)/,
+    'a textarea is not treated as a field, or the composer lost its exemption'
+  )
+  // Opening a layer is allowed from a field; changing the view is not.
+  assert.match(source, /!matches\('command-palette'\)/, 'the palette is blocked from a field')
+  assert.match(source, /!matches\('open-settings'\)/, 'settings are blocked from a field')
 })

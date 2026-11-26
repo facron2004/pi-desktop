@@ -709,9 +709,11 @@ used to leave the page for a new chat and drop the draft. The composer keeps its
 chords (`.composer__input` is the one textarea exempted), because there they are
 part of writing a prompt. `tests/ui-regressions.mjs` renames a project and sends
 `Ctrl+N`, then writes a task prompt and sends it again, failing if the field or
-the page disappears or the conversation switches;
-`output/audit/check-shortcuts-in-fields.mjs` prints the draft id before and
-after both chords (identical now, a new draft before).
+the page disappears or the conversation switches; `tests/shortcuts.test.ts`
+asserts both sides of the guard (fields keep the chords, the composer does not).
+`output/audit/check-shortcuts-in-fields.mjs` prints the draft id around three
+presses — the rename field, the task prompt and the composer — so the blocked
+and the allowed sides are measured, not assumed.
 
 **Both lists in the box are one keyboard walk.** The command palette and the
 `@` file list take Up/Down (wrapping), Home/End and PageUp/PageDown; the page
