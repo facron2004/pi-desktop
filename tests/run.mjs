@@ -177,7 +177,15 @@ const suites = [
   'challenger-m1-c2.test.ts',
   'challenger-m1-v2-stress.test.ts',
   'challenger-m2-ux-lifecycle-stress.test.ts',
-  'session-supervisor-lru-stress.test.ts'
+  'session-supervisor-lru-stress.test.ts',
+  // The last four behind their own runners. Their runners each carried a
+  // smaller Electron mock than this one, and when `app.getAppPath` came into
+  // use they crashed before the first test — unnoticed, because nothing called
+  // them. They are `.test.ts` now, so `suite-registry` can see them too.
+  'adversarial-dialog-stress.test.ts',
+  'challenger.test.ts',
+  'challenger-r2.test.ts',
+  'challenger-r3-idle-guard.test.ts'
 ]
 const debug = process.argv.includes('--debug')
 // `node tests/run.mjs --only=tray` runs one suite while debugging it, with the
@@ -295,9 +303,3 @@ try {
 } finally {
   rmSync(out, { recursive: true, force: true })
 }
-
-
-
-
-
-

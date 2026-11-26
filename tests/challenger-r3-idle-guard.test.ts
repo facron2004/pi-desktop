@@ -195,8 +195,10 @@ test('CHALLENGER R3.2 - Test 2: Draft session rekey retains approval and survive
   const internalApprovals = (supervisor as unknown as { approvals: Set<string> }).approvals
   assert.equal(internalApprovals.has('draft:1'), true, 'Draft session has approval tracked')
 
-  // Rekey draft:1 to persisted file 'persisted.jsonl'
-  ;(supervisor as any).bindFile('draft:1', 'persisted.jsonl')
+  // Rekey draft:1 to persisted file 'persisted.jsonl'. The approval moves
+  // inside the binding chain, which only runs once the call is awaited.
+  await (supervisor as unknown as { bindFile(from: string, file: string): Promise<void> })
+    .bindFile('draft:1', 'persisted.jsonl')
   assert.equal(internalApprovals.has('persisted.jsonl'), true, 'Approval migrated to persisted file key')
 
   // Other session has dialog dlg-other

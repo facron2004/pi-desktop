@@ -41,3 +41,23 @@ test('every registered suite exists', () => {
   const stale = runnerSuites().filter((name) => !files.has(name))
   assert.deepEqual(stale, [], `tests/run.mjs lists suites that do not exist:\n  ${stale.join('\n  ')}`)
 })
+
+/**
+ * The scan above keys on the `.test.ts` name, which is also its blind spot: a
+ * suite named `foo-suite.ts` is invisible to it. Four were found that way
+ * (`challenger-suite.ts` and friends), each behind a private runner whose
+ * smaller Electron mock had broken without anyone noticing. A file that calls
+ * `node:test` is a suite whatever it is called, so it is held to the same rule.
+ */
+test('a file that calls node:test is registered, whatever it is named', () => {
+  const listed = new Set(runnerSuites())
+  const orphans = readdirSync(testsDir)
+    .filter((name) => /\.ts$/.test(name) && !/\.test\.ts$/.test(name) && !UNREGISTERED_BY_DESIGN.has(name))
+    .filter((name) => /\btest\(|\bdescribe\(|\bit\(/.test(readFileSync(path.join(testsDir, name), 'utf8')))
+    .filter((name) => !listed.has(name))
+  assert.deepEqual(
+    orphans,
+    [],
+    `test files that never run because tests/run.mjs does not list them (rename to *.test.ts and add them):\n  ${orphans.join('\n  ')}`
+  )
+})

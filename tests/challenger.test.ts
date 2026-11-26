@@ -1,15 +1,18 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import type {
   ExtensionUiRequest,
   ExtensionUiResponse,
   PiEvent,
   RuntimeStartOptions,
   RuntimeStatus
-} from '../src/shared/types'
+} from '@shared/types'
 import { SessionSupervisor, type ManagedSessionRuntime } from '../src/main/pi/supervisor'
-import { PiRuntime } from '../src/main/pi/runtime'
+import { PiRuntime, cleanupStaticExtensionCache } from '../src/main/pi/runtime'
 
 interface RecordedApproval {
   id: string
@@ -213,54 +216,100 @@ test('CHALLENGE 2.1: Rapid concurrent aborts auto-cancel pending dialog exactly 
   assert.equal(nextStarted, true)
 })
 
-test('CHALLENGE 2.2: Dialog arriving while abort is in flight is immediately auto-cancelled by PiRuntime', async () => {
-  const runtime = new PiRuntime()
-  const sentResponses: { id: string; response: ExtensionUiResponse }[] = []
-
-  const fakeClient = new EventEmitter() as any
-  fakeClient.running = true
-  fakeClient.pid = 999
-  fakeClient.stderrTail = []
-  fakeClient.respondUi = (id: string, response: ExtensionUiResponse) => {
-    sentResponses.push({ id, response })
-  }
-  fakeClient.request = async () => ({ ok: true })
-
-  ;(runtime as any).client = fakeClient
-  ;(runtime as any).status = { phase: 'ready' }
-  ;(runtime as any).pendingUiRequestId = 'dlg-existing'
-
-  // Attach listener that tests the logic in runtime.ts lines 225-231
-  fakeClient.on('event', (event: PiEvent) => {
-    if (event.type === 'extension_ui_request') {
-      const request = event as unknown as ExtensionUiRequest
-      if (['select', 'confirm', 'input', 'editor'].includes(request.method)) {
-        if ((runtime as any).aborting) {
-          fakeClient.respondUi(request.id, { confirmed: false, cancelled: true })
-          return
-        }
-        ;(runtime as any).pendingUiRequestId = request.id
-      }
-    }
+test('CHALLENGE 2.2: Dialog arriving while abort is in flight is immediately auto-cancelled by PiRuntime', async (t) => {
+  // This one drives the real `PiRuntime`, because the rule under test lives in
+  // its own `client.on('event')` listener, which only exists once a process
+  // has been started. An earlier version of this test attached a copy of that
+  // listener to a fake client instead, so it asserted its own stand-in and
+  // kept passing after the field it read (`pendingUiRequestId`) was replaced.
+  const tempDir = mkdtempSync(path.join(tmpdir(), 'pi-runtime-late-dialog-'))
+  let runtime: PiRuntime | undefined
+  // One hook, in one order: the child holds its working folder open, so the
+  // process has to be gone before the folder can be removed.
+  t.after(async () => {
+    await runtime?.stop()
+    await cleanupStaticExtensionCache()
+    rmSync(tempDir, { recursive: true, force: true })
   })
 
-  // Trigger abort
-  await runtime.request('abort')
-  assert.equal(sentResponses.length, 1)
-  assert.deepEqual(sentResponses[0], { id: 'dlg-existing', response: { confirmed: false, cancelled: true } })
+  // `abort` answers only after `release_abort` arrives, so a dialog emitted in
+  // between lands while the abort is genuinely in flight.
+  const fakePi = path.join(tempDir, 'fake-pi-late-dialog.cjs')
+  writeFileSync(fakePi, String.raw`
+const args = process.argv.slice(2);
+let permissionTitle = '';
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === '--extension' && args[i + 1] && args[i + 1].includes('pi-desktop-permissions-')) {
+    const src = require('node:fs').readFileSync(args[i + 1], 'utf8');
+    const m = src.match(/setStatus\("([^"]+)", 'ready'\)/);
+    if (m) permissionTitle = m[1];
+  }
+}
+process.stdout.write(JSON.stringify({ type: 'extension_ui_request', method: 'setStatus', statusKey: permissionTitle, statusText: 'ready' }) + '\n');
+process.stdout.write(JSON.stringify({ type: 'extension_ui_request', method: 'setStatus', statusKey: 'pi-desktop-mode', statusText: 'default' }) + '\n');
+const uiResponses = [];
+let releaseAbort;
+const aborted = new Promise((resolve) => { releaseAbort = resolve; });
+let buf = '';
+process.stdin.on('end', () => process.exit(0));
+process.stdin.on('data', (chunk) => {
+  buf += chunk;
+  let nl;
+  while ((nl = buf.indexOf('\n')) !== -1) {
+    const rec = JSON.parse(buf.slice(0, nl));
+    buf = buf.slice(nl + 1);
+    if (rec.type === 'extension_ui_response') {
+      uiResponses.push(rec);
+      continue;
+    }
+    if (rec.type === 'get_state') {
+      process.stdout.write(JSON.stringify({ type: 'response', id: rec.id, command: 'get_state', success: true, data: { sessionId: 'late-dialog', sessionFile: undefined } }) + '\n');
+    } else if (rec.type === 'abort') {
+      // Hold the answer so the dialog below is delivered mid-abort.
+      aborted.then(() => {
+        process.stdout.write(JSON.stringify({ type: 'response', id: rec.id, command: 'abort', success: true, data: {} }) + '\n');
+      });
+    } else if (rec.type === 'open_dialog') {
+      process.stdout.write(JSON.stringify({ type: 'extension_ui_request', id: 'dlg-existing', method: 'input', title: 'Waiting' }) + '\n');
+      process.stdout.write(JSON.stringify({ type: 'response', id: rec.id, command: 'open_dialog', success: true, data: {} }) + '\n');
+    } else if (rec.type === 'emit_late_dialog') {
+      process.stdout.write(JSON.stringify({ type: 'extension_ui_request', id: 'dlg-arrived-late', method: 'confirm', title: 'Late dialog' }) + '\n');
+      process.stdout.write(JSON.stringify({ type: 'response', id: rec.id, command: 'emit_late_dialog', success: true, data: {} }) + '\n');
+    } else if (rec.type === 'release_abort') {
+      releaseAbort();
+      process.stdout.write(JSON.stringify({ type: 'response', id: rec.id, command: 'release_abort', success: true, data: {} }) + '\n');
+    } else if (rec.type === 'get_ui_responses') {
+      process.stdout.write(JSON.stringify({ type: 'response', id: rec.id, command: 'get_ui_responses', success: true, data: uiResponses }) + '\n');
+    } else {
+      process.stdout.write(JSON.stringify({ type: 'response', id: rec.id, command: rec.type, success: true, data: {} }) + '\n');
+    }
+  }
+});
+`, 'utf8')
 
-  // Now a new dialog arrives while aborting flag is true
-  fakeClient.emit('event', {
-    type: 'extension_ui_request',
-    id: 'dlg-arrived-late',
-    method: 'confirm',
-    title: 'Late dialog'
-  } as PiEvent)
+  runtime = new PiRuntime({
+    getCustomPiPath: () => fakePi,
+    getTrustProject: () => false,
+    getPermissionMode: () => 'ask'
+  })
+  const started = await runtime.start({ cwd: tempDir })
+  assert.equal(started.ok, true, started.error)
 
-  // It should be auto-cancelled immediately and NOT set as pendingUiRequestId
-  assert.equal(runtime.hasPendingUi('dlg-arrived-late'), false)
-  assert.equal(sentResponses.length, 2)
-  assert.deepEqual(sentResponses[1], { id: 'dlg-arrived-late', response: { confirmed: false, cancelled: true } })
+  // A dialog is already waiting when the abort begins: it is cancelled at once.
+  await runtime.request('open_dialog')
+  assert.equal(runtime.hasPendingUi('dlg-existing'), true)
+
+  // The abort does not settle until the dialog below has been delivered.
+  const aborting = runtime.request('abort')
+  assert.equal(runtime.hasPendingUi('dlg-existing'), false, 'the waiting dialog is cancelled as soon as the abort begins')
+  await runtime.request('emit_late_dialog')
+  assert.equal(runtime.hasPendingUi('dlg-arrived-late'), false, 'a late dialog must not be left waiting')
+  assert.equal(runtime.hasAnyPendingUi(), false)
+  await runtime.request('release_abort')
+  await aborting
+
+  const received = await runtime.request<{ id: string }[]>('get_ui_responses')
+  assert.deepEqual(received.map((r) => r.id), ['dlg-existing', 'dlg-arrived-late'])
 })
 
 // -------------------------------------------------------------
@@ -376,8 +425,12 @@ test('CHALLENGE 4.1: Draft session rekey preserves dialog routing across file re
     sessionKey: 'draft:123'
   } as PiEvent)
 
-  // Draft becomes real session file C:/ws-rekey/real.jsonl
-  ;(supervisor as any).bindFile('draft:123', 'C:/ws-rekey/real.jsonl')
+  // Draft becomes real session file C:/ws-rekey/real.jsonl. `bindFile` is
+  // serialised through the runtime's binding chain, so the rename is only
+  // complete once it settles — the same way the supervisor's own callers
+  // await it.
+  await (supervisor as unknown as { bindFile(from: string, file: string): Promise<void> })
+    .bindFile('draft:123', 'C:/ws-rekey/real.jsonl')
 
   // User responds using either the new sessionKey real.jsonl or original draft:123
   supervisor.respondUi('C:/ws-rekey/real.jsonl', 'dlg-draft', { confirmed: true })
