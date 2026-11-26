@@ -3088,6 +3088,43 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   await until(() => !document.querySelector('.project-icon-picker'), 'Escape did not close the icon picker')
   passed.push('the project icon picker walks its emoji grid with the arrows')
 
+  // A single-line field keeps the keyboard for itself: the app-wide chords that
+  // change the view (Ctrl+N here) must not fire while a project is being
+  // renamed, or the typed name goes with them.
+  const projectActions = [...document.querySelectorAll('button')].find(
+    (node) => node.getAttribute('aria-label') === 'Project actions'
+  )
+  check(projectActions, 'The project row has no actions menu')
+  projectActions.click()
+  const renameItem = await until(
+    () => [...document.querySelectorAll('[role="menuitem"]')].find(
+      (node) => node.textContent?.trim() === 'Rename'
+    ),
+    'The project actions menu has no Rename item'
+  )
+  renameItem.click()
+  const renameField = await until(
+    () => document.querySelector('.project__rename-input'),
+    'The project rename field did not open'
+  )
+  renameField.focus()
+  const draftBeforeChord = store.getState().activeSessionFile ?? store.getState().draftId
+  renameField.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'n', ctrlKey: true, bubbles: true, cancelable: true })
+  )
+  await pause(250)
+  check(
+    document.querySelector('.project__rename-input') === renameField,
+    'An app-wide shortcut tore down the field that was being edited'
+  )
+  check(
+    (store.getState().activeSessionFile ?? store.getState().draftId) === draftBeforeChord,
+    'Ctrl+N started a new chat while a project name was being edited'
+  )
+  renameField.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+  await until(() => !document.querySelector('.project__rename-input'), 'Escape did not cancel the project rename')
+  passed.push('an app-wide shortcut stays out of a field being typed in')
+
   // Opening a conversation from search or a shortcut reveals its row: a folded
   // project opens and the column follows the selection.
   const activeBeforeReveal = store.getState().activeSessionFile ?? store.getState().draftId
@@ -3613,7 +3650,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 80 : 74)
+  assert.equal(passed.length, process.platform === 'win32' ? 81 : 75)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

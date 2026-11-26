@@ -696,6 +696,19 @@ hover card, the maximized panel and the floating panel at the minimum window,
 printing `defaultPrevented` (false before, true after, for each) plus where the
 keyboard lands after the drawer closes.
 
+**App-wide chords stay out of a single-line field.** The window handler in
+`App.tsx` only steps aside for a modal and the launcher; a project rename is
+neither, so `Ctrl+N` while renaming used to start a new chat and throw the typed
+name away. A focused `input`, `select` or contenteditable now keeps the chords
+that change the view (new chat, project `Ctrl+1…9`, sidebar, focus-composer,
+model and thinking cycling, side chat, terminal), while the chords that open a
+layer — palette, settings, shortcut list, session tree — still work, because
+opening a layer is not a view change. The composer is a textarea, so its own
+chords are untouched. `tests/ui-regressions.mjs` renames a project and sends
+`Ctrl+N`, failing if the field disappears or the conversation switches;
+`output/audit/check-shortcuts-in-fields.mjs` prints the draft id before and
+after (identical now, a new draft before).
+
 **Both lists in the box are one keyboard walk.** The command palette and the
 `@` file list take Up/Down (wrapping), Home/End and PageUp/PageDown; the page
 step is read from the list that is open (`listPageSize`), so a short window

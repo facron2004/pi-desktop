@@ -811,6 +811,27 @@ export default function App() {
       // The palette has the keyboard while it is open — only the chord that
       // closes it again stays alive.
       if (launcherOpen && !launcherToggle) return
+      // A single-line field owns the keyboard for shortcuts that change the
+      // view: `Ctrl+N` in a project rename used to start a new chat and throw
+      // the typed name away. Chords that open a layer (the palette, settings,
+      // the shortcut list, the session tree) still work, and the composer is a
+      // textarea, so its own chords are untouched.
+      const active = document.activeElement
+      const editing =
+        active instanceof HTMLElement &&
+        (active.isContentEditable ||
+          active instanceof HTMLSelectElement ||
+          (active instanceof HTMLInputElement &&
+            !['checkbox', 'radio', 'button', 'submit', 'reset', 'file', 'range', 'color'].includes(
+              active.type
+            )))
+      if (
+        editing &&
+        !matches('command-palette') &&
+        !matches('open-settings') &&
+        !matches('shortcut-list') &&
+        !matches('session-tree')
+      ) return
       if (matches('new-chat')) {
         event.preventDefault()
         void newChat()
