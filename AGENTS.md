@@ -498,6 +498,13 @@ list. The icon list and its keywords come from MCode's own picker
 find the same emoji in both apps. The tint is a token, never a literal: the
 component writes `data-icon-color` and the stylesheet picks the hue.
 
+**The emoji grid is one Tab stop.** Its options carry a roving tab index (the
+project's current emoji, else the first match): Left/Right move one cell,
+Up/Down one rendered row, Home/End go to the ends, and Up from the first row
+returns to the search field. The popover's own arrow walker is stopped for the
+keys the grid owns, so focus moves once rather than twice. Escape closes without
+picking.
+
 ### The row's hover card
 
 A row's details live in a **card**, not in the native `title` attribute:

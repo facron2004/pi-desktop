@@ -2926,6 +2926,45 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   )
   passed.push('the sidebar list walks with the arrow keys')
 
+  // The project icon picker is a two-dimensional grid: one Tab stop, arrows
+  // move one cell, and Escape closes it without picking anything.
+  const projectIconControl = document.querySelector('.project__icon-control')
+  check(projectIconControl, 'The project row has no icon control')
+  projectIconControl.click()
+  await until(() => document.querySelector('.project-icon-picker'), 'The icon picker did not open')
+  const iconOptions = [...document.querySelectorAll('.project-icon-picker__option')]
+  check(iconOptions.length > 2, 'The icon picker listed too few emoji')
+  check(
+    iconOptions.filter((option) => option.tabIndex === 0).length === 1,
+    'The icon grid has more than one Tab stop'
+  )
+  iconOptions[0].focus()
+  const iconGridColumns = getComputedStyle(document.querySelector('.project-icon-picker__grid'))
+    .gridTemplateColumns.split(/\s+/).filter(Boolean).length
+  iconOptions[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+  await until(
+    () => document.activeElement === iconOptions[iconGridColumns],
+    'ArrowDown did not move one row in the icon grid'
+  )
+  iconOptions[iconGridColumns].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+  await until(
+    () => document.activeElement === iconOptions[0],
+    'ArrowUp did not return to the first row in the icon grid'
+  )
+  iconOptions[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+  await until(
+    () => document.activeElement === iconOptions[1],
+    'ArrowRight did not move one emoji in the icon grid'
+  )
+  iconOptions[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))
+  await until(
+    () => document.activeElement === iconOptions[0],
+    'ArrowLeft did not return one emoji in the icon grid'
+  )
+  iconOptions[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  await until(() => !document.querySelector('.project-icon-picker'), 'Escape did not close the icon picker')
+  passed.push('the project icon picker walks its emoji grid with the arrows')
+
   // Opening a conversation from search or a shortcut reveals its row: a folded
   // project opens and the column follows the selection.
   const activeBeforeReveal = store.getState().activeSessionFile ?? store.getState().draftId
@@ -3121,7 +3160,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 65 : 60)
+  assert.equal(passed.length, process.platform === 'win32' ? 66 : 61)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })
