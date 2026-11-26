@@ -12,8 +12,6 @@ import {
   Files,
   GitCommit,
   GitCompare,
-  Globe,
-  Images,
   MessageSquare,
   MessagesSquare,
   Rows3,
@@ -40,14 +38,12 @@ import { ReviewView } from './ReviewView'
 import { DiffScope } from './DiffScope'
 import { Popover } from './Popover'
 import { TextSearch } from './TextSearch'
-import { BrowserView } from './BrowserView'
-import { ImageViewer } from './ImageViewer'
 import { useT } from '../lib/i18n'
 import { rowIndexAfterKey } from '../lib/row-nav'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import '../styles/browser-and-images.css'
 
-type Tab = 'changes' | 'files' | 'review' | 'browser' | 'images'
+type Tab = 'changes' | 'files' | 'review'
 
 const MIN_WIDTH = 300
 const MAX_WIDTH = 920
@@ -423,28 +419,7 @@ export function InspectorPanel({
                 <span className="drawer__count">{git.files.length}</span>
               ) : null}
             </button>
-            <button
-              className="drawer__tab"
-              data-active={tab === 'browser'}
-              aria-pressed={tab === 'browser'}
-              aria-label={t('Browser')}
-              title={t('Browse a page without leaving the app')}
-              onClick={() => changeTab('browser')}
-            >
-              <Globe size={14} />
-              <span className="drawer__tab-label">{t('Browser')}</span>
-            </button>
-            <button
-              className="drawer__tab"
-              data-active={tab === 'images'}
-              aria-pressed={tab === 'images'}
-              aria-label={t('Images')}
-              title={t('Pictures in this project')}
-              onClick={() => changeTab('images')}
-            >
-              <Images size={14} />
-              <span className="drawer__tab-label">{t('Images')}</span>
-            </button>
+
           </div>
           <button className="icon-btn" onClick={onClose} title={t('Close')} aria-label={t('Close')}>
             <X size={16} />
@@ -715,13 +690,7 @@ export function InspectorPanel({
             </div>
           </div>
 
-          <div className="drawer__pane" data-active={!openFile && tab === 'browser'}>
-            <BrowserView />
-          </div>
 
-          <div className="drawer__pane" data-active={!openFile && tab === 'images'}>
-            <ImageViewer />
-          </div>
 
           <div className="drawer__pane" data-active={Boolean(openFile) && tab !== 'files'}>
             {openFile && tab !== 'files' ? (

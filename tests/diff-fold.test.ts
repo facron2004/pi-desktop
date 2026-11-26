@@ -127,6 +127,14 @@ test('DiffView/ReviewView gap toggling, BrowserView listener re-attach, ToolPane
   assert.match(appSource, /panelView === 'review' \? 'review'/)
   assert.match(appSource, /panelView === 'files' \|\| panelView === 'changes' \|\| panelView === 'review'/)
 
+  // The panel is the only place the inspector is drawn, and it hides the drawer
+  // header. A tab that duplicates a panel page would be a second, unreachable
+  // implementation, so the drawer keeps only the pages the panel does not have.
+  const inspectorSource = read('src/renderer/src/components/InspectorPanel.tsx')
+  assert.match(inspectorSource, /type Tab = 'changes' \| 'files' \| 'review'/)
+  assert.doesNotMatch(inspectorSource, /tab === 'browser'|tab === 'images'/)
+  assert.doesNotMatch(inspectorSource, /<BrowserView|<ImageViewer/)
+
   const browserView = read('src/renderer/src/components/BrowserView.tsx')
   assert.match(browserView, /\[syncNavigation,\s*requestSeq\]/)
 

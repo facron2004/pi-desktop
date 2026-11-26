@@ -203,14 +203,22 @@ prop that wires them.
 
 **The Review page is a panel tab of its own.** The embedded Inspector draws
 `embedded ? null` where its header would be, so the drawer tabs (Changes, Files,
-Review, Browser, Images) are not on screen inside the side panel — a drawer tab
-with no panel view is therefore unreachable. Review was in that state: the page
-existed, its hunk actions and retry had tests, and nothing could open it. It is
-now `{ view: 'review' }` in the panel's tool list, and `App` maps that view to
+Review) are not on screen inside the side panel — a drawer tab with no panel
+view is therefore unreachable. Review was in that state: the page existed, its
+hunk actions and retry had tests, and nothing could open it. It is now
+`{ view: 'review' }` in the panel's tool list, and `App` maps that view to
 `initialTab="review"` and renders the Inspector for it. A folder that is not a
 git repository still opens the page and says what it needs. Pinned in
 `tests/diff-fold.test.ts`; `output/audit/check-diff-retry.mjs` opens the page
 under a repository and finds both changed files and a painted diff.
+
+**A drawer tab must have a panel view, and must not duplicate one.** The same
+rule retired the Inspector's **Browser** and **Images** tabs: both rendered the
+very components the panel already shows as pages of their own (`BrowserView` and
+`ImageViewer`), so inside the panel they were a second, unreachable copy of the
+same screens. The drawer now carries only Changes, Files and Review; everything
+else is the panel's page. `tests/diff-fold.test.ts` holds the tab union to those
+three and refuses a browser or picture pane in the Inspector.
 
 A row in the stream is a link, not a card, so it carries no surface of its
 own: the pointer must not paint a gray band across the column. The hover
