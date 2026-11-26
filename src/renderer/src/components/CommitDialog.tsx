@@ -16,6 +16,7 @@ import { useDialogFocus } from '../hooks/useDialogFocus'
 import { BranchMark } from './BranchMark'
 import { formatRelativeTime } from '../lib/format'
 import { useT } from '../lib/i18n'
+import { rowIndexAfterKey } from '../lib/row-nav'
 import '../styles/commit-history.css'
 
 /** How many commits the dialog reads back from HEAD. */
@@ -620,12 +621,32 @@ export function CommitDialog({
                   ) : commits.length === 0 ? (
                     <p className="commit__history-state">{t('This repository has no commits yet.')}</p>
                   ) : (
-                    <ul className="commit__history-list">
+                    <ul
+                      className="commit__history-list"
+                      onKeyDown={(event) => {
+                        // The history is one keyboard column: the arrows walk
+                        // the recent commits so a reader can review them
+                        // without tabbing through each row's side actions.
+                        // Moving the focus does not apply a message — Enter on
+                        // the row still does, because the row is its own button.
+                        if (event.altKey || event.ctrlKey || event.metaKey) return
+                        const target = event.target
+                        if (!(target instanceof HTMLElement) || !target.matches('[data-commit-row]')) return
+                        const rows = [
+                          ...event.currentTarget.querySelectorAll<HTMLElement>('[data-commit-row]')
+                        ]
+                        const next = rowIndexAfterKey(event.key, rows.indexOf(target), rows.length)
+                        if (next === undefined) return
+                        event.preventDefault()
+                        rows[next].focus()
+                      }}
+                    >
                       {commits.map((commit) => (
                         <li key={commit.hash} className="commit__history-row">
                           <button
                             type="button"
                             className="commit__history-pick"
+                            data-commit-row={commit.hash}
                             title={`${t('Use this commit message')}: ${commit.subject}`}
                             aria-label={`${t('Use this commit message')}: ${commit.subject}`}
                             onClick={() => pickCommit(commit)}

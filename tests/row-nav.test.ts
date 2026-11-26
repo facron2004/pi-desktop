@@ -55,3 +55,19 @@ test('both changed-file lists mark their rows and use the shared rule', () => {
   assert.match(scheduled, /rowIndexAfterKey\(event\.key, rows\.indexOf\(target\), rows\.length\)/)
   assert.doesNotMatch(scheduled, /event\.key === 'Home'\s*\?/, 'the scheduled list kept its own copy')
 })
+
+test('the commit history walks its rows without applying a message', () => {
+  const source = readFileSync(
+    path.resolve(process.cwd(), 'src/renderer/src/components/CommitDialog.tsx'),
+    'utf8'
+  )
+  assert.match(source, /data-commit-row=\{commit\.hash\}/, 'the history rows carry no marker')
+  assert.match(
+    source,
+    /rowIndexAfterKey\(event\.key, rows\.indexOf\(target\), rows\.length\)/,
+    'the history does not walk its rows with the shared rule'
+  )
+  assert.match(source, /rows\[next\]\.focus\(\)/, 'the history does not move the focus')
+  // An arrow is a look, not a pick: Enter on the row is still the way to apply.
+  assert.doesNotMatch(source, /rows\[next\]\.click\(\)/, 'an arrow applies the commit message')
+})

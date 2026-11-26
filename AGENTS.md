@@ -1790,6 +1790,16 @@ dialog commits only those and says so; ticking "Include unstaged changes" (the
 default when nothing is staged) stages the work tree with `git add -A` first.
 Do not silently commit unstaged work — the user chose what to stage.
 
+**The recent-commits list is one keyboard column.** Every history row carries
+three controls (use this message, open the commit, copy the hash), so reviewing
+the last few messages used to mean three Tab stops per row. `data-commit-row`
+marks each row's primary button, and Up/Down/Home/End move between them with
+`lib/row-nav.ts`'s bounded rule. An arrow only moves the focus — applying a
+message still takes Enter on the row, because passing over a commit is a look,
+not a pick. `tests/row-nav.test.ts` pins the wiring (including that the handler
+never calls `click()`), and `output/audit/check-commit-history-nav.mjs` walks a
+three-commit repository and prints the focused index after each key.
+
 The Review tab reads the same status through `git:fileDiff`: old side from
 `git show HEAD:path` (or `HEAD:oldPath` for a rename — `parsePorcelain` keeps the
 old path), new side from disk, then the renderer rebuilds a line diff with
