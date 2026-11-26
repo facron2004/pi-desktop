@@ -191,6 +191,15 @@ stopping twice per row. The same audit now reads one tabbable gutter,
 `arrowMoved: true`, and a split step that lands on the next row (`arrowSameRow:
 false`).
 
+**A hunk's floating actions belong to the hunk, not to the whole block.**
+`.diff__hunk-actions` rests at opacity 0 and is revealed by hovering the block
+or by focusing one of its own buttons (`:focus-within` on the actions). It
+used to reveal on `:focus-within` of the whole block, so merely focusing a line
+link flashed a copy/revert bar over the first line the reader was walking.
+Measured with `output/audit/check-hunk-focus.mjs`: rest 0, line-link focus 0,
+copy-button focus 1. `tests/diff-fold.test.ts` holds the selector to the
+actions themselves and refuses the block-wide one.
+
 **A failed diff read offers a retry, and the retry forgets the failure.** A
 diff is cached under the signature it was read from, so a failure was sticky:
 selecting the same file again — or coming back to it — showed the same notice

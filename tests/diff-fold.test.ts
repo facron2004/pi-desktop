@@ -147,6 +147,16 @@ test('DiffView/ReviewView gap toggling, BrowserView listener re-attach, ToolPane
   assert.match(browserView, /Try again/)
   assert.match(browserView, /setFailure\(\(current\) => current \?\?/)
 
+  // A hunk's floating actions belong to the hunk being hovered or to their own
+  // keyboard focus; a line link receiving focus must not flash them over the
+  // first line of the block.
+  const diffActionsCss = read('src/renderer/src/styles/diff-actions.css')
+  assert.match(diffActionsCss, /\.diff__hunk-actions:focus-within/)
+  assert.doesNotMatch(
+    diffActionsCss,
+    /\.diff__block--patchable:focus-within \.diff__hunk-actions/
+  )
+
   const toolPanel = read('src/renderer/src/components/ToolPanel.tsx')
   assert.match(toolPanel, /if \(!maximized \|\| concealed\) return/)
   assert.match(toolPanel, /if \(!overlay \|\| maximized \|\| concealed\) return/)

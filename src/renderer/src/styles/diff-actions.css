@@ -21,8 +21,14 @@
 transition: opacity var(--dur-fast) var(--ease);
 }
 
+/*
+ * Hovering the block is the pointer's way in; the keyboard's way in is focusing
+ * one of these buttons. `:focus-within` on the block also matched a line link
+ * receiving focus, which flashed the floating bar over the first line while the
+ * reader was only walking gutters.
+ */
 .diff__block--patchable:hover .diff__hunk-actions,
-.diff__block--patchable:focus-within .diff__hunk-actions {
+.diff__hunk-actions:focus-within {
   opacity: 1;
 }
 
