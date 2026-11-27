@@ -880,6 +880,20 @@ written (`copiedWithoutSelection: false`); with the handler made inert the same
 run reports `copiedWithSelection: false`. `tests/tab-focus.test.ts` pins the
 handler and the empty-selection guard.
 
+**The ends of a long terminal buffer have keys.** xterm scrolls a page with
+Shift+PageUp/PageDown, but the top and the bottom of the scrollback had no key:
+after paging up, the prompt was back only with the wheel. `Ctrl+Shift+Home` /
+`Ctrl+Shift+End` scroll to the top and the bottom through the pane's custom key
+handler, which returns `false` so the shell never receives the key. Measured
+with `output/audit/check-terminal-scroll.mjs` over a 120-line buffer: after one
+page up the viewport starts at line 21; with the handler made inert,
+`Ctrl+Shift+Home` leaves it at the bottom (first line 71), and with the handler
+in place the viewport jumps to the buffer's first line with the last visible row
+at 49 — the top of a 50-row screen. `Ctrl+Shift+End` is the pair and moves the
+viewport back down (`23 → 73` with the shell busy), though the shell's own prompt
+redraw can produce the same jump, so the Home case is the discriminating one.
+`tests/tab-focus.test.ts` pins both branches.
+
 `Thread.tsx` uses the same predicate for `Ctrl+F` and for the `Alt+Up/Down`
 turn jumps: without it, pressing either in a rename field opened the
 conversation search or scrolled the reading surface away from the caret

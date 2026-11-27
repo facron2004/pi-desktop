@@ -82,4 +82,8 @@ test('the terminal copies its selection from the keyboard', () => {
   // With nothing selected the chord keeps its shell meaning (Ctrl+C interrupts).
   assert.match(terminal, /if \(!selected\) return true/)
   assert.match(terminal, /navigator\.clipboard\.writeText\(selected\)/)
+  // xterm scrolls a page on its own; the ends of the buffer are ours.
+  assert.match(terminal, /term\.scrollToTop\(\)/)
+  assert.match(terminal, /term\.scrollToBottom\(\)/)
+  assert.match(terminal, /event\.key === 'Home'/)
 })

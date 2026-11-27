@@ -185,7 +185,21 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     // macOS) copies the selection and never reaches the shell; with nothing
     // selected the key keeps its shell meaning, so Ctrl+C still interrupts.
     term.attachCustomKeyEventHandler((event) => {
-      if (event.type !== 'keydown' || event.key.toLowerCase() !== 'c') return true
+      if (event.type !== 'keydown') return true
+      // Shift+PageUp/PageDown is xterm's own scrollback. The top and the bottom
+      // of a long buffer had no key at all: Ctrl+Shift+Home / End jump there,
+      // and come back to the prompt, without sending the shell a cursor key.
+      if (event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey) {
+        if (event.key === 'Home') {
+          term.scrollToTop()
+          return false
+        }
+        if (event.key === 'End') {
+          term.scrollToBottom()
+          return false
+        }
+      }
+      if (event.key.toLowerCase() !== 'c') return true
       const { info, settings, showToast } = useAppStore.getState()
       const copy = info?.platform === 'darwin'
         ? event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey
