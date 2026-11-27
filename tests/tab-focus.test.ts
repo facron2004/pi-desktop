@@ -69,3 +69,17 @@ test('both tab strips move the keyboard when a tab closes', () => {
     'a close from outside the panel must not pull the keyboard away from where the reader put it'
   )
 })
+
+test('the terminal copies its selection from the keyboard', () => {
+  const terminal = readFileSync(
+    path.resolve(process.cwd(), 'src/renderer/src/components/TerminalPanel.tsx'),
+    'utf8'
+  )
+  // The pane had a Copy button and no key: a reader without a pointer could
+  // not take a command's output anywhere.
+  assert.match(terminal, /attachCustomKeyEventHandler/)
+  assert.match(terminal, /info\?\.platform === 'darwin'/)
+  // With nothing selected the chord keeps its shell meaning (Ctrl+C interrupts).
+  assert.match(terminal, /if \(!selected\) return true/)
+  assert.match(terminal, /navigator\.clipboard\.writeText\(selected\)/)
+})

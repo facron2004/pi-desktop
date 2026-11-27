@@ -181,6 +181,29 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     termRef.current = term
     fitRef.current = fit
 
+    // A terminal has to be copyable without a pointer. Ctrl+Shift+C (Cmd+C on
+    // macOS) copies the selection and never reaches the shell; with nothing
+    // selected the key keeps its shell meaning, so Ctrl+C still interrupts.
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown' || event.key.toLowerCase() !== 'c') return true
+      const { info, settings, showToast } = useAppStore.getState()
+      const copy = info?.platform === 'darwin'
+        ? event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey
+        : event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey
+      if (!copy) return true
+      const selected = term.getSelection()
+      if (!selected) return true
+      navigator.clipboard.writeText(selected).then(
+        () => showToast(translate('Copied to clipboard', settings.language)),
+        () =>
+          showToast(
+            translate('The clipboard is not available', settings.language),
+            'error'
+          )
+      )
+      return false
+    })
+
     let disposed = false
     // xterm measures its cell box when it opens. With JetBrains Mono loading
     // asynchronously the first measure would keep the fallback metrics, so

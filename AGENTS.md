@@ -867,6 +867,19 @@ hands focus back to the panel's corner toggle instead of letting it fall to
 both: the chord inside the shell reports `closedFromInside: false` before the
 exemption and `true` after, with the keyboard on
 `.shell__panel-toggle__btn`.
+**A terminal is copied from the keyboard.** The pane had one Copy button and no
+key, so a reader without a pointer could not take a command's output anywhere.
+`Ctrl+Shift+C` (Cmd+C on macOS) goes through xterm's `attachCustomKeyEventHandler`:
+it copies the selection and returns `false` so the shell never sees the key,
+while a **collapsed selection leaves the chord to the shell** — `Ctrl+C` is how
+a running command is interrupted, and a shortcut that swallowed it would be
+dangerous. Measured with `output/audit/check-terminal-copy.mjs`: a pointer drag
+leaves a selection (`selectionRects: 2`), the chord writes the prompt text
+(`copiedWithSelection: true`, 68 characters), and with no selection nothing is
+written (`copiedWithoutSelection: false`); with the handler made inert the same
+run reports `copiedWithSelection: false`. `tests/tab-focus.test.ts` pins the
+handler and the empty-selection guard.
+
 `Thread.tsx` uses the same predicate for `Ctrl+F` and for the `Alt+Up/Down`
 turn jumps: without it, pressing either in a rename field opened the
 conversation search or scrolled the reading surface away from the caret
