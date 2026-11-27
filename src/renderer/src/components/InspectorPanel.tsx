@@ -41,7 +41,6 @@ import { TextSearch } from './TextSearch'
 import { useT } from '../lib/i18n'
 import { rowIndexAfterKey } from '../lib/row-nav'
 import { useDialogFocus } from '../hooks/useDialogFocus'
-import '../styles/browser-and-images.css'
 
 type Tab = 'changes' | 'files' | 'review'
 

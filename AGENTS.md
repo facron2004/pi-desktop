@@ -951,6 +951,31 @@ themselves are not driven by the audit — one opens a native dialog and the oth
 launches the OS viewer — so they ride on the bridge calls the chat's picture
 already uses.
 
+**A panel page loads its own stylesheet.** `browser-and-images.css` was imported
+only by `InspectorPanel`, which no longer renders the Browser or Images pages —
+so both ran in the tools panel with none of their rules: a raw `<img>` instead of
+a fitted picture on a checkerboard, and an unstyled address bar. Each view now
+imports what it draws (`ImageViewer`, `BrowserView`), the way the terminal
+imports `terminal.css`, and the Inspector's import is gone. Found by measuring a
+1200×800 picture in a 519px stage: it was painted at its natural width with
+`max-width: none` and the stage computed `display: block`/`grid`, meaning no rule
+had matched at all. After the move the same run reads `stageDisplay: "flex"`,
+`imgMaxWidth: "100%"`, `fitWidth: 487` and `sheetCount: 3`. The stage is flex,
+not grid, because a grid track is sized by the picture itself, so `max-width:
+100%` against it resolves to nothing.
+`tests/tab-focus.test.ts` holds both imports (and refuses the Inspector's).
+
+**A picture can be zoomed.** The Images stage drew every screenshot at fit and
+there was no way to read the text inside one. The meta line now carries zoom
+out, a `Fit`/percentage button and zoom in (`ZOOM_STEPS` 0.25…4), and the stage
+is a focusable group whose `+`/`=` zoom in, `-` zoom out and `0` return to fit;
+a zoomed picture is an explicit pixel size laid out from the top-left so the
+stage's scrollbars (or the arrow keys) can pan it. A new selection starts fit
+again. Measured with `output/audit/check-images-states.mjs` on the same
+1200×800 picture: it renders as 487px inside a 519px stage, `+` makes
+it 1800px with the label `150%` and `scrollable: true`, and `0` returns it to 487
+labelled `Fit` (`keyboardZoomed: true`, `resetToFit: true`).
+
 **Both lists are two popups of one combobox, and the relations follow the
 state.** While a list is open the box carries `aria-expanded="true"`, an
 `aria-controls` naming that list's own id (a named `role="listbox"`) and an

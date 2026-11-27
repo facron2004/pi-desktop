@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowLeft, ArrowRight, ExternalLink, Globe, RotateCw } from 'lucide-react'
 import { useT } from '../lib/i18n'
+import '../styles/browser-and-images.css'
 
 /**
  * A browser in the inspector.

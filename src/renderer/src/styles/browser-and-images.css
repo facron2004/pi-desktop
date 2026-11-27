@@ -114,8 +114,13 @@
 }
 
 .image-viewer__stage {
-  display: grid;
-  place-items: center;
+  /* Flex, not grid: a grid track is sized by the picture, so a max-width:
+     100% against it resolves to nothing and a screenshot kept its natural
+     size instead of fitting the pane. A flex item's percentage resolves against
+     the stage's own box, which is definite. */
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex: 1 1 auto;
   min-height: 0;
   padding: var(--sp-5);
@@ -133,11 +138,41 @@
 }
 
 .image-viewer__stage img {
+  flex: 0 0 auto;
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
   border-radius: var(--r-sm);
   box-shadow: var(--shadow-md);
+}
+
+/* A zoomed picture is laid out from the top-left so the scrollbars can reach
+   all of it; centring an oversized grid item hides its top-left corner. */
+.image-viewer__stage[data-zoom='custom'] {
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+
+.image-viewer__zoom {
+  min-width: 44px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.image-viewer__zoom:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.image-viewer__zoom:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
 }
 
 .image-viewer__empty {

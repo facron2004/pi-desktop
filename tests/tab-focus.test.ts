@@ -109,3 +109,35 @@ test('the terminal right-click menu is keyboard-complete', () => {
   assert.match(terminal, /event\.key !== 'Escape'/)
   assert.match(terminal, /closeMenu\(true\)/)
 })
+
+test('a panel page loads its own stylesheet', () => {
+  const read = (file: string) => readFileSync(path.resolve(process.cwd(), file), 'utf8')
+  // The images and browser pages are pages of the tools panel now. Their
+  // stylesheet was imported by the Inspector, which no longer renders them, so
+  // both ran completely unstyled: no checkerboard, no fitted picture, a raw
+  // address bar. Each view imports what it draws, like the terminal does.
+  for (const file of [
+    'src/renderer/src/components/ImageViewer.tsx',
+    'src/renderer/src/components/BrowserView.tsx'
+  ]) {
+    assert.match(read(file), /import '\.\.\/styles\/browser-and-images\.css'/, file)
+  }
+  assert.doesNotMatch(
+    read('src/renderer/src/components/InspectorPanel.tsx'),
+    /browser-and-images\.css/
+  )
+})
+
+test('the picture stage zooms from the keyboard', () => {
+  const viewer = readFileSync(
+    path.resolve(process.cwd(), 'src/renderer/src/components/ImageViewer.tsx'),
+    'utf8'
+  )
+  // A screenshot whose text is unreadable at panel width: fit, 100%, and the
+  // steps between, reachable from the stage's own keys.
+  assert.match(viewer, /const ZOOM_STEPS = \[/)
+  assert.match(viewer, /data-zoom=\{zoom === 'fit' \? 'fit' : 'custom'\}/)
+  assert.match(viewer, /key === '\+' \|\| key === '='/)
+  assert.match(viewer, /key === '0'/)
+  assert.match(viewer, /setZoom\('fit'\)/)
+})

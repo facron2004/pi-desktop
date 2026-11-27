@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Check, Download, ExternalLink, FolderOpen, FolderSearch, ImageOff } from 'lucide-react'
+import { Check, Download, ExternalLink, FolderOpen, FolderSearch, ImageOff, ZoomIn, ZoomOut } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { basename, relativePath } from '../lib/path'
 import { formatBytes } from '../lib/format'
 import { imagePayloadOf } from '../lib/image-data'
 import { useT } from '../lib/i18n'
+import '../styles/browser-and-images.css'
 
 /**
  * The project's pictures, opened in the inspector.
@@ -15,6 +16,8 @@ import { useT } from '../lib/i18n'
  * strip under it. It reads through `fs:readImageDataUrl`, which stays inside
  * the project.
  */
+
+const ZOOM_STEPS = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4]
 
 interface ProjectImage {
   path: string
@@ -39,6 +42,10 @@ export function ImageViewer({
   const [reloadToken, setReloadToken] = useState(0)
   const [limit, setLimit] = useState(60)
   const [savedCopy, setSavedCopy] = useState(false)
+  // 'fit' is the default; a number is a multiple of the natural size, so a
+  // screenshot whose text is unreadable at panel width can be read at 100%
+  // and panned with the scrollbars or the arrow keys.
+  const [zoom, setZoom] = useState<number | 'fit'>('fit')
 
   // The main process finds every picture in one walk; asking once per
   // extension made the page walk the whole project nine times.
@@ -118,6 +125,17 @@ export function ImageViewer({
 
   // The stage holds the bytes already: save them without a round trip, and put
   // the picture in the system viewer for anything this panel cannot do.
+  // One picture at a time: a new selection starts fit again.
+  useEffect(() => {
+    setZoom('fit')
+  }, [active])
+
+  const stepZoom = (direction: 1 | -1) => {
+    const current = zoom === 'fit' ? 1 : zoom
+    const next = ZOOM_STEPS.find((step) => (direction > 0 ? step > current : step < current))
+    setZoom(next ?? (direction > 0 ? ZOOM_STEPS[ZOOM_STEPS.length - 1] : ZOOM_STEPS[0]))
+  }
+
   const saveCopy = async () => {
     const payload = source ? imagePayloadOf(source.data) : null
     if (!payload) return
@@ -142,7 +160,31 @@ export function ImageViewer({
 
   return (
     <div className="image-viewer">
-      <div className="image-viewer__stage">
+      <div
+        className="image-viewer__stage"
+        data-zoom={zoom === 'fit' ? 'fit' : 'custom'}
+        tabIndex={activeSource ? 0 : -1}
+        role={activeSource ? 'group' : undefined}
+        aria-label={activeSource ? (activeInfo?.name ?? t('The picture')) : undefined}
+        onKeyDown={(event) => {
+          if (event.altKey || event.ctrlKey || event.metaKey) return
+          const key = event.key
+          if (key === '+' || key === '=') {
+            event.preventDefault()
+            stepZoom(1)
+            return
+          }
+          if (key === '-' || key === '_') {
+            event.preventDefault()
+            stepZoom(-1)
+            return
+          }
+          if (key === '0') {
+            event.preventDefault()
+            setZoom('fit')
+          }
+        }}
+      >
         {!workspace?.path ? (
           <div className="image-viewer__empty">
             <FolderSearch size={20} />
@@ -159,6 +201,16 @@ export function ImageViewer({
           <img
             src={activeSource}
             alt={activeInfo?.name ?? ''}
+            style={
+              zoom === 'fit' || !natural
+                ? undefined
+                : {
+                    width: Math.round(natural.width * zoom),
+                    height: Math.round(natural.height * zoom),
+                    maxWidth: 'none',
+                    maxHeight: 'none'
+                  }
+            }
             onError={() => {
               // The bytes arrived but the browser cannot decode them: that is a
               // read failure too, and the stage must offer the same retry.
@@ -217,6 +269,32 @@ export function ImageViewer({
           <span className="image-viewer__spacer" />
           {/* The meta line is narrow and the label wrapped to three lines; the
               icon carries the action and the tooltip says what it does. */}
+          <button
+            className="icon-btn"
+            onClick={() => stepZoom(-1)}
+            disabled={zoom === ZOOM_STEPS[0]}
+            aria-label={t('Zoom out')}
+            title={t('Zoom out')}
+          >
+            <ZoomOut size={13} />
+          </button>
+          <button
+            className="image-viewer__zoom"
+            onClick={() => setZoom(zoom === 'fit' ? 1 : 'fit')}
+            aria-label={t('Fit the picture to the panel')}
+            title={t('Fit the picture to the panel')}
+          >
+            {zoom === 'fit' ? t('Fit') : `${Math.round(zoom * 100)}%`}
+          </button>
+          <button
+            className="icon-btn"
+            onClick={() => stepZoom(1)}
+            disabled={zoom === ZOOM_STEPS[ZOOM_STEPS.length - 1]}
+            aria-label={t('Zoom in')}
+            title={t('Zoom in')}
+          >
+            <ZoomIn size={13} />
+          </button>
           <button
             className="icon-btn"
             onClick={() => void saveCopy()}
