@@ -894,6 +894,20 @@ viewport back down (`23 → 73` with the shell busy), though the shell's own pro
 redraw can produce the same jump, so the Home case is the discriminating one.
 `tests/tab-focus.test.ts` pins both branches.
 
+**A terminal is pasted from a chord of its own.** `Ctrl+V` reaches the browser's
+paste event, which xterm inserts — measured with
+`output/audit/check-terminal-paste.mjs` (`ctrlVAllowedByXterm: true`,
+`pasteEventInserted: true`) — but `Ctrl+Shift+V` did nothing at all. The pane now
+reads the clipboard and feeds `term.paste(text)` (so bracketed-paste handling
+still applies) and calls `preventDefault` before returning `false`: without that
+the browser would fire a second paste event and the shell would receive the text
+twice. Measured with `output/audit/check-terminal-paste-chord.mjs`:
+`readTextCalls: 1`, `defaultPrevented: true`, the echo appears exactly once
+(`singleInsert: true`), and the shell runs it (`outputLinePrinted: true`); with
+the branch made inert the same run reports `readTextCalls: 0` and
+`inserted: false`. A denied clipboard read shows the usual "clipboard is not
+available" toast.
+
 `Thread.tsx` uses the same predicate for `Ctrl+F` and for the `Alt+Up/Down`
 turn jumps: without it, pressing either in a rename field opened the
 conversation search or scrolled the reading surface away from the caret

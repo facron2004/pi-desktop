@@ -186,6 +186,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     // selected the key keeps its shell meaning, so Ctrl+C still interrupts.
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true
+      const { info, settings, showToast } = useAppStore.getState()
+      const mac = info?.platform === 'darwin'
       // Shift+PageUp/PageDown is xterm's own scrollback. The top and the bottom
       // of a long buffer had no key at all: Ctrl+Shift+Home / End jump there,
       // and come back to the prompt, without sending the shell a cursor key.
@@ -199,9 +201,25 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
           return false
         }
       }
+      // An explicit paste chord, beside the shell's own Ctrl+V. preventDefault
+      // stops the browser from firing a second paste event, which would insert
+      // the text twice.
+      const paste = mac
+        ? event.metaKey && event.shiftKey && !event.ctrlKey && !event.altKey
+        : event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey
+      if (paste && event.key.toLowerCase() === 'v') {
+        event.preventDefault()
+        navigator.clipboard.readText().then(
+          (text) => {
+            if (text) term.paste(text)
+          },
+          () =>
+            showToast(translate('The clipboard is not available', settings.language), 'error')
+        )
+        return false
+      }
       if (event.key.toLowerCase() !== 'c') return true
-      const { info, settings, showToast } = useAppStore.getState()
-      const copy = info?.platform === 'darwin'
+      const copy = mac
         ? event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey
         : event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey
       if (!copy) return true

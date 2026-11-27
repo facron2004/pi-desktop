@@ -86,4 +86,9 @@ test('the terminal copies its selection from the keyboard', () => {
   assert.match(terminal, /term\.scrollToTop\(\)/)
   assert.match(terminal, /term\.scrollToBottom\(\)/)
   assert.match(terminal, /event\.key === 'Home'/)
+  // An explicit paste chord: the clipboard read feeds xterm's own paste, and
+  // the key is prevented so the browser does not insert the text a second time.
+  assert.match(terminal, /navigator\.clipboard\.readText\(\)/)
+  assert.match(terminal, /term\.paste\(text\)/)
+  assert.match(terminal, /event\.preventDefault\(\)/)
 })
