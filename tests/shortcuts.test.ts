@@ -236,3 +236,19 @@ test('the app-wide chord guard keeps fields and exempts the composer', () => {
     'the turn jumps no longer check whether a field owns the keyboard'
   )
 })
+
+test('the conversation search has a chord of its own', () => {
+  const read = (file: string) => readFileSync(path.resolve(process.cwd(), file), 'utf8')
+  // The dialog's only door used to be a button inside the sidebar head, so a
+  // collapsed sidebar — or a reader without a pointer — could not search at all.
+  const search = SHORTCUTS.find((entry) => entry.id === 'search-chats')
+  assert.ok(search, 'the conversation search left the shortcut table')
+  assert.deepEqual(search!.keys, ['Ctrl', 'Shift', 'F'])
+  const app = read('src/renderer/src/App.tsx')
+  assert.match(
+    app,
+    /if \(matches\('search-chats'\)\) \{[\s\S]{0,240}?setSidebarOpen\(true\)[\s\S]{0,160}?setSidebarSearchSignal/
+  )
+  const sidebar = read('src/renderer/src/components/Sidebar.tsx')
+  assert.match(sidebar, /if \(focusSearchSignal > 0\) setSearchOpen\(true\)/)
+})

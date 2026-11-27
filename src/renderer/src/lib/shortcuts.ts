@@ -22,6 +22,7 @@ export type ShortcutId =
   | 'toggle-terminal'
   | 'focus-composer'
   | 'search-conversation'
+  | 'search-chats'
   | 'command-palette'
   | 'session-tree'
   | 'shortcut-list'
@@ -63,6 +64,12 @@ export const SHORTCUTS: ShortcutEntry[] = [
     id: 'search-conversation',
     keys: ['Ctrl', 'F'],
     label: 'Search the conversation',
+    group: 'Workspace'
+  },
+  {
+    id: 'search-chats',
+    keys: ['Ctrl', 'Shift', 'F'],
+    label: 'Search all conversations',
     group: 'Workspace'
   },
   { keys: ['Ctrl', '1…9'], label: 'Switch to another project', group: 'Workspace' },

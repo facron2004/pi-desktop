@@ -147,7 +147,7 @@ export default function App() {
   const [settingsPage, setSettingsPage] = useState<SettingsPage>('general')
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
-  const [sidebarSearchSignal] = useState(0)
+  const [sidebarSearchSignal, setSidebarSearchSignal] = useState(0)
   const [launcherOpen, setLauncherOpen] = useState(false)
   const [sessionTreeOpen, setSessionTreeOpen] = useState(false)
   const [mcpOpen, setMcpOpen] = useState(false)
@@ -861,6 +861,15 @@ export default function App() {
       if (matches('toggle-sidebar')) {
         event.preventDefault()
         toggleSidebar()
+        return
+      }
+      // The conversation search had one door — a button in the sidebar head —
+      // so a collapsed sidebar (or a reader without a pointer) could not reach
+      // it. This chord opens the sidebar and asks it for the dialog.
+      if (matches('search-chats')) {
+        event.preventDefault()
+        setSidebarOpen(true)
+        setSidebarSearchSignal((value) => value + 1)
         return
       }
       if (matches('focus-composer')) {

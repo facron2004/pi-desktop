@@ -1299,6 +1299,7 @@ const zhCN: Record<string, string> = {
   'Show or hide the sidebar': '显示或隐藏侧边栏',
   'Focus the composer': '聚焦输入框',
   'Search the conversation': '搜索对话',
+  'Search all conversations': '搜索全部对话',
   'Switch to another project': '切换到另一个项目',
   'Open the command palette': '打开命令面板',
   'Show this shortcut list': '显示此快捷键列表',

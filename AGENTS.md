@@ -469,6 +469,18 @@ either place. Rows carry `data-search-result`, and the dialog's arrow handler
 acts only when the event starts on such a row, so the field keeps its own
 combobox keys (recents use the same Up/Down when the query is empty).
 
+**The conversation search has a chord.** Its only door was a button in the
+sidebar head, so with the sidebar collapsed — or without a pointer — the dialog
+could not be reached at all. `Ctrl+Shift+F` (`search-chats`) opens the sidebar
+and asks it for the search, the dialog's own field takes the keyboard, and
+Escape hands it back to the search button. The sidebar has carried the signal
+plumbing (`focusSearchSignal`) since the conversation list was refactored, with
+nothing ever raising it; the state and the prop are wired now. Measured with
+`output/audit/check-search-chord.mjs`: collapsed sidebar → chord →
+`sidebarAfterOpen: "open"`, `focusAtOpen: "input"`, Escape →
+`returnedToTrigger: true`. `tests/shortcuts.test.ts` pins the binding and both
+sides of the wiring.
+
 **An empty column carries its next step.** The flat conversation list offers
 *New chat* when it has no rows — except in archived-only mode, where a new chat
 is not the missing thing — and the first-run project tree offers *Open project*
