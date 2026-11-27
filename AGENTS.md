@@ -908,6 +908,19 @@ the branch made inert the same run reports `readTextCalls: 0` and
 `inserted: false`. A denied clipboard read shows the usual "clipboard is not
 available" toast.
 
+**The terminal's right-click menu is the pointer's door.** The shell had no
+context menu at all — copy and clear were toolbar icons and paste had no
+control. Right-clicking the pane now opens a `role="menu"` at the pointer with
+Copy / Paste / Clear. Copy is disabled while there is no selection, the first
+enabled item takes focus, arrows and Home/End walk the items, Escape closes and
+hands the keyboard back to the shell (`closeMenu(true)`), and a pointer down
+outside closes it without stealing focus. Measured with
+`output/audit/check-terminal-menu.mjs`: `menuOpened: true`, `role: menu`, labels
+Copy/Paste/Clear, `focusOnItem: true`, `copyDisabledWithoutSelection: true`,
+Escape → `closedByEscape: true` and `focusBackInTerminal: true`; with a drag
+selection Copy writes 68 characters (`copyEnabled: true`) and Paste echoes the
+clipboard into the shell (`pastedEchoed: true`), each closing the menu.
+
 `Thread.tsx` uses the same predicate for `Ctrl+F` and for the `Alt+Up/Down`
 turn jumps: without it, pressing either in a rename field opened the
 conversation search or scrolled the reading surface away from the caret

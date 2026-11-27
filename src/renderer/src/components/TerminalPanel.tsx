@@ -105,6 +105,66 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   const [exited, setExited] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [restartKey, setRestartKey] = useState(0)
+  const [menu, setMenu] = useState<{ x: number; y: number; selection: string } | null>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  const closeMenu = useCallback((refocus: boolean) => {
+    setMenu(null)
+    if (refocus) termRef.current?.focus()
+  }, [])
+
+  // A context menu owns the keyboard while it is up: Escape hands the keyboard
+  // back to the shell, and a click anywhere else just closes it.
+  useEffect(() => {
+    if (!menu) return
+    const onPointerDown = (event: PointerEvent) => {
+      if (menuRef.current?.contains(event.target as Node)) return
+      closeMenu(false)
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      closeMenu(true)
+    }
+    document.addEventListener('pointerdown', onPointerDown, true)
+    document.addEventListener('keydown', onKeyDown)
+    const frame = requestAnimationFrame(() => {
+      menuRef.current?.querySelector<HTMLElement>('.terminal__menu-item:not([disabled])')?.focus()
+    })
+    return () => {
+      cancelAnimationFrame(frame)
+      document.removeEventListener('pointerdown', onPointerDown, true)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [menu, closeMenu])
+
+  const copyText = useCallback(
+    (text: string) => {
+      if (!text.trim()) return
+      navigator.clipboard.writeText(text).then(
+        () => useAppStore.getState().showToast(translate('Copied to clipboard', useAppStore.getState().settings.language)),
+        () =>
+          useAppStore.getState().showToast(
+            translate('The clipboard is not available', useAppStore.getState().settings.language),
+            'error'
+          )
+      )
+    },
+    []
+  )
+
+  const pasteText = useCallback(() => {
+    navigator.clipboard.readText().then(
+      (text) => {
+        if (text) termRef.current?.paste(text)
+      },
+      () =>
+        useAppStore.getState().showToast(
+          translate('The clipboard is not available', useAppStore.getState().settings.language),
+          'error'
+        )
+    )
+  }, [])
 
   useImperativeHandle(
     ref,
@@ -404,8 +464,86 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   }, [request, completeRequest, sendRequest])
 
   return (
-    <div className="terminal__pane-body">
+    <div
+      className="terminal__pane-body"
+      onContextMenu={(event) => {
+        const term = termRef.current
+        if (!term) return
+        event.preventDefault()
+        const rect = event.currentTarget.getBoundingClientRect()
+        setMenu({
+          x: Math.max(0, Math.min(event.clientX - rect.left, rect.width - 168)),
+          y: Math.max(0, Math.min(event.clientY - rect.top, rect.height - 104)),
+          selection: term.getSelection()
+        })
+      }}
+    >
       <div className="terminal__xterm" ref={containerRef} />
+      {menu ? (
+        <div
+          ref={menuRef}
+          className="terminal__menu"
+          role="menu"
+          aria-label={t('Terminal actions')}
+          style={{ left: menu.x, top: menu.y }}
+          onKeyDown={(event) => {
+            const keys = ['ArrowDown', 'ArrowUp', 'Home', 'End']
+            if (!keys.includes(event.key)) return
+            const items = [
+              ...(menuRef.current?.querySelectorAll<HTMLElement>(
+                '.terminal__menu-item:not([disabled])'
+              ) ?? [])
+            ]
+            if (items.length === 0) return
+            event.preventDefault()
+            const index = items.indexOf(document.activeElement as HTMLElement)
+            const next =
+              event.key === 'Home'
+                ? 0
+                : event.key === 'End'
+                  ? items.length - 1
+                  : event.key === 'ArrowDown'
+                    ? (index + 1) % items.length
+                    : (index - 1 + items.length) % items.length
+            items[next]?.focus()
+          }}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className="terminal__menu-item"
+            disabled={!menu.selection.trim()}
+            onClick={() => {
+              copyText(menu.selection)
+              closeMenu(true)
+            }}
+          >
+            {t('Copy')}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="terminal__menu-item"
+            onClick={() => {
+              pasteText()
+              closeMenu(true)
+            }}
+          >
+            {t('Paste')}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="terminal__menu-item"
+            onClick={() => {
+              termRef.current?.clear()
+              closeMenu(true)
+            }}
+          >
+            {t('Clear')}
+          </button>
+        </div>
+      ) : null}
       {error ? (
         <div className="terminal__overlay" role="status">
           <span className="terminal__notice-title">{t('Could not start the terminal')}</span>

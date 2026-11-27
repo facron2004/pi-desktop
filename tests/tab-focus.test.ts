@@ -92,3 +92,20 @@ test('the terminal copies its selection from the keyboard', () => {
   assert.match(terminal, /term\.paste\(text\)/)
   assert.match(terminal, /event\.preventDefault\(\)/)
 })
+
+test('the terminal right-click menu is keyboard-complete', () => {
+  const terminal = readFileSync(
+    path.resolve(process.cwd(), 'src/renderer/src/components/TerminalPanel.tsx'),
+    'utf8'
+  )
+  // The pointer had no menu over the shell at all: the only copy and clear
+  // controls were icons in the toolbar, and there was no paste.
+  assert.match(terminal, /onContextMenu=/)
+  assert.match(terminal, /className="terminal__menu"/)
+  assert.match(terminal, /role="menu"/)
+  // Copy is only offered when there is a selection to copy.
+  assert.match(terminal, /disabled=\{!menu\.selection\.trim\(\)\}/)
+  // Escape closes it and hands the keyboard back to the shell.
+  assert.match(terminal, /event\.key !== 'Escape'/)
+  assert.match(terminal, /closeMenu\(true\)/)
+})

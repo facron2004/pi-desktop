@@ -1216,6 +1216,7 @@ const zhCN: Record<string, string> = {
   exit: '退出码',
   ok: '成功',
   'Copy the output': '复制输出',
+  'Terminal actions': '终端操作',
   'Copy the error': '复制错误信息',
   'Copy the result': '复制结果',
   Show: '显示',
