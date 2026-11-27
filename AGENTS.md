@@ -935,6 +935,22 @@ both sides of the guard (fields keep the chords, the composer does not).
 rename, the task prompt and the composer, so the blocked and the allowed sides
 are measured, not assumed.
 
+**A picture can leave the page.** The Images stage holds the bytes and used to
+offer one action: reveal the file in the file manager. The meta line now carries
+*Save a copy* (`fs:saveImage` writes the bytes it already has — `lib/image-data.ts`
+splits the data URL and `tests/image-data.test.ts` pins it), *Open the picture*
+(`shell.openPath`, with a failure toast), and *Reveal in the file manager*; the
+reveal icon is a folder now so the three do not read alike. All three are
+labelled controls in the Tab order. Measured with
+`output/audit/check-images-states.mjs`: the labels read `Save a copy / Open the
+picture / Reveal in the file manager` and each takes focus; the same run also
+shows a broken file naming itself in the meta line and retrying
+(`errorReturned: true`), and the arrow keys moving selection, preview and focus
+from `broken.png` to `ok.png` (`keyboardMoved: true`). The save and open clicks
+themselves are not driven by the audit — one opens a native dialog and the other
+launches the OS viewer — so they ride on the bridge calls the chat's picture
+already uses.
+
 **Both lists are two popups of one combobox, and the relations follow the
 state.** While a list is open the box carries `aria-expanded="true"`, an
 `aria-controls` naming that list's own id (a named `role="listbox"`) and an

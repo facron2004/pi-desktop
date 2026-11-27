@@ -36,6 +36,7 @@ const suites = [
   'projects.test.ts',
   'settings.test.ts',
   'shortcuts.test.ts',
+  'image-data.test.ts',
   'user-data.test.ts',
   'app-updates.test.ts',
   'process-tree.test.ts',

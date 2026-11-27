@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ExternalLink, FolderSearch, ImageOff } from 'lucide-react'
+import { Check, Download, ExternalLink, FolderOpen, FolderSearch, ImageOff } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { basename, relativePath } from '../lib/path'
 import { formatBytes } from '../lib/format'
+import { imagePayloadOf } from '../lib/image-data'
 import { useT } from '../lib/i18n'
 
 /**
@@ -37,6 +38,7 @@ export function ImageViewer({
   const [error, setError] = useState(false)
   const [reloadToken, setReloadToken] = useState(0)
   const [limit, setLimit] = useState(60)
+  const [savedCopy, setSavedCopy] = useState(false)
 
   // The main process finds every picture in one walk; asking once per
   // extension made the page walk the whole project nine times.
@@ -113,6 +115,30 @@ export function ImageViewer({
   // One Tab stop for the whole strip. A requested picture outside the rendered
   // slice leaves the first thumbnail as the way in.
   const tabbable = visible.some((image) => image.path === active) ? active : (visible[0]?.path ?? null)
+
+  // The stage holds the bytes already: save them without a round trip, and put
+  // the picture in the system viewer for anything this panel cannot do.
+  const saveCopy = async () => {
+    const payload = source ? imagePayloadOf(source.data) : null
+    if (!payload) return
+    try {
+      const saved = await window.pi.fs.saveImage(payload.data, payload.mimeType)
+      if (!saved) return
+      setSavedCopy(true)
+      window.setTimeout(() => setSavedCopy(false), 1600)
+    } catch {
+      /* the reader may cancel the dialog */
+    }
+  }
+
+  const openPicture = (target: string) => {
+    void window.pi.shell.openPath(target).then((failure) => {
+      if (!failure) return
+      useAppStore
+        .getState()
+        .showToast(t('Could not open the picture: {message}').replace('{message}', () => failure), 'error')
+    })
+  }
 
   return (
     <div className="image-viewer">
@@ -193,11 +219,27 @@ export function ImageViewer({
               icon carries the action and the tooltip says what it does. */}
           <button
             className="icon-btn"
+            onClick={() => void saveCopy()}
+            aria-label={t('Save a copy')}
+            title={t('Save a copy')}
+          >
+            {savedCopy ? <Check size={13} /> : <Download size={13} />}
+          </button>
+          <button
+            className="icon-btn"
+            onClick={() => openPicture(activeInfo.path)}
+            aria-label={t('Open the picture')}
+            title={t('Open the picture')}
+          >
+            <ExternalLink size={13} />
+          </button>
+          <button
+            className="icon-btn"
             onClick={() => void window.pi.fs.reveal(activeInfo.path)}
             aria-label={t('Reveal in the file manager')}
             title={t('Reveal in the file manager')}
           >
-            <ExternalLink size={13} />
+            <FolderOpen size={13} />
           </button>
         </div>
       ) : null}
