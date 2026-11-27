@@ -18,6 +18,7 @@ import type {
   ScheduledTask,
   ScheduledTaskInput,
   ScheduledTaskSchedule,
+  ScheduledTaskSessionMode,
   Workspace
 } from '@shared/types'
 import { resolveSavedModel, selectableModels } from '@shared/provider-models'
@@ -42,6 +43,7 @@ interface TaskForm {
   workspaceId: string
   model: string
   thinkingLevel: string
+  sessionMode: ScheduledTaskSessionMode
   kind: RepeatKind
   dateTime: string
   time: string
@@ -73,6 +75,7 @@ function newForm(workspaces: Workspace[], activeWorkspaceId?: string | null): Ta
     // Empty means the run follows the model and effort saved in Settings.
     model: '',
     thinkingLevel: '',
+    sessionMode: 'new',
     kind: 'once',
     dateTime: localDateTime(nextHour.getTime()),
     time: '09:00',
@@ -88,6 +91,7 @@ function editForm(task: ScheduledTask): TaskForm {
     workspaceId: task.workspaceId,
     model: task.model ?? '',
     thinkingLevel: task.thinkingLevel ?? '',
+    sessionMode: task.sessionMode ?? 'new',
     kind: task.schedule.kind,
     // A recurring task has no single date here; createdAt is a stable stand-in
     // until the user switches the repeat control to "once".
@@ -391,7 +395,9 @@ export function ScheduledTasksDialog() {
       schedule: scheduleFor(draft),
       // An empty control follows the app's saved default, so it stays absent.
       model: draft.model || undefined,
-      thinkingLevel: draft.thinkingLevel || undefined
+      thinkingLevel: draft.thinkingLevel || undefined,
+      // A fresh conversation per run is the default, so only `reuse` is stored.
+      sessionMode: draft.sessionMode === 'reuse' ? 'reuse' : undefined
     }
     const previousIds = new Set(tasks.map((task) => task.id))
     try {
@@ -1016,6 +1022,22 @@ export function ScheduledTasksDialog() {
                       />
                     </label>
                     <label className="scheduled-detail__rule-row">
+                      <span>{t('Conversation')}</span>
+                      <SettingsSelect
+                        label={t('Conversation')}
+                        value={draft.sessionMode}
+                        options={[
+                          { value: 'new', label: t('A new conversation each run') },
+                          { value: 'reuse', label: t('Continue the same conversation') }
+                        ]}
+                        onChange={(sessionMode) =>
+                          setDraft({ ...draft, sessionMode: sessionMode === 'reuse' ? 'reuse' : 'new' })
+                        }
+                        menuWidth={240}
+                        className="scheduled-detail__picker"
+                      />
+                    </label>
+                    <label className="scheduled-detail__rule-row">
                       <span>{t('Reasoning effort')}</span>
                       <SettingsSelect
                         label={t('Reasoning effort')}
@@ -1035,7 +1057,11 @@ export function ScheduledTasksDialog() {
                   ) : null}
                   <p className="scheduled-tasks__hint">
                     <Clock size={13} />
-                    {t('Every run starts a new conversation in this project. Times use your system local time.')}
+                    {draft.sessionMode === 'reuse'
+                      ? t(
+                          'Every run continues the conversation the previous run started. The first run starts it. Times use your system local time.'
+                        )
+                      : t('Every run starts a new conversation in this project. Times use your system local time.')}
                   </p>
                 </form>
                 {confirmingDelete ? (

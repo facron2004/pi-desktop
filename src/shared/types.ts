@@ -515,7 +515,16 @@ export interface ScheduledTaskInput {
   model?: string
   /** Pi reasoning effort. Unset follows the app's default effort. */
   thinkingLevel?: string
+  /**
+   * `new` (the default) starts a fresh conversation for every run. `reuse`
+   * continues the conversation the previous run wrote, so the agent keeps its
+   * earlier work in context.
+   */
+  sessionMode?: ScheduledTaskSessionMode
 }
+
+/** How a scheduled run's conversation is chosen. */
+export type ScheduledTaskSessionMode = 'new' | 'reuse'
 
 export interface ScheduledTask extends ScheduledTaskInput {
   id: string
@@ -526,6 +535,11 @@ export interface ScheduledTask extends ScheduledTaskInput {
   lastStatus?: ScheduledTaskStatus
   lastError?: string
   lastSessionFile?: string
+  /**
+   * The conversation a `reuse` task continues. Written by the service after a
+   * run writes its session, and cleared when the task goes back to `new`.
+   */
+  reuseSessionFile?: string
 }
 
 /**

@@ -1,10 +1,11 @@
 import { EventEmitter } from 'node:events'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type {
   ScheduledTask,
   ScheduledTaskInput,
+  ScheduledTaskSessionMode,
   ScheduledTaskSchedule,
   ScheduledTaskStatus,
   RuntimeRekey,
@@ -29,6 +30,8 @@ interface ActiveRun {
   lastRunAt: number
   sessionFile?: string
   modelError?: string
+  /** The task continues one conversation, so its file is worth remembering. */
+  reuse: boolean
   releaseRunLock: () => void
   releaseRunSlot: () => void
 }
@@ -38,6 +41,8 @@ interface PendingRunResult {
   lastStatus: ScheduledTaskStatus
   lastError?: string
   lastSessionFile?: string
+  /** Present only for a `reuse` task that wrote a session. */
+  reuseSessionFile?: string
   releaseRunLock: () => void
 }
 
@@ -121,14 +126,21 @@ function parseStoredTasks(raw: string): ScheduledTask[] {
       task.lastSessionFile.length > MAX_SCHEDULED_TASK_SESSION_FILE_CHARS
       ? undefined
       : task.lastSessionFile
+    const reuseSessionFile = task.reuseSessionFile !== undefined &&
+      task.reuseSessionFile.length > MAX_SCHEDULED_TASK_SESSION_FILE_CHARS
+      ? undefined
+      : task.reuseSessionFile
     const model = normalizeScheduledTaskModel(task.model)
     const thinkingLevel = normalizeScheduledTaskThinkingLevel(task.thinkingLevel)
+    const sessionMode = normalizeScheduledTaskSessionMode(task.sessionMode)
     return lastError === task.lastError &&
       lastSessionFile === task.lastSessionFile &&
+      reuseSessionFile === task.reuseSessionFile &&
       model === task.model &&
-      thinkingLevel === task.thinkingLevel
+      thinkingLevel === task.thinkingLevel &&
+      sessionMode === task.sessionMode
       ? task
-      : { ...task, lastError, lastSessionFile, model, thinkingLevel }
+      : { ...task, lastError, lastSessionFile, reuseSessionFile, model, thinkingLevel, sessionMode }
   })
 }
 
@@ -143,6 +155,11 @@ function normalizeScheduledTaskThinkingLevel(value: unknown): string | undefined
   if (typeof value !== 'string') return undefined
   const level = value.trim().toLowerCase()
   return SCHEDULED_TASK_THINKING_LEVELS.has(level) ? level : undefined
+}
+
+/** Absent, empty or unknown all mean "a fresh conversation for every run". */
+function normalizeScheduledTaskSessionMode(value: unknown): ScheduledTaskSessionMode | undefined {
+  return value === 'reuse' ? 'reuse' : undefined
 }
 
 function limitScheduledTaskError(error: string | undefined): string | undefined {
@@ -200,6 +217,8 @@ function isStoredTask(value: unknown): value is ScheduledTask {
   if (task.lastStatus !== undefined && !SCHEDULED_TASK_STATUSES.has(task.lastStatus as ScheduledTaskStatus)) return false
   if (task.lastError !== undefined && typeof task.lastError !== 'string') return false
   if (task.lastSessionFile !== undefined && typeof task.lastSessionFile !== 'string') return false
+  if (task.reuseSessionFile !== undefined && typeof task.reuseSessionFile !== 'string') return false
+  if (task.sessionMode !== undefined && task.sessionMode !== 'new' && task.sessionMode !== 'reuse') return false
   if (task.model !== undefined && typeof task.model !== 'string') return false
   if (task.thinkingLevel !== undefined && typeof task.thinkingLevel !== 'string') return false
   return true
@@ -240,6 +259,7 @@ function validateInput(
   const model = rawModel ? normalizeScheduledTaskModel(rawModel) : undefined
   const rawThinkingLevel = typeof value?.thinkingLevel === 'string' ? value.thinkingLevel.trim() : ''
   const thinkingLevel = rawThinkingLevel ? normalizeScheduledTaskThinkingLevel(rawThinkingLevel) : undefined
+  const sessionMode = normalizeScheduledTaskSessionMode(value?.sessionMode)
   if (!title) throw new Error('Enter a task name.')
   if (!prompt) throw new Error('Enter the prompt to run.')
   if (!workspaceId || workspaceId.length > 256) throw new Error('Choose a project.')
@@ -248,10 +268,12 @@ function validateInput(
   if (!schedule || !['once', 'daily', 'weekly'].includes(schedule.kind)) {
     throw new Error('Choose a valid schedule.')
   }
-  // An unset choice follows the app's current default, so it stays absent.
+  // An unset choice follows the app's current default, so it stays absent. A
+  // fresh conversation per run is the default too: only `reuse` is stored.
   const choice = {
     ...(model ? { model } : {}),
-    ...(thinkingLevel ? { thinkingLevel } : {})
+    ...(thinkingLevel ? { thinkingLevel } : {}),
+    ...(sessionMode ? { sessionMode } : {})
   }
   if (schedule.kind === 'once') {
     if (!Number.isFinite(schedule.at)) {
@@ -358,6 +380,12 @@ export class ScheduledTaskService extends EventEmitter {
             // the value the task carried before.
             model: normalized.model,
             thinkingLevel: normalized.thinkingLevel,
+            // An omitted conversation choice means "a new one per run", so it
+            // has to clear the mode the task carried before.
+            sessionMode: normalized.sessionMode,
+            // Going back to a fresh conversation per run also forgets the one
+            // the task used to continue.
+            reuseSessionFile: normalized.sessionMode === 'reuse' ? task.reuseSessionFile : undefined,
             nextRunAt
           }
         : task)
@@ -572,7 +600,12 @@ export class ScheduledTaskService extends EventEmitter {
         ...task,
         lastStatus: result.lastStatus,
         lastError: result.lastError,
-        lastSessionFile: result.lastSessionFile ?? task.lastSessionFile
+        lastSessionFile: result.lastSessionFile ?? task.lastSessionFile,
+        // Only a `reuse` task keeps the conversation; switching back to a new
+        // conversation per run must not resurrect the old one.
+        reuseSessionFile: task.sessionMode === 'reuse'
+          ? result.reuseSessionFile ?? task.reuseSessionFile
+          : undefined
       }
     })
     return changed ? next : tasks
@@ -1006,6 +1039,10 @@ export class ScheduledTaskService extends EventEmitter {
     this.waitingForRunSlot = false
 
     let currentTask: ScheduledTask | undefined
+    // A `reuse` run continues the conversation the previous one wrote. The
+    // record is cleared before the new run starts, so it is read here first.
+    let resumeSessionFile: string | undefined
+    let reuseConversation = false
     try {
       this.withDataLock(() => {
         const current = this.readForMutation()
@@ -1022,6 +1059,11 @@ export class ScheduledTaskService extends EventEmitter {
           return
         }
         const startTask = currentTask
+        reuseConversation = startTask.sessionMode === 'reuse'
+        const recorded = startTask.reuseSessionFile
+        // A conversation the reader deleted is not resumed: the next run starts
+        // a new one and records it instead.
+        resumeSessionFile = reuseConversation && recorded && existsSync(recorded) ? recorded : undefined
         const next = current.map((entry) => entry.id === startTask.id
           ? {
               ...entry,
@@ -1060,7 +1102,14 @@ export class ScheduledTaskService extends EventEmitter {
       return
     }
 
-    const active: ActiveRun = { taskId: currentTask.id, draftKey: sessionKey, lastRunAt: now, releaseRunLock, releaseRunSlot }
+    const active: ActiveRun = {
+      taskId: currentTask.id,
+      draftKey: sessionKey,
+      lastRunAt: now,
+      reuse: reuseConversation,
+      releaseRunLock,
+      releaseRunSlot
+    }
     this.activeTasks.set(currentTask.id, active)
     this.activeRuns.set(sessionKey, active)
     this.publish()
@@ -1078,6 +1127,8 @@ export class ScheduledTaskService extends EventEmitter {
       const thinkingLevel = currentTask.thinkingLevel ?? settings.thinkingLevel
       const ensured = await this.supervisor.ensure({
         sessionKey,
+        // Resume the task's own conversation, when it has one to resume.
+        sessionFile: resumeSessionFile,
         cwd: workspace.path,
         model,
         thinkingLevel,
@@ -1156,6 +1207,7 @@ export class ScheduledTaskService extends EventEmitter {
       lastStatus: status,
       lastError: limitScheduledTaskError(error),
       lastSessionFile: sessionFile,
+      reuseSessionFile: active.reuse && status !== 'error' ? sessionFile : undefined,
       releaseRunLock: active.releaseRunLock
     })
     active.releaseRunSlot()

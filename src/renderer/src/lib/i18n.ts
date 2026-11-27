@@ -935,6 +935,10 @@ const zhCN: Record<string, string> = {
   Time: '时间',
   'Every run starts a new conversation in this project. Times use your system local time.':
     '每次运行都会在此项目中新建对话。时间使用系统本地时间。',
+  'A new conversation each run': '每次新建对话',
+  'Continue the same conversation': '复用同一对话',
+  'Every run continues the conversation the previous run started. The first run starts it. Times use your system local time.':
+    '每次运行都会继续上一次的对话（第一次运行会新建）。时间使用系统本地时间。',
   'Tasks run while Pi Desktop is open. Each run starts a new conversation.':
     'Pi Desktop 运行期间会触发定时任务，每次运行都会新建一个对话。',
   'Follow app default': '跟随默认设置',

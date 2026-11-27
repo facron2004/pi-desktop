@@ -815,6 +815,22 @@ date so its title, prompt, model or effort can be edited without
 rescheduling; an enabled task still has to point at the future, and editing
 never re-enables a paused task.
 
+**A task either starts a new conversation per run or continues one.** A run used
+to mint a fresh `draft:` key every time, so a daily review could never remember
+yesterday's numbers. `ScheduledTaskInput.sessionMode` is now the task's own
+choice: absent or `new` keeps a fresh conversation per run (the default, and
+what every stored task without the field means), while `reuse` passes the
+conversation the previous run wrote as `ensure({ sessionFile })`, so Pi resumes
+the same JSONL and keeps its context. The service remembers that file in
+`reuseSessionFile` — written only after a run that actually produced a session,
+never cleared at launch (a failed run must not lose the pointer), and cleared
+when the task goes back to `new`. A recorded file that no longer exists is not
+resumed: the run starts a new conversation and records that one instead.
+`sessionMode` is stored only when it is `reuse` (absent means `new`), and the
+form's note changes with the choice. `tests/scheduled-session-mode.test.ts`
+covers reuse across two runs, a missing file, and the switch back to `new`
+(including the JSON on disk).
+
 ### The row never moves
 
 The actions of a project row live in a **slot that is always there**

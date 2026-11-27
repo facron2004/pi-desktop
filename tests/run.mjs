@@ -129,6 +129,7 @@ const suites = [
   'workspace-panel.test.ts',
   'task-panel.test.ts',
   'scheduled-tasks.test.ts',
+  'scheduled-session-mode.test.ts',
   'session-tree.test.ts',
   'renderer-utils.test.ts',
   'i18n.test.ts',
