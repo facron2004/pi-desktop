@@ -1542,13 +1542,15 @@ const ThreadTurnView = memo(function ThreadTurnView({
   const query = useSearchQuery().trim().toLowerCase()
   const searchMatch = Boolean(query) && findMatches(searchableChunks([turn]), query, 1).length > 0
   const failed = outcome?.outcome === 'failed'
-  // Successful turns show their tool summaries and the folded thinking row.
-  // The run summary still controls disclosure of the whole process.
-  const hasToolGroups = turn.tools.some((tool) => tool.toolName !== 'generate_image')
+  // A settled turn is a summary plus its answer: with auto-fold on, the tool
+  // rows, commentary and thinking are one fold behind the run summary, so the
+  // reading surface shows what the agent said rather than everything it did.
+  // The reader's own toggle wins over the default, and a live turn is always
+  // open (hiding it would hide the only sign of progress).
   const hasThinking = turn.assistants.some((assistant) =>
     assistant.blocks.some((block) => block.type === 'thinking' && !block.redacted && block.text.trim())
   )
-  const processOpen = searchMatch || (manualProcessOpen ?? (!autoFoldProcess || (!failed && (hasToolGroups || hasThinking))))
+  const processOpen = searchMatch || (manualProcessOpen ?? !autoFoldProcess)
   const toggleProcess = () => {
     const next = !processOpen
     setManualProcessOpen(next)

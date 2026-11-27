@@ -286,6 +286,10 @@ never hides the reply. Retry and compaction notices fold with the tools. The
 reason a run failed stays below its summary, including when the process is
 folded. With auto-fold enabled, opening a failed run shows its group summaries
 first. Each group can then be expanded to inspect the individual tool results.
+The same default decides the turn itself: a settled turn folds its whole
+process — commentary, tool groups and thinking — so what remains is the answer
+and the run summary, and the summary's chevron is the way back in. Only the
+reader's own toggle outranks it, and a live turn is always open.
 
 **An error can be copied.** Both the inline error row and the thread error banner
 carry a `CopyButton`; it writes the full error (`title` when the visible line is

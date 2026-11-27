@@ -681,7 +681,15 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     const thinkingSteps = () => [...document.querySelectorAll('.thinking__body .thinking__text')]
       .map((node) => node.textContent)
     const joinedThinking = [thinkingFixture.first, thinkingFixture.second].join('\n\n')
-    await until(() => !store.getState().isStreaming && thinkingSteps().join('\n\n') === joinedThinking,
+    await until(() => !store.getState().isStreaming, 'The thinking run did not settle')
+    // A settled turn folds its whole process, so the fragments leave the screen
+    // with it; the run summary brings them back.
+    check(!document.querySelector('.thinking__head'), 'A settled turn kept its thinking row on screen')
+    const thinkingSummary = await until(() => document.querySelector('.run-outcome'), 'The settled turn has no run summary')
+    thinkingSummary.click()
+    const settledThinking = await until(thinkingHead, 'Reopening the run summary did not restore the thinking row')
+    if (!document.querySelector('.thinking__body')) settledThinking.click()
+    await until(() => thinkingSteps().join('\n\n') === joinedThinking,
       'The thought fold did not survive the tool call with both fragments in order')
     check(document.querySelectorAll('.thinking__head').length === 1, 'One turn rendered multiple thinking headers')
     // The gap between two reasoning steps is the paragraph spacing, not the
@@ -713,6 +721,8 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
       id: 'thinking-replay', file: thinkingFile, cwd: workspace,
       preview: thinkingFixture.prompt, updatedAt: Date.now(), messageCount: 0
     })
+    const replaySummary = await until(() => document.querySelector('.run-outcome'), 'The replayed turn has no run summary')
+    replaySummary.click()
     const replayedThinking = await until(thinkingHead, 'Replayed thinking has no disclosure')
     check(replayedThinking.getAttribute('aria-expanded') === 'false' && !document.querySelector('.thinking__body'),
       'Replayed thinking did not start folded')
@@ -1291,6 +1301,13 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   showStream('draft:stream-a')
   await until(() => document.querySelector('.run-outcome[data-foldable="true"]'), 'The stream has no process fold')
   const streamBody = () => document.querySelector('.assistant__body')
+  // A settled turn is folded: the reader sees the answer and the run summary,
+  // not the tool rows that produced it.
+  await until(() => streamBody()?.textContent.includes('STREAM_FINAL'), 'The final reply is missing from the folded turn')
+  check(!streamBody().querySelector('.process__head'), 'A settled turn left its tool summary open')
+  check(!streamBody().querySelector('.tool-link'), 'A settled turn left its tool row open')
+  check(!streamBody().textContent.includes('STREAM_PROGRESS'), 'A settled turn kept its progress commentary visible')
+  document.querySelector('.run-outcome').click()
   const readGroup = await until(() => streamBody().querySelector('.process__head'), 'The finished tool summary is missing')
   check(readGroup.getAttribute('aria-expanded') === 'false', 'The finished tool group opened by default')
   check(streamBody().textContent.includes('STREAM_PROGRESS'), 'The tool summary lost its commentary')
@@ -1301,7 +1318,7 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   document.querySelector('.tool-link__toggle').click()
   await until(() => streamBody().textContent.includes('STREAM_TOOL_RESULT'), 'The tool result did not expand')
   showStream('draft:stream-b')
-  await until(() => streamBody().querySelector('.process__head[aria-expanded="false"]'), 'A different conversation inherited the expansion')
+  await until(() => !streamBody().querySelector('.process__head'), 'A different conversation inherited the expansion')
   showStream('draft:stream-a')
   await until(() => streamBody().textContent.includes('STREAM_TOOL_RESULT'), 'The process/tool fold was forgotten on return')
   document.querySelector('.run-outcome').click()
@@ -1671,7 +1688,12 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   showStream('draft:stream-replay', streamItems, { phase: 'idle', turns: 0, settled: true })
   await until(() => document.querySelector('.run-outcome[data-foldable="true"]'), 'Replayed turn lost its process fold without saved timing')
   check(Boolean(document.querySelector('.run-outcome__meta')), 'Replayed turn lost its worked-for duration')
-  check(streamBody().textContent.includes('STREAM_PROGRESS') && streamBody().textContent.includes('STREAM_FINAL'), 'Replayed turn lost its commentary or reply')
+  // A replayed turn is folded like a live one that just settled: the reply
+  // stays on screen, the commentary and the tool summaries wait behind the fold.
+  check(streamBody().textContent.includes('STREAM_FINAL'), 'Replayed turn lost its reply')
+  check(!streamBody().textContent.includes('STREAM_PROGRESS'), 'Replayed turn kept its commentary open')
+  document.querySelector('.run-outcome').click()
+  await until(() => streamBody().textContent.includes('STREAM_PROGRESS'), 'Reopening the replayed run lost its commentary')
   check(streamBody().querySelector('.process__head[aria-expanded="false"]'), 'Replayed tool group did not start folded')
 
   showStream('draft:stream-thinking-only', [
@@ -1681,8 +1703,12 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
       ...streamItems[3].blocks
     ] }
   ])
+  // A finished response folds its process here too; the run summary is the door.
+  await until(() => document.querySelector('.run-outcome[data-foldable="true"]'), 'Thinking-only turn has no process fold')
+  check(!streamBody().querySelector('.thinking__head'), 'A finished response left its thinking disclosure on screen')
+  document.querySelector('.run-outcome').click()
   await until(() => streamBody().querySelector('.thinking__head[aria-expanded="false"]'),
-    'A finished response without tools hid the thinking disclosure')
+    'A finished response without tools lost its thinking disclosure')
 
   // The live edit and command share one row below the next commentary. Its
   // expansion and the edit diff survive the transition to a finished turn.
@@ -1722,11 +1748,17 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     { ...commandTool, status: 'ok', result: 'STREAM_COMMAND_OUTPUT' },
     { ...streamItems[3], timestamp: 7, order: 7 }
   ])
+  const settledSummary = await until(
+    () => document.querySelector('.run-outcome[data-foldable="true"]'),
+    'The settled edit and command have no process fold'
+  )
+  check(!streamBody().querySelector('.process__head'), 'The settled edit and command left their summary open')
+  settledSummary.click()
   const mixedSummary = await until(
     () => [...streamBody().querySelectorAll('.process__head')].find((head) => head.textContent.includes('Edited file · Ran command')),
     'The finished edit and command did not share one action summary'
   )
-  check(mixedSummary.getAttribute('aria-expanded') === 'true' && editDiff()?.textContent.includes('STREAM_EDIT_DIFF'), 'The edit diff closed when the run finished')
+  check(mixedSummary.getAttribute('aria-expanded') === 'true' && editDiff()?.textContent.includes('STREAM_EDIT_DIFF'), 'The edit diff did not survive the fold')
   streamBody().querySelector('.tool--link[data-tone="command"] .tool-link__toggle').click()
   await until(() => streamBody().textContent.includes('STREAM_COMMAND_OUTPUT'), 'The command output did not expand')
   mixedSummary.click()
