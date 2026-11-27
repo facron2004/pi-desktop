@@ -1321,22 +1321,7 @@ export const Thread = memo(function Thread() {
         <GoalCompleteRow />
 
         {error ? (
-          <ThreadErrorBanner
-            message={error}
-            onDismiss={dismissThreadError}
-            // "Diagnose in Side Chat" is a Main-conversation door: a side chat
-            // already is the side chat, so it has nothing to open.
-            onAskSideChat={
-              isMainSurface
-                ? () =>
-                    dispatchOpenSideChat({
-                      mode: 'open',
-                      focus: true,
-                      reference: { kind: 'error', message: error }
-                    })
-                : undefined
-            }
-          />
+          <ThreadErrorBanner message={error} onDismiss={dismissThreadError} />
         ) : null}
       </div>
 
@@ -1621,35 +1606,9 @@ const ThreadTurnView = memo(function ThreadTurnView({
   const failureDetails = failureNotice ? (
     <NoticeMessage item={failureNotice} />
   ) : assistantErrorText ? (
-    <ErrorNotice
-      title={lastAssistant?.error}
-      message={assistantErrorMessage}
-      onAskSideChat={
-        askSideChat
-          ? () =>
-              askSideChat({
-                kind: 'error',
-                turnId: turn.id,
-                title: lastAssistant?.error,
-                message: assistantErrorText
-              })
-          : undefined
-      }
-    />
+    <ErrorNotice title={lastAssistant?.error} message={assistantErrorMessage} />
   ) : failed ? (
-    <ErrorNotice
-      message={genericFailureMessage}
-      onAskSideChat={
-        askSideChat
-          ? () =>
-              askSideChat({
-                kind: 'error',
-                turnId: turn.id,
-                message: genericFailureMessage
-              })
-          : undefined
-      }
-    />
+    <ErrorNotice message={genericFailureMessage} />
   ) : null
 
   return (

@@ -3452,6 +3452,17 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   margin-top: 1px;
 }
 
+/* A provider error can be a paragraph. The row is two lines and keeps the whole
+   message in its tooltip: the notice is a flag, not a report. */
+.notice__text {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
 /* ------------------------------------------------------------------ *
  * App toast
  *
@@ -4855,7 +4866,14 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   color: var(--red);
 }
 
+/* A transport failure can be a paragraph. Two lines are the flag; the full text
+   stays in the tooltip. */
 .thread-error-banner__text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
   word-break: break-word;
 }
 

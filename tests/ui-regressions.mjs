@@ -741,19 +741,27 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   await until(() => document.activeElement === threadRegion, 'The transcript did not take focus')
   passed.push('the transcript is a focusable scroll region')
 
-  // An error can be copied for a report without selecting the row by hand.
-  store.setState({ error: 'UI copyable error line' })
-  const errorCopy = await until(
-    () => document.querySelector('.thread-error-banner__copy'),
-    'The thread error banner has no copy action'
+  // An error notice is a flag, not a report: two lines, no actions beside it.
+  const longError = 'UI long provider failure ' + 'x'.repeat(600)
+  store.setState({ error: longError })
+  const errorBanner = await until(
+    () => document.querySelector('.thread-error-banner'),
+    'The thread error banner did not render'
   )
+  check(!errorBanner.querySelector('.thread-error-banner__copy'), 'The error banner still carries a copy action')
+  check(!errorBanner.querySelector('.thread-error-banner__ask-side'), 'The error banner still offers a Side Chat diagnosis')
+  check(errorBanner.querySelectorAll('button').length === 1, 'The error banner grew actions beside its text')
+  const bannerText = errorBanner.querySelector('.thread-error-banner__text')
   check(
-    errorCopy.getAttribute('aria-label') === 'Copy the error',
-    'The error copy action has no accessible label'
+    Number.parseFloat(getComputedStyle(bannerText).webkitLineClamp) === 2,
+    'The thread error banner is not clamped to two lines'
   )
+  check(bannerText.getBoundingClientRect().height <= Number.parseFloat(getComputedStyle(bannerText).lineHeight) * 2 + 1,
+    'The thread error banner painted more than two lines')
+  check(bannerText.getAttribute('title') === longError, 'The clamped banner lost its full text')
   store.getState().dismissSessionError()
   await until(() => !document.querySelector('.thread-error-banner'), 'The thread error banner did not clear')
-  passed.push('an error offers to be copied for a report')
+  passed.push('an error is a two-line flag: clamped, and carrying no actions')
 
     await store.getState().newChat()
     await store.getState().send(backgroundFixture.prompt, [])
@@ -1323,6 +1331,28 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   await until(() => streamBody().textContent.includes('STREAM_TOOL_RESULT'), 'The process/tool fold was forgotten on return')
   document.querySelector('.run-outcome').click()
   await until(() => !streamBody().textContent.includes('STREAM_PROGRESS'), 'The process did not fold again')
+
+  // The inline row of a failed answer follows the banner's rule: two lines of
+  // error, nothing beside them.
+  const longProviderError = 'UI long provider failure ' + 'x'.repeat(600)
+  showStream('draft:stream-long-error', [
+    streamItems[0],
+    { ...streamItems[3], stopReason: 'error', error: longProviderError, blocks: [] }
+  ], { phase: 'idle', turns: 0, settled: true })
+  const longNotice = await until(() => streamBody().querySelector('.notice[data-level="error"]'),
+    'The long provider error has no notice')
+  check(!longNotice.querySelector('.notice__copy'), 'The error notice still carries a copy action')
+  check(!longNotice.querySelector('.notice__ask-side'), 'The error notice still offers a Side Chat diagnosis')
+  check(longNotice.querySelectorAll('button').length === 0, 'The error notice grew actions beside its text')
+  const noticeText = longNotice.querySelector('.notice__text')
+  check(Number.parseFloat(getComputedStyle(noticeText).webkitLineClamp) === 2,
+    'The error notice is not clamped to two lines')
+  check(noticeText.getBoundingClientRect().height <= Number.parseFloat(getComputedStyle(noticeText).lineHeight) * 2 + 1,
+    'The error notice painted more than two lines')
+  check(longNotice.getAttribute('title') === longProviderError, 'The clamped notice lost its full text')
+  // Back to the settled stream the next checks read.
+  showStream('draft:stream-a')
+  await until(() => streamBody().textContent.includes('STREAM_FINAL'), 'The settled stream did not come back')
 
   // The copy/edit row must sit flush under the bubble and above the run
   // summary: a visual gap used to drop the hover state before the pointer

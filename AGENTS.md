@@ -291,11 +291,13 @@ process — commentary, tool groups and thinking — so what remains is the answ
 and the run summary, and the summary's chevron is the way back in. Only the
 reader's own toggle outranks it, and a live turn is always open.
 
-**An error can be copied.** Both the inline error row and the thread error banner
-carry a `CopyButton`; it writes the full error (`title` when the visible line is
-a friendlier summary) so the reader can paste it into a report without selecting
-a row by hand. The action is visible at rest — it does not use a tool row's
-hover reveal — and only the label is translated, never the error text itself.
+**An error notice is a flag, not a report.** A provider failure is often a
+paragraph, so the inline row and the thread banner are both clamped to two lines
+(`-webkit-line-clamp: 2`) and keep the whole message in their tooltip. Neither
+carries actions beside the text: the copy button and the Side Chat diagnosis were
+removed, because a row that grows past two lines pushes the answer it belongs to
+off the screen — and the diagnosis is still one click away in the side-chat panel
+and the transcript's selection bar.
 
 **A failed startup offers Try again.** The welcome screen's error banner carries
 a `Try again` button beside Dismiss; it calls `bootstrap()` again. A retry clears

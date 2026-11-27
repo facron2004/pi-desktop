@@ -1,46 +1,29 @@
-import { CircleAlert, MessagesSquare, X } from 'lucide-react'
+import { CircleAlert, X } from 'lucide-react'
 import { useT } from '../../lib/i18n'
-import { CopyButton } from './CopyButton'
 
 export interface ErrorNoticeProps {
   /** The error text shown to the reader. */
   message: string
   /** The full error, when `message` is a friendlier summary. */
   title?: string
-  /** Optional Side Chat diagnostic trigger on Main conversation errors. */
-  onAskSideChat?: () => void
 }
 
 /**
  * The inline error row for an answer.
  *
- * It keeps the `notice` class so the existing notice stylesheet applies,
- * and it is deliberately one row: the failure belongs to the answer that
- * stopped, not to the whole conversation.
+ * It keeps the `notice` class so the existing notice stylesheet applies, and it
+ * is deliberately one compact row: the failure belongs to the answer that
+ * stopped, not to the whole conversation. A provider error can be a paragraph,
+ * so the row is clamped to two lines and the full text stays in its tooltip —
+ * the notice is a flag, not a report, and the actions that used to sit beside
+ * the text (copy, diagnose in Side Chat) pushed the line count up without being
+ * what the reader needs at that moment.
  */
-export function ErrorNotice({ message, title, onAskSideChat }: ErrorNoticeProps) {
-  const t = useT()
+export function ErrorNotice({ message, title }: ErrorNoticeProps) {
   return (
-    <div className="notice" data-level="error" role="alert" title={title}>
+    <div className="notice" data-level="error" role="alert" title={title ?? message}>
       <CircleAlert size={14} className="notice__icon" aria-hidden="true" />
-      <span>{message}</span>
-      <CopyButton
-        text={title ?? message}
-        label="Copy the error"
-        className="notice__copy"
-      />
-      {onAskSideChat ? (
-        <button
-          type="button"
-          className="notice__ask-side"
-          onClick={onAskSideChat}
-          title={t('Diagnose in Side Chat')}
-          aria-label={t('Diagnose in Side Chat')}
-        >
-          <MessagesSquare size={12} aria-hidden="true" />
-          <span>{t('Diagnose in Side Chat')}</span>
-        </button>
-      ) : null}
+      <span className="notice__text">{message}</span>
     </div>
   )
 }
@@ -49,43 +32,26 @@ export interface ThreadErrorBannerProps {
   /** The error text shown to the reader. */
   message: string
   onDismiss?: () => void
-  onAskSideChat?: () => void
 }
 
 /**
  * The thread-level error banner.
  *
- * A transport or session failure is not an assistant message, so it sits
- * below the turns as its own dismissible banner. The class names are the ones
- * the thread stylesheet already carries.
+ * A transport or session failure is not an assistant message, so it sits below
+ * the turns as its own dismissible banner. The class names are the ones the
+ * thread stylesheet already carries. It is clamped like the inline notice: two
+ * lines of error and a way to dismiss it.
  */
-export function ThreadErrorBanner({ message, onDismiss, onAskSideChat }: ThreadErrorBannerProps) {
+export function ThreadErrorBanner({ message, onDismiss }: ThreadErrorBannerProps) {
   const t = useT()
   return (
     <div className="thread-error-banner" role="alert">
       <div className="thread-error-banner__content">
         <CircleAlert size={16} className="thread-error-banner__icon" aria-hidden="true" />
-        <span className="thread-error-banner__text">{t(message)}</span>
+        <span className="thread-error-banner__text" title={message}>{t(message)}</span>
       </div>
-      <div className="thread-error-banner__actions">
-        <CopyButton
-          text={message}
-          label="Copy the error"
-          className="thread-error-banner__copy"
-        />
-        {onAskSideChat ? (
-          <button
-            type="button"
-            className="thread-error-banner__ask-side"
-            onClick={onAskSideChat}
-            title={t('Diagnose in Side Chat')}
-            aria-label={t('Diagnose in Side Chat')}
-          >
-            <MessagesSquare size={13} aria-hidden="true" />
-            <span>{t('Diagnose in Side Chat')}</span>
-          </button>
-        ) : null}
-        {onDismiss ? (
+      {onDismiss ? (
+        <div className="thread-error-banner__actions">
           <button
             className="icon-btn thread-error-banner__dismiss"
             onClick={onDismiss}
@@ -94,8 +60,8 @@ export function ThreadErrorBanner({ message, onDismiss, onAskSideChat }: ThreadE
           >
             <X size={14} aria-hidden="true" />
           </button>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
     </div>
   )
 }

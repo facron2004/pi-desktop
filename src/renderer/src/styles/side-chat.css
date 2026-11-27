@@ -530,63 +530,6 @@
   flex: 0 0 auto;
 }
 
-/* The error copy action stays visible: it is not a tool row's hover action. */
-.notice__copy,
-.thread-error-banner__copy {
-  display: grid;
-  place-items: center;
-  width: var(--ctl-xs);
-  height: var(--ctl-xs);
-  flex: 0 0 auto;
-  border: 0;
-  border-radius: var(--r-sm);
-  background: none;
-  color: var(--text-faint);
-  cursor: pointer;
-}
-
-.notice__copy:hover,
-.thread-error-banner__copy:hover {
-  color: var(--accent);
-}
-
-.notice__copy:focus-visible,
-.thread-error-banner__copy:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-}
-
-.notice__ask-side,
-.thread-error-banner__ask-side {  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  flex: 0 0 auto;
-  height: var(--ctl-xs);
-  padding: 0 var(--sp-2);
-  border: 1px solid currentColor;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: inherit;
-  font-size: var(--text-assist);
-  font-weight: var(--weight-medium);
-  line-height: var(--leading-assist);
-  white-space: nowrap;
-  cursor: pointer;
-  opacity: 0.9;
-  transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
-}
-
-.notice__ask-side:hover,
-.thread-error-banner__ask-side:hover {
-  opacity: 1;
-  background: var(--status-danger-soft);
-}
-
-.notice__ask-side:focus-visible,
-.thread-error-banner__ask-side:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-}
 
 .file-changes__side-review {
   display: inline-flex;
