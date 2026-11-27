@@ -4875,6 +4875,27 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     const rememberDefaults = !isSide && options?.rememberDefaults !== false
     const spec = `${model.provider}/${model.id}`
     const selection = rememberDefaults ? ++modelPreferenceSequence : modelPreferenceSequence
+    // The chip answers the click, not Pi. A pick waits on a live process (a
+    // five-second `runtime.has`, the command itself, and for a model Pi has not
+    // heard of yet a registry refresh), and painting only after the answer made
+    // every switch feel like the app was thinking. Paint first, record the
+    // choice, and roll the reading back — with the error — if Pi refuses.
+    const paintKey = threadKey(key)
+    const paintedFrom = (get().threads[paintKey]?.piState ?? get().piState)?.model
+    const paintModel = (value: ModelInfo): void => {
+      bindSet(set, get, paintKey)((state) => ({
+        piState: {
+          isStreaming: state.isStreaming,
+          isCompacting: Boolean(state.run.compaction),
+          ...state.piState,
+          model: value
+        }
+      }))
+    }
+    const restorePaintedModel = (): void => {
+      if (paintedFrom) paintModel(paintedFrom)
+    }
+    paintModel(model)
     try {
       // Pi starts when a message is sent, not when a picker changes. A cold
       // conversation has no process to hear `set_model`, so store the choice
@@ -4936,9 +4957,13 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         return true
       }
       const apply = async (liveKey: string): Promise<boolean> => {
-        const known = get().threads[liveKey]?.models.some(
-          (item) => item.provider === model.provider && item.id === model.id
-        )
+        // The pick is only "new to Pi" when neither this conversation's snapshot
+        // nor the session-wide catalogue names it. Reading just the thread's own
+        // list sent a `/desktop-refresh-models` prompt — a full round trip — for
+        // models Pi already knew, whenever that snapshot happened to be empty.
+        const knownIn = (list: readonly ModelInfo[] | undefined): boolean =>
+          Boolean(list?.some((item) => item.provider === model.provider && item.id === model.id))
+        const known = knownIn(get().threads[liveKey]?.models) || knownIn(get().models)
         const refreshModels = async (): Promise<boolean> => {
           const run = get().threads[threadKey(liveKey)]?.run
           if (run && !run.settled && !(starting && run.phase === 'queued' && !run.runId)) {
@@ -4969,14 +4994,9 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
           if (!await refreshModels()) return false
           confirmed = await sendModel()
         }
-        bindSet(set, get, liveKey)((state) => ({
-          piState: {
-            isStreaming: state.isStreaming,
-            isCompacting: Boolean(state.run.compaction),
-            ...state.piState,
-            model: confirmed?.id && confirmed.provider ? confirmed : model
-          }
-        }))
+        // Pi may answer with its own canonical record; it replaces the optimistic
+        // paint, and a refused pick rolls back to what was on screen before.
+        paintModel(confirmed?.id && confirmed.provider ? confirmed : model)
         void get().refreshState(threadKey(liveKey)).catch(() => undefined)
         await rememberChoice(threadKey(liveKey))
         recordModelUse(model)
@@ -4991,6 +5011,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
             try {
               if (!await apply(liveKey)) throw new Error('Pi did not apply the model choice. Try switching the model again.')
             } catch (error) {
+              restorePaintedModel()
               bindSet(set, get, liveKey)({ error: messageOf(error) })
               throw error
             }
@@ -4999,8 +5020,13 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         return true
       }
       pendingModelSelections.delete(liveKey)
-      return await apply(liveKey)
+      const applied = await apply(liveKey)
+      // A pick that Pi never received (or refused before it could) must not
+      // leave the chip wearing a model the conversation is not using.
+      if (!applied) restorePaintedModel()
+      return applied
     } catch (error) {
+      restorePaintedModel()
       bindSet(set, get, owner)({ error: messageOf(error) })
       return false
     } finally {
@@ -5039,6 +5065,25 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     const rememberDefaults = !isSide && options?.rememberDefaults !== false
     const selection = rememberDefaults ? ++thinkingPreferenceSequence : thinkingPreferenceSequence
     if (rememberDefaults) thinkingPreferenceValue = level
+    // The chip answers the click. A level change waits on a live process and a
+    // state snapshot, and painting only after both made the effort switch read
+    // as slow as the model switch used to; paint it, then confirm.
+    const paintKey = threadKey(key)
+    const paintedLevel = (get().threads[paintKey]?.piState ?? get().piState)?.thinkingLevel
+    const paintLevel = (value: string): void => {
+      bindSet(set, get, paintKey)((state) => ({
+        piState: {
+          isStreaming: state.isStreaming,
+          isCompacting: Boolean(state.run.compaction),
+          ...state.piState,
+          thinkingLevel: value
+        }
+      }))
+    }
+    const restorePaintedLevel = (): void => {
+      if (paintedLevel) paintLevel(paintedLevel)
+    }
+    paintLevel(level)
     try {
       // A cold chat has no process yet. Starting one just to store the effort
       // is what the empty card was avoiding; the next launch already reads
@@ -5069,11 +5114,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
             12_000,
             'Pi did not acknowledge the reasoning change. Try again.'
           )
-          await withTimeout(
-            get().refreshState(liveKey),
-            10_000,
-            'Refreshing the conversation timed out.'
-          ).catch(() => undefined)
+          void get().refreshState(liveKey).catch(() => undefined)
           if (liveKey !== key) {
             set((state) => ({
               sideThinkingOverrides: {
@@ -5098,11 +5139,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
           12_000,
           'Pi did not acknowledge the reasoning change. Try again.'
         )
-        await withTimeout(
-          get().refreshState(liveKey),
-          10_000,
-          'Refreshing the conversation timed out.'
-        ).catch(() => undefined)
+        void get().refreshState(liveKey).catch(() => undefined)
       }
       if (rememberDefaults && selection === thinkingPreferenceSequence) {
         const shouldWrite = get().settings.thinkingLevel !== level ||
@@ -5120,6 +5157,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         }
       }
     } catch (error) {
+      restorePaintedLevel()
       bindSet(set, get, owner)({ error: messageOf(error) })
     } finally {
       agentSettingSelectionsInFlight.delete(lockKey)

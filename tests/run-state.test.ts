@@ -276,6 +276,137 @@ test('a rejected live model choice does not change the draft default', async () 
   }
 })
 
+const paintedModelOf = (key: string): string | undefined => {
+  const state = useAppStore.getState()
+  return state.threads[key]?.piState?.model?.id ?? state.piState?.model?.id
+}
+
+test('the chip answers a pick before Pi does', async () => {
+  const previous = useAppStore.getState()
+  const originalRequest = bridge.runtime.request
+  const runtime = bridge.runtime as typeof bridge.runtime & { has?: (key: string) => Promise<boolean> }
+  const originalHas = runtime.has
+  await previous.newChat()
+  const active = useAppStore.getState()
+  const key = active.draftId!
+  const oldModel: ModelInfo = { id: 'old', provider: 'existing', api: 'openai-completions',
+    reasoning: false, input: ['text'], contextWindow: 32000, maxTokens: 4096 }
+  const target: ModelInfo = { ...oldModel, id: 'slow', provider: 'added' }
+  const piState: PiState = { isStreaming: false, isCompacting: false, model: oldModel }
+  const thread = { ...active.threads[key], models: [oldModel, target], piState }
+  const answer = Promise.withResolvers<ModelInfo>()
+  const sent = Promise.withResolvers<void>()
+  runtime.has = async () => true
+  bridge.runtime.request = async (command) => {
+    if (command === 'set_model') {
+      sent.resolve()
+      return answer.promise
+    }
+    // The snapshot that follows the pick reports the model that is now running.
+    if (command === 'get_state') {
+      return { isStreaming: false, isCompacting: false, model: target, thinkingLevel: 'off' }
+    }
+    if (command === 'get_available_models') return { models: [oldModel, target] }
+    if (command === 'get_available_thinking_levels') return { levels: ['off'] }
+    if (command === 'get_session_stats') return {}
+    return {}
+  }
+  useAppStore.setState({ piState, threads: { ...active.threads, [key]: thread } })
+  try {
+    const pick = useAppStore.getState().setModel(target)
+    await sent.promise
+    assert.equal(paintedModelOf(key), 'slow',
+      'the chip waited for Pi instead of showing the model the reader picked')
+    answer.resolve(target)
+    assert.equal(await pick, true)
+    assert.equal(paintedModelOf(key), 'slow')
+  } finally {
+    bridge.runtime.request = originalRequest
+    if (originalHas) runtime.has = originalHas
+    else delete (runtime as { has?: unknown }).has
+    useAppStore.setState(previous)
+  }
+})
+
+test('a model the session catalogue already names needs no registry refresh', async () => {
+  const previous = useAppStore.getState()
+  const originalRequest = bridge.runtime.request
+  await previous.newChat()
+  const active = useAppStore.getState()
+  const key = active.draftId!
+  const model: ModelInfo = { id: 'shared', provider: 'existing', api: 'openai-completions',
+    reasoning: false, input: ['text'], contextWindow: 32000, maxTokens: 4096 }
+  const target: ModelInfo = { ...model, id: 'other' }
+  const calls: string[] = []
+  bridge.runtime.request = async (command) => {
+    calls.push(command)
+    if (command === 'prompt') return { disposition: 'handled' }
+    if (command === 'set_model') return target
+    return {}
+  }
+  // The conversation's own snapshot has no models yet — the state every switch
+  // used to pay a `/desktop-refresh-models` prompt for.
+  const thread = { ...active.threads[key], models: [],
+    piState: { isStreaming: false, isCompacting: false, model } as PiState }
+  useAppStore.setState({
+    models: [model, target],
+    threads: { ...active.threads, [key]: thread }
+  })
+  try {
+    assert.equal(await useAppStore.getState().setModel(target), true, useAppStore.getState().error)
+    assert.equal(calls.includes('prompt'), false,
+      'a known model was still sent through a registry refresh')
+    assert.equal(calls.includes('set_model'), true)
+  } finally {
+    bridge.runtime.request = originalRequest
+    useAppStore.setState(previous)
+  }
+})
+
+test('the reasoning chip answers a pick before Pi does', async () => {
+  const previous = useAppStore.getState()
+  const originalRequest = bridge.runtime.request
+  const originalEnsure = previous.ensureRuntime
+  const runtime = bridge.runtime as typeof bridge.runtime & { has?: (key: string) => Promise<boolean> }
+  const originalHas = runtime.has
+  await previous.newChat()
+  const active = useAppStore.getState()
+  const key = active.draftId!
+  const model: ModelInfo = { id: 'thinking', provider: 'existing', api: 'openai-completions',
+    reasoning: true, input: ['text'], contextWindow: 32000, maxTokens: 4096 }
+  const piState: PiState = { isStreaming: false, isCompacting: false, model, thinkingLevel: 'low' }
+  const thread = { ...active.threads[key], models: [model], piState, thinkingLevels: ['low', 'high'] }
+  const answer = Promise.withResolvers<void>()
+  const sent = Promise.withResolvers<void>()
+  runtime.has = async () => true
+  bridge.runtime.request = async (command) => {
+    if (command !== 'set_thinking_level') return {}
+    sent.resolve()
+    await answer.promise
+    return {}
+  }
+  useAppStore.setState({
+    piState,
+    thinkingLevels: ['low', 'high'],
+    threads: { ...active.threads, [key]: thread },
+    ensureRuntime: async () => key
+  })
+  try {
+    const change = useAppStore.getState().setThinkingLevel('high')
+    await sent.promise
+    const painted = useAppStore.getState().piState?.thinkingLevel
+    assert.equal(painted, 'high',
+      'the effort chip waited for Pi instead of showing the level the reader picked')
+    answer.resolve()
+    await change
+  } finally {
+    bridge.runtime.request = originalRequest
+    if (originalHas) runtime.has = originalHas
+    else delete (runtime as { has?: unknown }).has
+    useAppStore.setState({ ...previous, ensureRuntime: originalEnsure })
+    await useAppStore.getState().newChat().catch(() => undefined)
+  }
+})
 for (const rejected of [false, true]) {
   test(`a model selected during prewarm ${rejected ? 'preserves the draft after rejection' : 'applies once before the first prompt'}`, { timeout: 5000 }, async (t) => {
     const previous = useAppStore.getState()

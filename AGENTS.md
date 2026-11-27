@@ -1118,9 +1118,13 @@ be able to stack their timeouts — the picker stayed open (and the module-wide
 "already in progress" flag blocked every later attempt) while that happened,
 which reads as a frozen app. Three rules keep a pick under a frame:
 
-- `setModel` updates the chip, session row, side override and draft default
-  from a successful `set_model` response. A rejected pick shows an error and
-  keeps the confirmed model and saved preferences.
+- `setModel` **paints first**. The chip, the session row, the side override and
+  the draft default show the picked model — and `setThinkingLevel` shows the
+  picked level — before the command goes out, because a pick otherwise waits on
+  a live process and on a state snapshot and reads as a slow switch. Pi's own
+  record replaces the optimistic one when it answers; a rejected pick rolls the
+  reading back and shows the error, and saved preferences are written only after
+  Pi accepts.
 - It **never calls `ensureRuntime`**. Opening a conversation prewarms Pi, so the
   first pick after a switch lands mid-boot; waiting for that start made one pick
   cost the whole cold start (measured: 1.3 s, and 9.9 s on a slow boot with the
@@ -1130,10 +1134,13 @@ which reads as a frozen app. Three rules keep a pick under a frame:
   model confirmation and keeps its draft if Pi rejects it.
 - It **does not await a state snapshot**. `refreshState` follows at its own
   pace; a slow read is not a failed switch. Measured on a ready process: 6 ms.
-- A model the running process does not know yet (a provider just saved) still
-  gets `/desktop-refresh-models` first — but only for an idle, ready process,
-  and again as the fallback when `set_model` answers "unknown model". Never for
-  a booting one: its registry is not written yet.
+- A model that neither the conversation's snapshot nor the session-wide catalogue
+  names (a provider just saved) still gets `/desktop-refresh-models` first —
+  but only for an idle, ready process, and again as the fallback when
+  `set_model` answers "unknown model". Never for a booting one: its registry is
+  not written yet. Reading only the conversation's own list sent that prompt — a
+  full round trip — for models Pi already knew, whenever that snapshot happened
+  to be empty.
 
 Every wait behind `setModel` / `setThinkingLevel` keeps a deadline
 (`lib/with-timeout.ts`): 5 s for `runtime:has`, 5 s for `set_model`, 15 s for the
