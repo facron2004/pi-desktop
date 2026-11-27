@@ -47,9 +47,18 @@ type PiCliListener = (status: VersionItemStatus | null) => void
  * be downloaded and installed — but "you are already current" and "the check
  * failed" have no button to live on, so they are said once, in a notice the
  * reader dismisses. `null` means no notice is showing.
+ *
+ * A current app is not the whole answer: the check also reads the bundled Pi
+ * CLI, and a newer agent has no control on that button either. Naming it here
+ * is what sends the reader to the About page instead of leaving "up to date"
+ * on screen while the agent is old.
  */
 export type AppUpdateResultNotice =
-  | { kind: 'current'; current: string }
+  | {
+      kind: 'current'
+      current: string
+      piCli?: { current: string; latest: string }
+    }
   | { kind: 'error'; error: string }
 
 type ResultNoticeListener = (notice: AppUpdateResultNotice | null) => void
@@ -471,8 +480,16 @@ export function checkForAppUpdates(): Promise<VersionCheckResult> {
     const result = await window.pi.app.checkUpdate()
     noteAppUpdateCheck(result)
     if (result.app.error) noteAppUpdateResult({ kind: 'error', error: result.app.error })
-    else if (!result.app.hasUpdate) noteAppUpdateResult({ kind: 'current', current: result.app.current })
-    else dismissAppUpdateResult()
+    else if (!result.app.hasUpdate) {
+      const piCli = result.piCli.hasUpdate && result.piCli.latest
+        ? { current: result.piCli.current, latest: result.piCli.latest }
+        : undefined
+      noteAppUpdateResult({
+        kind: 'current',
+        current: result.app.current,
+        ...(piCli ? { piCli } : {})
+      })
+    } else dismissAppUpdateResult()
     return result
   })().finally(() => { checking = undefined })
   return checking

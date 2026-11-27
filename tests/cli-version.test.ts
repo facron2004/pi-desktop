@@ -7,6 +7,7 @@ import {
   packumentUrl,
   parseTriplet,
   pickLatestVersion,
+  readBundledCliStatus,
   type JsonGetter
 } from '../src/main/pi/cli-version'
 
@@ -99,4 +100,46 @@ test('only an unanswered check is described as a failure', () => {
     describeCheckFailure({ current: '1.5.2', hasUpdate: false, error: 'npm view timed out after 8000ms' }),
     'npm view timed out after 8000ms'
   )
+})
+
+test('a bundled CLI is compared with the registry, and an update names both versions', async () => {
+  const latestIs = (version: string) => async () => version
+  assert.deepEqual(await readBundledCliStatus('1.6.0', 'bundled', latestIs('1.6.1')), {
+    current: '1.6.0',
+    latest: '1.6.1',
+    hasUpdate: true
+  })
+  assert.deepEqual(await readBundledCliStatus('1.6.1', 'bundled', latestIs('1.6.1')), {
+    current: '1.6.1',
+    latest: '1.6.1',
+    hasUpdate: false
+  })
+  assert.deepEqual(await readBundledCliStatus('1.7.0', 'bundled', latestIs('1.6.1')), {
+    current: '1.7.0',
+    latest: '1.6.1',
+    hasUpdate: false
+  })
+})
+
+test('a CLI the app does not own is never offered an update', async () => {
+  let asked = 0
+  const latest = async () => {
+    asked += 1
+    return '99.0.0'
+  }
+  for (const source of ['custom', 'path', 'none'] as const) {
+    assert.deepEqual(await readBundledCliStatus('1.6.0', source, latest), {
+      current: '1.6.0',
+      hasUpdate: false
+    })
+  }
+  assert.equal(asked, 0, 'a custom, PATH or missing CLI must not reach the registry')
+})
+
+test('a check that could not answer is named instead of reading as current', async () => {
+  const status = await readBundledCliStatus('1.6.0', 'bundled', async () => {
+    throw new Error('registry down')
+  })
+  assert.deepEqual(status, { current: '1.6.0', hasUpdate: false, error: 'registry down' })
+  assert.equal(describeCheckFailure(status), 'registry down')
 })

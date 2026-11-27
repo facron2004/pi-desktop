@@ -1703,8 +1703,8 @@ export async function readSessionHeadMessages(file: string, handle?: FileHandle)
 
 /**
  * Name a cold session by appending one `session_info` entry, the same record
- * Pi writes. Refuses a missing file. The caller must already know that no
- * runtime is writing this JSONL.
+ * Pi writes. The caller holds the writer lock, and the pathname must still
+ * identify the open file when the title is appended.
  */
 export async function appendSessionName(
   file: string,
@@ -1717,13 +1717,13 @@ export async function appendSessionName(
   const writer = handle ?? await open(file, SESSION_FILE_WRITE_FLAGS).catch(() => null)
   if (!writer) return false
   try {
-    const fileStats = await writer.stat().catch(() => null)
-    if (!fileStats?.isFile() || fileStats.size === 0) return false
+    const fileStats = await writer.stat({ bigint: true }).catch(() => null)
+    if (!fileStats?.isFile() || fileStats.size === 0n) return false
     if (onlyIfUnnamed) {
-      const meta = await getSessionMetaFromHandle(file, writer, fileStats)
+      const meta = await getSessionMetaFromHandle(file, writer)
       if (!meta || meta.name) return false
     }
-    const size = fileStats.size
+    const size = Number(fileStats.size)
     const byte = Buffer.allocUnsafe(1)
     const maxBytes = Math.min(size, MAX_SESSION_BYTES)
     let windowBytes = size > MAX_SESSION_BYTES ? MAX_META_TAIL_BYTES : maxBytes
@@ -1765,8 +1765,12 @@ export async function appendSessionName(
       timestamp: new Date().toISOString(),
       name: sanitized
     }
-    const current = await writer.stat()
-    if (current.size !== fileStats.size || current.mtimeMs !== fileStats.mtimeMs) return false
+    const current = await lstat(file, { bigint: true }).catch(() => null)
+    if (
+      !current?.isFile() || current.nlink > 1n ||
+      current.dev !== fileStats.dev || current.ino !== fileStats.ino ||
+      current.size !== fileStats.size || current.mtimeNs !== fileStats.mtimeNs || current.ctimeNs !== fileStats.ctimeNs
+    ) return false
     await writer.appendFile(`${separator}${JSON.stringify(entry)}\n`, 'utf8')
     invalidateSessionCache(file)
     return true

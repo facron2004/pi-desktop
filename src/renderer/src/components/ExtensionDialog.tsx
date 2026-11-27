@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowUpRight, Check, ListChecks, MessageSquareText, TriangleAlert } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { ArrowUpRight, ListChecks, MessageSquareText, Pencil, TriangleAlert, X } from 'lucide-react'
 import { isSideSessionKey, PLAN_REVIEW_TITLE } from '@shared/types'
 import { draftKeyOf, useAppStore, type SessionThread } from '../store/useAppStore'
+import { useAskDockHost } from '../lib/ask-dock'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { useT } from '../lib/i18n'
 import { activeConversationTitle, listPendingUiSessions } from '../lib/live-sessions'
@@ -20,13 +22,29 @@ function pendingUiSignature(threads: Readonly<Record<string, SessionThread>>): s
   return sig
 }
 
+export interface ExtensionDialogProps {
+  /**
+   * True while the conversation column is covered — a maximized tool panel, a
+   * floating inspector. A card docked on the composer would be hidden under
+   * that surface, so the question keeps its modal presentation there.
+   */
+  dockBlocked?: boolean
+}
+
 /**
- * Modal for the blocking half of Pi's extension UI sub-protocol.
+ * The blocking half of Pi's extension UI sub-protocol.
  *
  * `select`, `confirm`, `input` and `editor` pause the agent until the user
- * answers, so the dialog stays open until a response is on its way.
+ * answers, so the surface stays up until a response is on its way.
+ *
+ * A plain question (`select`) is not a modal: it belongs to the conversation on
+ * screen and it is answered from the input box, so the card docks on that box
+ * and the window keeps its colour — the transcript behind it is what the
+ * question is about. Approvals, plan reviews, text fields and a question from
+ * another conversation stay modal, because those are about the app rather than
+ * about the box the reader is typing in.
  */
-export function ExtensionDialog() {
+export function ExtensionDialog({ dockBlocked = false }: ExtensionDialogProps) {
   const activeUiRequest = useAppStore((state) => state.uiRequest)
   const activeKey = useAppStore((state) => draftKeyOf(state))
   const sideChatOpen = useAppStore((state) => state.sideChatOpen)
@@ -75,6 +93,13 @@ export function ExtensionDialog() {
   const visibleUiRequest = activeUiRequest ?? sideUiRequest
   const preferredSessionKey = activeUiRequest ? activeKey : sideSessionKey
 
+  // Which input box owns the question: the side panel answers a question asked
+  // in its own conversation, the main composer answers every other one. A
+  // surface with no composer on screen publishes no slot, and the dialog falls
+  // back to its modal presentation there.
+  const dockSurface = sideSessionKey && preferredSessionKey === sideSessionKey ? 'side' : 'main'
+  const dockHost = useAskDockHost(dockSurface)
+
   const [selectedSessionKey, setSelectedSessionKey] = useState<string | null>(null)
   const activeSessionPending = preferredSessionKey
     ? pendingSessions.find((entry) => entry.sessionKey === preferredSessionKey)
@@ -98,8 +123,28 @@ export function ExtensionDialog() {
   const isSideTarget = Boolean(
     targetSessionKey && (isSideSessionKey(targetSessionKey) || targetSessionKey in sideParentByKey)
   )
+  const targetParentKey = targetSessionKey ? sideParentByKey[targetSessionKey] : undefined
+  const isOtherSession = isSideTarget
+    ? Boolean(!sideChatOpen || (targetParentKey && targetParentKey !== activeKey))
+    : Boolean(targetSessionKey && targetSessionKey !== activeKey)
+
+  // A question is answered from the box it is about, so it docks on top of that
+  // box instead of dimming the window. Everything else stays modal: an approval
+  // or a plan review is about the app rather than one input, a question from
+  // another conversation is not about what is on screen, and a queue of waiting
+  // conversations is the modal's own switcher.
+  const docked = Boolean(
+    dockHost &&
+    !dockBlocked &&
+    request?.method === 'select' &&
+    !request.approval &&
+    !isOtherSession &&
+    pendingSessions.length <= 1
+  )
 
   const [value, setValue] = useState('')
+  /** The answer typed on a question's own line instead of picked from its rows. */
+  const [custom, setCustom] = useState('')
   const [selected, setSelected] = useState<string | null>(null)
   const [remaining, setRemaining] = useState<number | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | HTMLInputElement>(null)
@@ -131,10 +176,57 @@ export function ExtensionDialog() {
     })
   }
 
-  useDialogFocus(dialogRef, () => {
+  const closeDialog = () => {
     if (planReview) void keepPlanning(true)
     else void dismissUi(uiTarget)
-  }, Boolean(request))
+  }
+  const closeRef = useRef(closeDialog)
+  closeRef.current = closeDialog
+
+  // A modal traps the keyboard and claims Escape. A docked card is part of the
+  // page — the reader may still scroll the conversation, or type in the box
+  // below it — so it takes Escape only while its own controls hold the focus,
+  // and it leaves the rest of the keyboard alone.
+  useDialogFocus(dialogRef, closeDialog, Boolean(request) && !docked)
+
+  useEffect(() => {
+    if (!docked) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      const card = dialogRef.current
+      if (!card || !card.contains(document.activeElement)) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      closeRef.current()
+    }
+    document.addEventListener('keydown', onKeyDown, true)
+    return () => document.removeEventListener('keydown', onKeyDown, true)
+  }, [docked])
+
+  // Answering a docked question hands the keyboard back to the box it rested
+  // on, the way the plan review does: the reader answers and keeps typing. The
+  // dialog itself stays mounted after the request, so this watches the
+  // presentation rather than the component.
+  const wasDocked = useRef(false)
+  useEffect(() => {
+    if (docked) {
+      wasDocked.current = true
+      return
+    }
+    if (!wasDocked.current) return
+    wasDocked.current = false
+    requestAnimationFrame(() => {
+      if (document.querySelector('[aria-modal="true"]')) return
+      const current = useAppStore.getState()
+      const stillBlocked = isSideTarget
+        ? Boolean(current.sideSessionKey && current.threads[current.sideSessionKey]?.uiRequest)
+        : Boolean(current.uiRequest)
+      if (stillBlocked) return
+      window.dispatchEvent(
+        new CustomEvent('pi:focus-composer', { detail: { target: isSideTarget ? 'side' : 'main' } })
+      )
+    })
+  }, [docked, isSideTarget])
 
   useEffect(() => {
     if (!visibleUiRequest) {
@@ -147,6 +239,7 @@ export function ExtensionDialog() {
   useEffect(() => {
     if (!request) return
     setValue(request.method === 'editor' ? (request.prefill ?? '') : '')
+    setCustom('')
     setSelected(request.options?.length ? request.options[0] : null)
     const frame = requestAnimationFrame(() => {
       if (planReview && planRef.current) {
@@ -222,10 +315,6 @@ export function ExtensionDialog() {
     selectedPending?.title,
     selectedPending?.cwd ?? request.approval?.cwd
   )
-  const targetParentKey = targetSessionKey ? sideParentByKey[targetSessionKey] : undefined
-  const isOtherSession = isSideTarget
-    ? Boolean(!sideChatOpen || (targetParentKey && targetParentKey !== activeKey))
-    : Boolean(targetSessionKey && targetSessionKey !== activeKey)
 
   const jumpToSession = () => {
     if (!targetSessionKey) return
@@ -255,6 +344,13 @@ export function ExtensionDialog() {
 
   const submit = () => {
     if (request.method === 'select') {
+      // An answer typed on the card's own line wins over a marked row: typing
+      // clears the row, so only one of the two is ever set.
+      const typed = custom.trim()
+      if (typed) {
+        void respondUi({ value: typed }, uiTarget)
+        return
+      }
       if (selected) void respondUi({ value: selected }, uiTarget)
       return
     }
@@ -265,16 +361,23 @@ export function ExtensionDialog() {
     void respondUi({ value }, uiTarget)
   }
 
-  return (
-    <div className="modal-layer">
-      <div
-        ref={dialogRef}
-        className={planReview ? 'modal modal--prompt modal--plan-review' : 'modal modal--prompt'}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="extension-dialog-title"
-        aria-describedby={planReview ? 'extension-dialog-plan-note' : undefined}
-      >
+  // A docked card says where it came from only when that is not already the
+  // box underneath it: a side chat's question, or another conversation's count.
+  const showOrigin = !docked || isSideTarget || totalPendingCount > 1
+
+  const card = (
+    <div
+      ref={dialogRef}
+      className={planReview ? 'modal modal--prompt modal--plan-review' : 'modal modal--prompt'}
+      role="dialog"
+      // A docked question is part of the page, not a modal: the conversation
+      // and the box around it stay reachable, and assistive technology must not
+      // be told to ignore them. Approvals and reviews keep the modal contract.
+      aria-modal={docked ? undefined : true}
+      aria-labelledby="extension-dialog-title"
+      aria-describedby={planReview ? 'extension-dialog-plan-note' : undefined}
+    >
+      {showOrigin ? (
         <div className="modal__context">
           <span
             className={`modal__context-session${isSideTarget ? ' modal__context-session--side' : ''}`}
@@ -300,92 +403,108 @@ export function ExtensionDialog() {
             </button>
           ) : null}
         </div>
-        {pendingSessions.length > 1 ? (
-          // A group of toggle buttons, not a tab list: there is no tab panel to
-          // point `aria-controls` at and no arrow-key model, so the honest
-          // contract is "pressed" on the conversation whose dialog is showing.
-          <div className="modal__switcher" role="group" aria-label={t('Conversations waiting for input')}>
-            {pendingSessions.map((entry) => {
-              const label = formatSessionLabel(entry.sessionKey, entry.title, entry.cwd)
-              const active = entry.sessionKey === targetSessionKey
-              return (
-                <button
-                  key={entry.sessionKey}
-                  type="button"
-                  aria-pressed={active}
-                  className="modal__switcher-tab"
-                  data-active={active}
-                  title={entry.cwd ? `${label} · ${entry.cwd}` : label}
-                  onClick={() => setSelectedSessionKey(entry.sessionKey)}
-                >
-                  <span className="modal__switcher-name">{label}</span>
-                  {entry.count > 1 ? <span className="modal__switcher-badge">{entry.count}</span> : null}
-                </button>
-              )
-            })}
-          </div>
-        ) : null}
-        <header className="modal__head modal__head--prompt">
-          <span className="modal__icon" data-kind={planReview ? 'plan-review' : request.method}>
-            {planReview ? (
-              <ListChecks size={16} />
-            ) : request.method === 'confirm' ? (
-              <TriangleAlert size={15} />
-            ) : (
-              <MessageSquareText size={15} />
-            )}
-          </span>
-          <div className="modal__headings">
-            <h2 id="extension-dialog-title" className="modal__title">{title}</h2>
-            {planReview ? (
-              <p id="extension-dialog-plan-note" className="modal__message">
-                {t('Approval restores the working tools for this conversation.')}
-              </p>
-            ) : request.message ? (
-              <p
-                id="extension-dialog-message"
-                className="modal__message"
-                data-long={request.message.length > 600 ? 'true' : undefined}
+      ) : null}
+      {pendingSessions.length > 1 && !docked ? (
+        // A group of toggle buttons, not a tab list: there is no tab panel to
+        // point `aria-controls` at and no arrow-key model, so the honest
+        // contract is "pressed" on the conversation whose dialog is showing.
+        <div className="modal__switcher" role="group" aria-label={t('Conversations waiting for input')}>
+          {pendingSessions.map((entry) => {
+            const label = formatSessionLabel(entry.sessionKey, entry.title, entry.cwd)
+            const active = entry.sessionKey === targetSessionKey
+            return (
+              <button
+                key={entry.sessionKey}
+                type="button"
+                aria-pressed={active}
+                className="modal__switcher-tab"
+                data-active={active}
+                title={entry.cwd ? `${label} · ${entry.cwd}` : label}
+                onClick={() => setSelectedSessionKey(entry.sessionKey)}
               >
-                {request.approval ? t(request.message) : request.message}
-              </p>
-            ) : null}
-          </div>
-        </header>
-
-        {planReview && request.message ? (
-          <div
-            key={request.id}
-            ref={planRef}
-            className="modal__plan"
-            role="region"
-            aria-label={t('Implementation plan')}
-            tabIndex={0}
+                <span className="modal__switcher-name">{label}</span>
+                {entry.count > 1 ? <span className="modal__switcher-badge">{entry.count}</span> : null}
+              </button>
+            )
+          })}
+        </div>
+      ) : null}
+      <header className="modal__head modal__head--prompt">
+        <span className="modal__icon" data-kind={planReview ? 'plan-review' : request.method}>
+          {planReview ? (
+            <ListChecks size={16} />
+          ) : request.method === 'confirm' ? (
+            <TriangleAlert size={15} />
+          ) : (
+            <MessageSquareText size={15} />
+          )}
+        </span>
+        <div className="modal__headings">
+          <h2 id="extension-dialog-title" className="modal__title">{title}</h2>
+          {planReview ? (
+            <p id="extension-dialog-plan-note" className="modal__message">
+              {t('Approval restores the working tools for this conversation.')}
+            </p>
+          ) : request.message ? (
+            <p
+              id="extension-dialog-message"
+              className="modal__message"
+              data-long={request.message.length > 600 ? 'true' : undefined}
+            >
+              {request.approval ? t(request.message) : request.message}
+            </p>
+          ) : null}
+        </div>
+        {/* A docked card sits where the reader types, so it carries its own
+            close control the way a composer does; the footer keeps the labelled
+            Cancel beside Send. */}
+        {docked ? (
+          <button
+            type="button"
+            className="modal__close"
+            aria-label={t('Cancel')}
+            title={t('Cancel')}
+            onClick={() => void dismissUi(uiTarget)}
           >
-            <Markdown>{request.message}</Markdown>
-          </div>
+            <X size={15} aria-hidden="true" />
+          </button>
         ) : null}
+      </header>
 
-        {request.approval ? (
-          <div className="modal__approval">
-            <strong>{request.approval.toolName}</strong>
-            {request.approval.toolSource !== 'builtin' ? (
-              <div className="modal__approval-cwd">
-                <span>{t('Tool source')}</span>
-                <code>{request.approval.toolSource || t('Unverified')}</code>
-              </div>
-            ) : null}
-            {request.approval.cwd ? (
-              <div className="modal__approval-cwd">
-                <span>{t('Working directory')}</span>
-                <code>{request.approval.cwd}</code>
-              </div>
-            ) : null}
-            <pre>{JSON.stringify(request.approval.input, null, 2)}</pre>
-          </div>
-        ) : null}
+      {planReview && request.message ? (
+        <div
+          key={request.id}
+          ref={planRef}
+          className="modal__plan"
+          role="region"
+          aria-label={t('Implementation plan')}
+          tabIndex={0}
+        >
+          <Markdown>{request.message}</Markdown>
+        </div>
+      ) : null}
 
-        {request.method === 'select' ? (
+      {request.approval ? (
+        <div className="modal__approval">
+          <strong>{request.approval.toolName}</strong>
+          {request.approval.toolSource !== 'builtin' ? (
+            <div className="modal__approval-cwd">
+              <span>{t('Tool source')}</span>
+              <code>{request.approval.toolSource || t('Unverified')}</code>
+            </div>
+          ) : null}
+          {request.approval.cwd ? (
+            <div className="modal__approval-cwd">
+              <span>{t('Working directory')}</span>
+              <code>{request.approval.cwd}</code>
+            </div>
+          ) : null}
+          <pre>{JSON.stringify(request.approval.input, null, 2)}</pre>
+        </div>
+      ) : null}
+
+      {request.method === 'select' ? (
+        <>
           <div
             className="modal__options"
             role="listbox"
@@ -404,6 +523,7 @@ export function ExtensionDialog() {
                     ? Math.min(options.length - 1, index + 1)
                     : Math.max(0, index - 1)
                 setSelected(options[next])
+                setCustom('')
                 return
               }
               if (event.key === 'Enter') {
@@ -420,84 +540,118 @@ export function ExtensionDialog() {
                 aria-selected={selected === option}
                 className="modal__option"
                 data-active={selected === option}
-                onClick={() => setSelected(option)}
+                onClick={() => {
+                  setSelected(option)
+                  setCustom('')
+                }}
                 onDoubleClick={() => void respondUi({ value: option }, uiTarget)}
               >
-                <span className="modal__option-mark">
-                  {selected === option ? <Check size={11} /> : null}
-                </span>
-                {option}
+                {/* The leading chip is the option's number, not a tick: the list
+                    reads as a set of choices (and as a keyboard hint) even before
+                    one is picked, and the picked row carries the selection. */}
+                <span className="modal__option-mark" aria-hidden="true">{index + 1}</span>
+                <span className="modal__option-label">{option}</span>
               </button>
             ))}
           </div>
-        ) : null}
+          {/* The choices are a convenience, not the only door: the reader may
+              answer in their own words instead. It is a row of the same shape,
+              but outside the listbox — a text field is not an option. */}
+          <div className="modal__option modal__answer" data-active={custom.trim() ? true : undefined}>
+            <span className="modal__option-mark" aria-hidden="true">
+              <Pencil size={12} />
+            </span>
+            <input
+              className="modal__answer-input"
+              value={custom}
+              placeholder={t('Or write your own answer…')}
+              aria-label={t('Custom answer')}
+              onChange={(event) => {
+                setCustom(event.target.value)
+                if (event.target.value) setSelected(null)
+              }}
+              onKeyDown={(event) => {
+                if (event.nativeEvent.isComposing || event.keyCode === 229) return
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  submit()
+                }
+              }}
+            />
+          </div>
+        </>
+      ) : null}
 
-        {request.method === 'input' ? (
-          <input
-            ref={inputRef as React.RefObject<HTMLInputElement>}
-            className="input modal__input"
-            value={value}
-            placeholder={request.placeholder}
-            aria-labelledby="extension-dialog-title"
-            aria-describedby={request.message ? 'extension-dialog-message' : undefined}
-            onChange={(event) => setValue(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.nativeEvent.isComposing || event.keyCode === 229) return
-              if (event.key === 'Enter') {
-                event.preventDefault()
-                submit()
-              }
-            }}
-          />
-        ) : null}
+      {request.method === 'input' ? (
+        <input
+          ref={inputRef as React.RefObject<HTMLInputElement>}
+          className="input modal__input"
+          value={value}
+          placeholder={request.placeholder}
+          aria-labelledby="extension-dialog-title"
+          aria-describedby={request.message ? 'extension-dialog-message' : undefined}
+          onChange={(event) => setValue(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing || event.keyCode === 229) return
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              submit()
+            }
+          }}
+        />
+      ) : null}
 
-        {request.method === 'editor' ? (
-          <textarea
-            ref={inputRef as React.RefObject<HTMLTextAreaElement>}
-            className="modal__editor"
-            rows={10}
-            value={value}
-            placeholder={request.placeholder}
-            aria-labelledby="extension-dialog-title"
-            aria-describedby={request.message ? 'extension-dialog-message' : undefined}
-            onChange={(event) => setValue(event.target.value)}
-          />
-        ) : null}
+      {request.method === 'editor' ? (
+        <textarea
+          ref={inputRef as React.RefObject<HTMLTextAreaElement>}
+          className="modal__editor"
+          rows={10}
+          value={value}
+          placeholder={request.placeholder}
+          aria-labelledby="extension-dialog-title"
+          aria-describedby={request.message ? 'extension-dialog-message' : undefined}
+          onChange={(event) => setValue(event.target.value)}
+        />
+      ) : null}
 
-        <footer className="modal__foot">
-          <span className="modal__note">{timeoutNote ?? ''}</span>
-          {planReview ? null : (
-            <button className="btn" onClick={() => void dismissUi(uiTarget)}>
-              {t('Cancel')}
-            </button>
-          )}
-          {request.method === 'confirm' ? (
-            <>
-              <button
-                ref={declineRef}
-                className="btn"
-                onClick={() => {
-                  if (planReview) void keepPlanning()
-                  else void respondUi({ confirmed: false }, uiTarget)
-                }}
-              >
-                {t(planReview ? 'Keep planning' : request.approval ? 'Deny' : 'No')}
-              </button>
-              <button className="btn btn--primary" onClick={submit}>
-                {t(planReview ? 'Start implementation' : request.approval ? 'Approve' : 'Yes')}
-              </button>
-            </>
-          ) : (
+      <footer className="modal__foot">
+        <span className="modal__note">{timeoutNote ?? ''}</span>
+        {planReview ? null : (
+          <button className="btn" onClick={() => void dismissUi(uiTarget)}>
+            {t('Cancel')}
+          </button>
+        )}
+        {request.method === 'confirm' ? (
+          <>
             <button
-              className="btn btn--primary"
-              onClick={submit}
-              disabled={request.method === 'select' && !selected}
+              ref={declineRef}
+              className="btn"
+              onClick={() => {
+                if (planReview) void keepPlanning()
+                else void respondUi({ confirmed: false }, uiTarget)
+              }}
             >
-              {t('Send')}
+              {t(planReview ? 'Keep planning' : request.approval ? 'Deny' : 'No')}
             </button>
-          )}
-        </footer>
-      </div>
+            <button className="btn btn--primary" onClick={submit}>
+              {t(planReview ? 'Start implementation' : request.approval ? 'Approve' : 'Yes')}
+            </button>
+          </>
+        ) : (
+          <button
+            className="btn btn--primary"
+            onClick={submit}
+            disabled={request.method === 'select' && !selected && !custom.trim()}
+          >
+            {t('Send')}
+          </button>
+        )}
+      </footer>
     </div>
   )
+
+  // The dock is the composer's own slot, above the input box: the card takes
+  // its width and the window keeps its colour behind it.
+  if (docked && dockHost) return createPortal(card, dockHost)
+  return <div className="modal-layer">{card}</div>
 }

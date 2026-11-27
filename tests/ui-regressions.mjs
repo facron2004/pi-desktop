@@ -72,14 +72,17 @@ const questionFixture = {
   prompts: {
     normal: 'UI_QUESTION_NORMAL Arrange the report',
     plan: 'UI_QUESTION_PLAN Plan the report',
-    cancel: 'UI_QUESTION_CANCEL Continue the report'
+    cancel: 'UI_QUESTION_CANCEL Continue the report',
+    custom: 'UI_QUESTION_CUSTOM Answer in my own words'
   },
   question: 'Which report should I prepare?',
   options: ['Summary only', 'Summary and verification'],
   prematureFile: 'should-wait-for-an-answer.txt',
-  reply: 'Report choice applied'
+  reply: 'Report choice applied',
+  customAnswer: 'A one-page summary with the failing cases first',
+  customReply: 'Custom answer applied'
 }
-const questionRequests = { normal: 0, plan: 0, cancel: 0 }
+const questionRequests = { normal: 0, plan: 0, cancel: 0, custom: 0 }
 const planFixture = {
   original: 'UI_PLAN_REVIEW Draft a verification plan',
   revision: 'UI_PLAN_REVIEW Revise the verification plan',
@@ -163,6 +166,11 @@ const fixture = createServer(async (req, res) => {
             { id: 'ui-ask-duplicate', name: 'desktop_ask_user', args }
           ])
         } else callTool('ui-ask', 'desktop_ask_user', args)
+      } else if (questionRound === 'custom') {
+        assert.ok(payload.messages.some((message) => message.role === 'tool' &&
+          JSON.stringify(message.content).includes(`The user answered: ${questionFixture.customAnswer}`)),
+          'Pi continued without the answer the reader typed')
+        finish(questionFixture.customReply)
       } else {
         assert.ok(payload.messages.some((message) => message.role === 'tool' &&
           JSON.stringify(message.content).includes(`The user selected: ${questionFixture.options[1]}`)), 'Pi continued without the selected answer')
@@ -491,7 +499,7 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     // list is not the one that will take focus. Hold this round's own dialog:
     // the wait refuses a node it already saw.
     let previousDialog = null
-    for (const [round, mode] of [['normal', 'default'], ['plan', 'plan'], ['cancel', 'goal']]) {
+    for (const [round, mode] of [['normal', 'default'], ['custom', 'default'], ['plan', 'plan'], ['cancel', 'goal']]) {
       if (store.getState().agentMode !== mode) await store.getState().setAgentMode(mode)
       await store.getState().send(questionFixture.prompts[round], [])
       const choice = await until(() => {
@@ -502,14 +510,62 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
       const options = choice.querySelector('[role="listbox"]')
       check(options && choice.querySelector('.modal__title').textContent === questionFixture.question,
         'The user question was replaced by a different dialog')
-      check([...options.querySelectorAll('[role="option"]')].map((option) => option.textContent.trim()).join('|') === questionFixture.options.join('|'),
+      // Each row is a number chip plus its label, so the choice's text lives in
+      // the label element rather than in the row's whole text.
+      const optionLabels = [...options.querySelectorAll('[role="option"]')]
+        .map((option) => (option.querySelector('.modal__option-label')?.textContent ?? option.textContent).trim())
+      check(optionLabels.join('|') === questionFixture.options.join('|'),
         'The dialog did not show the model’s choices')
+      // A question is answered from the box it is about, so it docks on the
+      // composer instead of covering the window: the transcript above it stays
+      // readable, and nothing dims the app behind it. The card's own entry
+      // animation scales it, so let that finish before the box is measured.
+      await pause(320)
+      const composerEl = document.querySelector('.composer')
+      const composerBox = composerEl.getBoundingClientRect()
+      const cardBox = choice.getBoundingClientRect()
+      check(Boolean(choice.closest('.composer-ask')) && Boolean(choice.closest('.main__body')),
+        'The question did not dock on the composer')
+      check(!document.querySelector('.modal-layer'), 'A docked question still laid a full-window layer over the app')
+      check(!choice.hasAttribute('aria-modal'), 'A docked question still announces itself as a modal')
+      check(!choice.querySelector('.modal__context'), 'The docked question repeated the conversation name it rests on')
+      check([...options.querySelectorAll('[role="option"] .modal__option-mark')]
+        .map((mark) => mark.textContent.trim()).join('|') ===
+        questionFixture.options.map((_, index) => String(index + 1)).join('|'),
+        'The question options are no longer numbered')
+      check(Boolean(choice.querySelector('.modal__answer-input')), 'The question lost its own-words answer line')
+      check(cardBox.bottom <= composerBox.top + 1, `The question card is not above the input box (${cardBox.bottom} > ${composerBox.top})`)
+      // The card is a compact sheet centred on the box, not a second column of
+      // the same width: it narrows to its own reading width and stays on axis.
+      const cardWidth = choice.offsetWidth
+      check(cardWidth < composerEl.offsetWidth, `The question card is not narrower than the input box (${cardWidth})`)
+      check(cardWidth <= 560, `The question card did not shrink (${cardWidth}px)`)
+      check(Math.abs((cardBox.left - composerBox.left) - (composerEl.offsetWidth - cardWidth) / 2) <= 2,
+        'The question card is not centred on the input box')
       check(store.getState().run.phase === 'waiting_approval', 'Pi did not pause while waiting for an answer')
       if (round === 'cancel') {
         const cancel = [...choice.querySelectorAll('.modal__foot button')].find((button) => button.textContent.trim() === 'Cancel')
         cancel.click()
         await until(() => !choice.isConnected && !store.getState().isStreaming, 'Cancelling the question did not settle the run')
         check(document.querySelector('.goal-bar[data-status="blocked"]'), 'The cancelled question did not pause the goal')
+      } else if (round === 'custom') {
+        // The reader may answer in their own words instead of picking a row:
+        // typing clears the choice, and 发送 sends the text as the answer.
+        const field = choice.querySelector('.modal__answer-input')
+        check(field, 'The question has no own-words answer line')
+        setInputValue(field, questionFixture.customAnswer)
+        await pause(80)
+        check(!options.querySelector('[role="option"][aria-selected="true"]'),
+          'Typing an answer left an option selected')
+        const send = [...choice.querySelectorAll('.modal__foot button')].find((button) => button.textContent.trim() === 'Send')
+        check(send && !send.disabled, 'The typed answer did not enable Send')
+        send.click()
+        await until(() => !choice.isConnected && !store.getState().isStreaming && store.getState().items.some((item) =>
+          item.kind === 'assistant' && item.blocks.some((block) => block.type === 'text' && block.text.includes(questionFixture.customReply))
+        ), 'The answer typed by the reader did not resume the requesting conversation')
+        check(store.getState().items.some((item) => item.kind === 'tool' && item.toolName === 'desktop_ask_user' &&
+          item.details?.answer === questionFixture.customAnswer && item.details?.custom === true),
+          'The conversation did not record the answer the reader typed')
       } else {
         // Re-read the list on every poll: a re-render hands focus to the node
         // that is on screen now, which is not always the one captured above.
@@ -519,8 +575,8 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
           return list && document.activeElement === list ? list : null
         }, 'The choice list did not receive keyboard focus')
         focusedOptions.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
-        await until(() => focusedOptions.querySelector('[aria-selected="true"]')?.textContent.trim() === questionFixture.options[1],
-          'Keyboard navigation did not select the second option')
+        await until(() => focusedOptions.querySelector('[aria-selected="true"] .modal__option-label')?.textContent.trim() ===
+          questionFixture.options[1], 'Keyboard navigation did not select the second option')
         focusedOptions.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
         await until(() => !choice.isConnected && !store.getState().isStreaming && store.getState().items.some((item) =>
           item.kind === 'assistant' && item.blocks.some((block) => block.type === 'text' && block.text.includes(questionFixture.reply))
@@ -532,7 +588,7 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
       await store.getState().newChat()
     }
     await store.getState().updateSettings({ permissionMode: 'full' })
-    passed.push('user questions wait, route choices to Pi and settle cleanly when cancelled')
+    passed.push('user questions dock on the composer, take a picked or typed answer, and settle cleanly when cancelled')
 
     await store.getState().setAgentMode('plan')
     await store.getState().send(planFixture.original, [])
@@ -3067,7 +3123,7 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
 
   // The「对话」head is a fold control: it hides the list it names and stays on
   // screen itself, because the caret is the only way back.
-  const sectionToggle = () => document.querySelector('.sidebar__projects .sidebar__section-toggle')
+  const sectionToggle = () => document.querySelector('.sidebar__projects .sidebar__section-fold')
   await until(() => sectionToggle(), 'The chat section head has no fold control')
   check(sectionToggle().getAttribute('aria-expanded') === 'true', 'The chat section started folded')
   const visibleRows = () => [...document.querySelectorAll('.sidebar__projects .session-item')]
@@ -4150,7 +4206,7 @@ try {
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
   assert.equal(passed.length, process.platform === 'win32' ? 86 : 80)
-  assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
+  assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1, custom: 2 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })
   assert.equal(readFileSync(path.join(workspace, planFixture.file), 'utf8'), planFixture.result)

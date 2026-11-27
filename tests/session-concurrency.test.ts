@@ -874,7 +874,7 @@ test('a saved HTML export keeps the destination for the toast action', async (t)
   assert.equal(useAppStore.getState().toast?.openPath, 'C:/exports/conversation.html')
 })
 
-test('exporting Markdown writes the transcript on screen without starting Pi', async () => {
+test('exporting Markdown labels partial history without starting Pi', async () => {
   await useAppStore.getState().newChat()
   const owner = useAppStore.getState().draftId!
   const thread = useAppStore.getState().threads[owner]
@@ -889,7 +889,9 @@ test('exporting Markdown writes the transcript on screen without starting Pi', a
       blocks: [{ type: 'text', text: '## Already Markdown\n\n```sh\nnpm test\n```' }]
     }
   ]
-  useAppStore.setState({ threads: { ...useAppStore.getState().threads, [owner]: { ...thread, items } } })
+  useAppStore.setState({
+    threads: { ...useAppStore.getState().threads, [owner]: { ...thread, items, historyTruncated: true } }
+  })
   const ensuresBefore = ensureCalls.length
 
   await useAppStore.getState().exportSessionMarkdown()
@@ -899,6 +901,7 @@ test('exporting Markdown writes the transcript on screen without starting Pi', a
   const [call] = exportMarkdownCalls
   assert.equal(call.owner, owner)
   assert.match(call.markdown, /^# /)
+  assert.match(call.markdown, /\n> This export includes the loaded conversation history\. Earlier messages may be missing\.\n\n## You/)
   assert.match(call.markdown, /## You\n\nWrite it down/)
   assert.match(call.markdown, /## Pi\n\n## Already Markdown/)
   assert.match(call.markdown, /```sh\nnpm test\n```/)

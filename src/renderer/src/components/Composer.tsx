@@ -26,6 +26,7 @@ import {
   type QueueKind
 } from '../store/useAppStore'
 import { readSessionViewSlice, useConversationScope } from '../lib/conversation-scope'
+import { releaseAskDockHost, setAskDockHost, type AskDockSurface } from '../lib/ask-dock'
 import {
   DEFAULT_IMAGE_QUALITY,
   DEFAULT_IMAGE_SIZE,
@@ -647,6 +648,21 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
     window.addEventListener('pi:focus-composer', focus)
     return () => window.removeEventListener('pi:focus-composer', focus)
   }, [isMainSurface])
+
+  // A blocking question docks on this box instead of covering the app. The
+  // slot above the input is handed to `ExtensionDialog` through the dock store,
+  // which is how a root-level dialog finds the composer it belongs to; the side
+  // panel publishes its own slot, so each box answers the question asked in it.
+  // A surface that is not on screen publishes nothing, and the question stays a
+  // modal there.
+  const askDock = useRef<HTMLDivElement | null>(null)
+  const askSurface: AskDockSurface = isMainSurface ? 'main' : 'side'
+  useEffect(() => {
+    const node = askDock.current
+    if (!node) return
+    setAskDockHost(askSurface, node)
+    return () => releaseAskDockHost(askSurface, node)
+  }, [askSurface])
 
   // `/image` and the Add menu's Image action both land here: the generator's
   // controls belong to the scoped composer, so they load in place instead of a
@@ -1653,6 +1669,12 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
             </button>
           </div>
         ) : null}
+
+        {/* The question dock. `ExtensionDialog` portals a blocking question in
+            here, so it rests on the input box instead of covering the window:
+            same column, same width, no scrim. Empty at rest, and `:empty` in
+            the stylesheet keeps it from reserving a row. */}
+        <div className="composer-ask" ref={askDock} />
 
         <div
           className="composer"

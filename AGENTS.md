@@ -30,7 +30,9 @@ over its RPC protocol. It does **not** reimplement the agent — it is a protoco
 7. **Answer extension dialogs.** `select`, `confirm`, `input` and `editor` block the
    agent until the client replies with an `extension_ui_response` carrying Pi's own
    request id — mint a new id and Pi waits forever. The answer goes out through
-   `runtime:respondUi`; never through `runtime:request`.
+   `runtime:respondUi`; never through `runtime:request`. A `select` is answered on
+   the composer it belongs to (see [A blocking question rests on the
+   box](#a-blocking-question-rests-on-the-box)); the others are modals.
 8. **Treat session paths from the renderer as untrusted.** Before hydrating,
    resuming, renaming or removing a session, resolve it inside
    `resolveSessionRoot()` and reject traversal, symlink escapes, non-JSONL
@@ -1207,6 +1209,94 @@ dismissal clock while the pointer is over the card or focus is inside it, and
 would be a race against the timer. `clearToast` also clears the clock, so the
 next message starts from its own delay.
 
+### A blocking question rests on the box
+
+An agent's question (`desktop_ask_user`, or any extension's `ctx.ui.select`) is
+not an app-level dialog: it is about the conversation on screen and it is
+answered from the input box. It used to arrive as a centered modal over a dimmed
+window — the scrim washed out the very transcript the answer was about, and the
+card floated in the middle of the window, away from the box the reader types in.
+The card now **docks on the composer**: same column, directly above the input,
+and nothing is dimmed or blurred.
+
+Its shape is DSH's ask card, not this app's dialog sheet
+(`@deepseek-ai/dsh-client-ui-user-questions`, `QuestionComposer`). The first
+version rode on `.modal`'s anatomy — a banner with an icon tile, a 20px dialog
+headline, a tinted footer — and on the wide composer it read as a settings sheet
+parked on top of the box. The docked card therefore borrows the input's own
+surface and radius (the raised surface, `--surface-chrome` in the light theme,
+`--composer-radius` 20px, `--shadow-md` one elevation step above the box, no
+banner rule and no tinted footer) and keeps the question's anatomy: a 16px/500
+title row with a 24px close control in the corner, numbered 40px option rows
+(the chip is the option's number, so the list reads as choices before one is
+picked; the picked row answers with `--bg-active` plus a hairline and an accent
+number), a scrolling list capped at `min(60vh, 520px)`, and a quiet footer
+carrying the timeout note and Cancel/Send. It is a **sheet, not a column**: the
+card is `max-width: min(100%, 560px)` and `margin-inline: auto`, so it sits
+centred on the box it rests on instead of stretching to the composer's width.
+A very long question scrolls inside its own title block
+(`max-height: min(30vh, 200px)`) rather than swallowing the choices. Those
+overrides live in one block under "The question dock" in `global.css`; the
+numbered rows are the shared `.modal__option` rules, so a modal question from
+another conversation reads the same way. The list stays one Tab stop, so its
+focus ring is drawn on the row the keyboard is on rather than around the whole
+list — a box around the list drew a second frame inside the card and read as a
+layout bug.
+
+**The choices are a convenience, not the only door.** Below the list the card
+carries a row of the same shape whose label is a field
+(`.modal__answer-input`, placeholder `Or write your own answer…`): typing clears
+the picked row, and the typed text is what `respondUi` sends as the `select`
+value. It sits *outside* the `role="listbox"` — a text field is not an option —
+and Enter in it submits, like Enter on the list. The value reaches Pi verbatim,
+so the ask tool accepts **any** non-empty answer: one of the labels comes back as
+`The user selected: …`, anything else as `The user answered: …` with
+`details.custom = true` (`pi/task-modes.ts`). That is the part that cannot be
+cosmetic: Pi would otherwise read a typed answer as "no option was selected" and
+throw the user's words away. `lib/ask-question.ts` reads the record for the
+transcript (`custom` says the answer was typed — including in records written
+before the flag existed, where an answer outside the labels can only have been
+typed), and `ToolResultPanel` prints it under the options with its own label
+instead of claiming nothing was chosen.
+
+`ExtensionDialog` is mounted at the app root and the composers are deep in the
+conversation branch, so the slot between them is a small store
+(`lib/ask-dock.ts`): each composer publishes its `.composer-ask` slot —
+`main` or `side`, because the side panel renders a composer of its own — and the
+dialog portals the card into the slot for the surface the request belongs to.
+`setAskDockHost`/`releaseAskDockHost` are what a mount and an unmount call, and
+the release is deferred one microtask: a remount detaches the old node and
+attaches the new one in the same React commit, and clearing first dropped the
+card back to a modal for a frame. `.composer-ask:empty { display: none }` keeps
+the empty slot from reserving a row.
+
+Only a `select` docks, and only when it is about the conversation on screen
+(`!isOtherSession`, one waiting conversation) and the column is not covered
+(`dockBlocked`: a maximized panel or a floating inspector would hide the card
+under themselves). Approvals, plan reviews, `input`/`editor` requests, another
+conversation's question and a queue of several waiting conversations keep the
+centered modal — those are about the app, not about one box.
+
+The docked card is **not a modal**, and the difference is load-bearing:
+
+- it drops `aria-modal="true"`, so assistive technology still sees the page the
+  reader is allowed to keep using;
+- it claims Escape only while one of its own controls holds the focus, so the
+  app's stop key still works from the composer;
+- `App`'s view chords stay blocked while it is up (`.composer-ask .modal` is
+  checked beside `[aria-modal="true"]`), because an unanswered question still
+  owns the next step even though the screen is no longer covered;
+- answering it hands the keyboard back to the composer it rested on.
+
+The dock is a presentation, not a second implementation: the same card markup
+(`.modal--prompt`), the same `respondUi`/`dismissUi` answers carrying Pi's own
+request id, the same listbox keys. `tests/ask-dock.test.ts` pins the slot store
+(remount, surfaces, release) and the presentation rules; `tests/ui-regressions.mjs`
+opens a real question and requires the card inside `.composer-ask`, above the
+composer's top edge, as wide as the box, with no `.modal-layer` behind it and no
+`aria-modal`; `output/audit/check-ask-dock.mjs` measures the same geometry in the
+real window and writes a screenshot.
+
 ### The usage line under the composer
 
 `UsageBar` is one compact line **centred** under the input after a run, and it
@@ -1503,16 +1593,36 @@ room for a second line.
   downloads it in the background; off, only *Help → Check for updates* and the
   About page reach GitHub. The switch exists on every build — it used to be drawn
   only for the development entry point.
-- **The bundled CLI is checked either way.** It is the agent this app drives, so
-  `app:checkPiCliUpdate` runs on its own clock whatever the switch says; a stale
-  agent is a wrong answer, not a missing feature. The reading lives beside the app
-  release in `lib/app-update.ts` (`piCliUpdate`, `notePiCliUpdate`), a full check
-  fills the same slot, and the About page's built-in-service row reads it — never
-  `updateStatus.piCli`, which only a manual check fills. Only a build that can
-  replace its CLI asks npm: a packaged app answers from its own files, and the
-  upgrade itself still follows the switch (it writes into the CLI's folder, so a
-  running agent is never swapped mid-run). The upgrade reports 100% only after
-  the installed CLI runs and prints the requested version.
+- **The bundled CLI is checked either way, and every build asks the registry.**
+  It is the agent this app drives, so `app:checkPiCliUpdate` runs on its own
+  clock whatever the switch says; a stale agent is a wrong answer, not a missing
+  feature. The reading lives beside the app release in `lib/app-update.ts`
+  (`piCliUpdate`, `notePiCliUpdate`), a full check fills the same slot, and the
+  About page's built-in-service row reads it — never `updateStatus.piCli`, which
+  only a manual check fills. A CLI the reader pointed the app at is never
+  offered an update; only the bundled one is. A current app is not the whole
+  answer either: the manual check's notice names a newer built-in CLI and sends
+  the reader to the About page.
+- **An installed build installs the newer CLI into its own data folder.**
+  `app.asar.unpacked` is not a project npm may reify: `npm install` removes the
+  packages the given project does not declare, and that tree also holds
+  `node-pty` (with its native binary), `jiti` and `quickjs-wasi`, which the app
+  itself loads. The overlay (`src/main/pi/cli-overlay.ts`) is therefore an
+  isolated npm project under `<userData>/pi-cli/installed/<version>`.
+  `findBundledCli` launches it only while it is newer than the copy the release
+  ships, and the `current.json` record is what makes it current. A candidate is
+  reusable only after the exact entry ran and printed the requested version:
+  that probe writes a `.verified` marker, and the record is switched afterwards
+  under `prepareForCliUpgrade`. A candidate that installed but could not start
+  is removed unless it is the active version, so the next attempt downloads it
+  again; a failed install or probe never changes the record, so the active CLI
+  keeps working. The app's own files are never written to, so the installer's
+  payload verification still describes what is on disk. npm is the slow part and
+  runs before the agent is taken offline; only the record switch needs
+  maintenance, so a running agent is never swapped mid-run. The upgrade reports
+  100% only after the installed CLI runs and prints the requested version.
+  Without npm the upgrade fails with that reason; the check itself still answers
+  from the registry.
 - **A check that answered still counts.** Both schedulers publish the result
   *before* asking whether their effect is still alive: at startup `info` and the
   saved settings arrive in the middle of the first request, which tears the

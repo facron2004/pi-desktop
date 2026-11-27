@@ -3159,7 +3159,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     const state = get()
     const owner = viewKeyOf(state)
     const key = threadKey(owner)
-    const items = state.threads[key]?.items ?? state.items
+    const { items, historyTruncated } = state.threads[key] ?? state
     if (!items.some((item) => item.kind === 'user' || item.kind === 'assistant')) {
       get().showToast('There is nothing to export yet', 'warning')
       return
@@ -3169,7 +3169,8 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         activeConversationTitle(state.sessions, state.threads, owner) ||
         translate('Conversation', state.settings.language),
       project: state.workspace?.path,
-      exportedAt: Date.now()
+      exportedAt: Date.now(),
+      historyTruncated
     })
     try {
       const result = await window.pi.sessions.exportMarkdown(owner, markdown)

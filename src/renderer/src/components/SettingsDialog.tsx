@@ -25,7 +25,8 @@ import { SETTINGS_PAGE_LABELS } from '../lib/settings-pages'
 import { FeatureLoading } from './FeatureLoading'
 import {
   checkForAppUpdates,
-  noteAppUpdateCheck
+  noteAppUpdateCheck,
+  notePiCliUpdate
 } from '../lib/app-update'
 import '../styles/appearance.css'
 
@@ -213,6 +214,10 @@ export function SettingsDialog({
     try {
       const res = await window.pi.app.upgradePiCli()
       if (res.success) {
+        // The registry check below can fail on a slow network; the version that
+        // just started is a fact either way, and the badge must not keep
+        // offering the update that was installed.
+        if (res.version) notePiCliUpdate({ current: res.version, hasUpdate: false })
         showToast(t('Upgrade completed'))
         await refreshInfo()
         const result = await window.pi.app.checkUpdate()

@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   把 electron-builder 的产物整理成发布资产。
 

@@ -25,10 +25,17 @@ export function UpdateResultDialog() {
   if (!notice) return null
 
   const title = notice.kind === 'error' ? t('Check failed') : t('Up to date')
+  const piCli = notice.kind === 'current' ? notice.piCli : undefined
   const body = notice.kind === 'error'
     ? notice.error
-    : t('You are running the latest Pi Desktop version.')
-  const detail = notice.kind === 'error' ? undefined : `${t('Current version')} v${notice.current}`
+    : piCli
+      ? t('You are running the latest Pi Desktop version. A built-in service update is available in About settings.')
+      : t('You are running the latest Pi Desktop version.')
+  const detail = notice.kind === 'error'
+    ? undefined
+    : piCli
+      ? `${t('Built-in service version')}: ${piCli.current} → ${piCli.latest}`
+      : `${t('Current version')} v${notice.current}`
 
   return (
     <ConfirmDialog

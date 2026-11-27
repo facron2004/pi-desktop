@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import fs from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
@@ -58,6 +60,42 @@ test('a Markdown export writes the transcript to the file the reader picked', as
     []
   )
 })
+
+for (const existing of [false, true]) {
+  test(`Markdown export keeps a file ${existing ? 'edited' : 'created'} during staging`, async (t) => {
+    const root = mkdtempSync(path.join(tmpdir(), 'pi-markdown-conflict-'))
+    t.after(() => {
+      dialog.showSaveDialog = realSaveDialog
+      rmSync(root, { recursive: true, force: true })
+    })
+    const target = path.join(root, 'conversation.md')
+    const handler = exportHandler()
+    if (existing) writeFileSync(target, 'Original content')
+    dialog.showSaveDialog = (async () => ({ canceled: false, filePath: target })) as typeof dialog.showSaveDialog
+
+    const writeFile = fs.writeFile
+    const stagedWrite = t.mock.method(fs, 'writeFile', async (...args: Parameters<typeof writeFile>) => {
+      await writeFile(...args)
+      assert.equal(path.dirname(String(args[0])), root)
+      assert.notEqual(args[0], target)
+      writeFileSync(target, 'Content saved by another application')
+    })
+    syncBuiltinESMExports()
+
+    const markdown = '# Pi transcript\n'
+    try {
+      await assert.rejects(() => handler({}, 'session.jsonl', markdown), /destination changed/i)
+      assert.equal(readFileSync(target, 'utf8'), 'Content saved by another application')
+      assert.deepEqual(readdirSync(root), ['conversation.md'])
+    } finally {
+      stagedWrite.mock.restore()
+      syncBuiltinESMExports()
+    }
+
+    assert.deepEqual(await handler({}, 'session.jsonl', markdown), { cancelled: false, path: target })
+    assert.equal(readFileSync(target, 'utf8'), markdown)
+  })
+}
 
 test('a cancelled Markdown export writes nothing', async (t) => {
   const root = mkdtempSync(path.join(tmpdir(), 'pi-markdown-cancel-'))

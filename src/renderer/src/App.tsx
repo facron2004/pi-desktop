@@ -122,6 +122,7 @@ export default function App() {
   const cycleThinkingLevel = useAppStore((state) => state.cycleThinkingLevel)
   const compact = useAppStore((state) => state.compact)
   const showToast = useAppStore((state) => state.showToast)
+  const refreshInfo = useAppStore((state) => state.refreshInfo)
   const threadsMetaVersion = useAppStore((state) => state.threadsMetaVersion)
   const anySessionStreaming = useMemo(
     () => hasAnyStreamingThread(useAppStore.getState().threads),
@@ -294,10 +295,11 @@ export default function App() {
 
   // The bundled CLI is the agent this app drives, so its version is checked on
   // its own schedule: the switch above decides whether app releases are
-  // fetched, not whether the agent is current. Only a development checkout can
-  // replace it — a packaged build carries one CLI released with the app.
+  // fetched, not whether the agent is current. An installed build checks the
+  // registry too: it may install a newer agent into its own data folder without
+  // waiting for the next Pi Desktop release.
   useEffect(() => {
-    if (info?.isPackaged !== false || info.pi.source !== 'bundled') return
+    if (info?.pi.source !== 'bundled') return
     // Replacing the CLI under a running agent would swap the binary mid-run.
     if (anySessionStreaming) return
 
@@ -314,10 +316,18 @@ export default function App() {
         // an answer that lands in that window must still reach the About page.
         notePiCliUpdate(status)
         if (!active || automaticUpdates !== true || !status.hasUpdate) return
-        // Upgrading writes into the CLI's own folder, so it follows the same
-        // switch that lets the app fetch a release in the background.
+        // Installing the CLI writes a copy the app launches, so it follows the
+        // same switch that lets the app fetch a release in the background.
         const upgraded = await window.pi.app.upgradePiCli()
-        if (active && upgraded.success) showToast(t('Upgrade completed'))
+        if (!upgraded.success) return
+        // The About page reads the running version from `info`; its badge comes
+        // from the CLI reading, which just moved to the version it installed.
+        // Like a check, this reading belongs to the module: a run that started
+        // while npm was working tears this effect down, and that must not leave
+        // the badge offering the update that was already installed.
+        notePiCliUpdate({ current: upgraded.version ?? status.latest ?? status.current, hasUpdate: false })
+        void refreshInfo()
+        if (active) showToast(t('Upgrade completed'))
       } catch {
         // The next scheduled check tries again.
       } finally {
@@ -333,7 +343,7 @@ export default function App() {
       active = false
       window.clearInterval(interval)
     }
-  }, [anySessionStreaming, automaticUpdates, info?.isPackaged, info?.pi.source, showToast, t])
+  }, [anySessionStreaming, automaticUpdates, info?.pi.source, refreshInfo, showToast, t])
 
   // Fetch the release a check found, in the background. The ring on the
   // sidebar icon is the progress; the click that installs is the reader's.
@@ -812,7 +822,10 @@ export default function App() {
       const matches = (id: ShortcutId) =>
         matchesAnyShortcut(event, id, shortcutBindings)
       const launcherToggle = launcherOpen && matches('command-palette')
-      if (document.querySelector('[aria-modal="true"]') && !launcherToggle) {
+      // A blocking question is not a modal any more — it docks above the
+      // composer — but until it is answered it still owns the next step of the
+      // screen, so the chords that change the view stay out of it.
+      if (document.querySelector('[aria-modal="true"], .composer-ask .modal') && !launcherToggle) {
         // The chord that opened a layer closes it again, from anywhere inside
         // it: a modal used to swallow every chord but the launcher's, so
         // `Ctrl+,` could open Settings and never close it.
@@ -1506,7 +1519,13 @@ export default function App() {
       ) : null}
       {hasActiveUiRequest || extensionDialogMounted ? (
         <Suspense fallback={null}>
-          <ExtensionDialog />
+          {/* A docked question rests on the composer, so it is only out of
+              reach when the conversation column is covered: a maximized panel,
+              or the floating inspector a narrow window opens over it. Those
+              keep the question as a modal. */}
+          <ExtensionDialog
+            dockBlocked={panelMaximized || (inspectorOverlay && changesOpen && !panelConcealed)}
+          />
         </Suspense>
       ) : null}
       <UpdateResultDialog />

@@ -1,11 +1,18 @@
 import { app } from 'electron'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
+import { isNewerVersion } from '../app-updates'
+import { piCliVersionAtEntry, readPiCliOverlay } from './cli-overlay'
 
 export type PiSource = 'custom' | 'bundled' | 'path' | 'none'
 
 const LAUNCH_CACHE_TTL_MS = 10_000
 let cachedLaunch: { key: string; expiresAt: number; spec: PiLaunchSpec } | undefined
+
+/** Forget the resolved launch: a CLI was installed, replaced or removed. */
+export function forgetPiLaunchCache(): void {
+  cachedLaunch = undefined
+}
 
 function launchCacheHit(key: string): PiLaunchSpec | undefined {
   const entry = cachedLaunch
@@ -57,7 +64,8 @@ function unpackedPath(): string {
     : appPath
 }
 
-export function findBundledCli(): string | null {
+/** The CLI the installed files carry; this is what the release shipped. */
+function findShippedBundledCli(): string | null {
   // Inside a packaged app the CLI lives in the unpacked asar directory: files
   // inside the archive cannot be executed, so the unpacked copy wins.
   const candidates = [
@@ -68,6 +76,36 @@ export function findBundledCli(): string | null {
     if (existsSync(candidate)) return candidate
   }
   return null
+}
+
+/** What the cache key sees of an installed CLI overlay; none in a checkout. */
+function overlayCacheKey(): string {
+  if (!app.isPackaged) return ''
+  try {
+    return readPiCliOverlay()?.entry ?? ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * The bundled CLI the app should launch.
+ *
+ * A packaged app can install a newer CLI into its own data folder without
+ * touching the files the installer verified. That copy wins only while it is
+ * newer than the one the app ships: after a release brings a newer agent, the
+ * shipped copy is the right one again and the older overlay is ignored (the
+ * next successful install removes it).
+ */
+export function findBundledCli(): string | null {
+  const shipped = findShippedBundledCli()
+  if (!app.isPackaged) return shipped
+  const overlay = readPiCliOverlay()
+  if (!overlay) return shipped
+  if (!shipped) return overlay.entry
+  const shippedVersion = piCliVersionAtEntry(shipped)
+  if (!shippedVersion || isNewerVersion(overlay.version, shippedVersion)) return overlay.entry
+  return shipped
 }
 
 function findOnPath(executable: string): string | null {
@@ -105,7 +143,7 @@ function nodeSatisfiesPi(): boolean {
  */
 export function resolvePiLaunch(customPath?: string): PiLaunchSpec {
   const appPath = (() => { try { return app.getAppPath() } catch { return '' } })()
-  const cacheKey = `${customPath?.trim() ?? ''}|${process.env.PATH ?? ''}|${appPath}|${process.env.NODE_OPTIONS ?? ''}`
+  const cacheKey = `${customPath?.trim() ?? ''}|${process.env.PATH ?? ''}|${appPath}|${process.env.NODE_OPTIONS ?? ''}|${overlayCacheKey()}`
   const hit = launchCacheHit(cacheKey)
   if (hit) return hit
 

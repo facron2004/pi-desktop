@@ -1,5 +1,6 @@
 import { get } from 'node:https'
 import type { VersionItemStatus } from '@shared/types'
+import { isNewerVersion } from '../app-updates'
 
 /**
  * Asking npm what the newest Pi CLI is.
@@ -182,4 +183,37 @@ export async function fetchLatestCliVersionFromRegistry(
 /** A reading whose `error` is worth showing: the check could not answer. */
 export function describeCheckFailure(status: VersionItemStatus): string | null {
   return status.error && status.error.trim() ? status.error.trim() : null
+}
+
+/** Where the running CLI came from; only `bundled` is the app's to replace. */
+export type CliVersionSource = 'custom' | 'bundled' | 'path' | 'none'
+
+/**
+ * Compare the running CLI with what the registry publishes.
+ *
+ * A CLI the reader pointed the app at is never offered an update: installing
+ * over it would overwrite an installation the reader chose. The bundled agent —
+ * the copy the app ships, or the newer copy the app installed for itself — is
+ * the one this app drives and the one it may replace.
+ *
+ * The fetch is injected so the rule can be tested without the network, and a
+ * failure is reported rather than read as "up to date": the About page shows
+ * the reason, and a check that never answered is not a version reading.
+ */
+export async function readBundledCliStatus(
+  current: string,
+  source: CliVersionSource,
+  fetchLatest: () => Promise<string>
+): Promise<VersionItemStatus> {
+  if (source !== 'bundled') return { current, hasUpdate: false }
+  try {
+    const latest = await fetchLatest()
+    return { current, latest, hasUpdate: isNewerVersion(latest, current) }
+  } catch (err: unknown) {
+    return {
+      current,
+      hasUpdate: false,
+      error: err instanceof Error ? err.message : 'Failed to check Pi CLI updates'
+    }
+  }
 }

@@ -113,6 +113,8 @@ export interface ManagedSessionRuntime extends EventEmitter {
 
 export type SessionRuntimeFactory = () => ManagedSessionRuntime
 
+type RequestPreflight = (ownerId: string, busy: boolean) => void
+
 interface QueuedJob {
   key: string
   cwd: string
@@ -121,7 +123,7 @@ interface QueuedJob {
   payloadBytes: number
   timeoutMs: number
   trace?: RpcTraceHint
-  preflight?: () => void
+  preflight?: RequestPreflight
   resolve: (value: unknown) => void
   reject: (error: Error) => void
 }
@@ -395,7 +397,12 @@ export class SessionSupervisor extends EventEmitter {
     }
   }
 
-  async ensure(options: RuntimeEnsureOptions): Promise<{ ok: boolean; error?: string }> {
+  /** A scheduled run may reopen an idle conversation to apply its launch choices. */
+  async ensure(
+    options: RuntimeEnsureOptions,
+    scheduledRunIsCurrent?: () => boolean
+  ): Promise<{ ok: boolean; error?: string }> {
+    if (scheduledRunIsCurrent && !scheduledRunIsCurrent()) return { ok: false }
     if (this.cliUpgradeInProgress) return { ok: false, error: 'The Pi CLI is updating. Try again when it finishes.' }
     if (this.shuttingDown) return { ok: false, error: 'Pi is shutting down.' }
     if (this.stoppingCwds.size > 0 && [...this.stoppingCwds.keys()].some(root => this.gate.contains(root, options.cwd))) {
@@ -421,10 +428,34 @@ export class SessionSupervisor extends EventEmitter {
     const stopping = existing && this.activity.get(existing)?.stopping
     if (stopping) {
       await stopping
-      return this.ensure(options)
+      return this.ensure(options, scheduledRunIsCurrent)
     }
     if (existing?.isRunning && existing.currentStatus.phase === 'ready') {
       const activity = this.activity.get(existing)
+      if (scheduledRunIsCurrent && (options.model || options.thinkingLevel)) {
+        const state = await existing.request<PiState>('get_state', {}, 5_000, options.trace)
+        if (!scheduledRunIsCurrent()) return { ok: false }
+        if (
+          this.runtimes.get(id) !== existing || !existing.isRunning || activity?.changingSession ||
+          (options.sessionFile && state.sessionFile &&
+            canonicalSessionFile(state.sessionFile) !== canonicalSessionFile(options.sessionFile))
+        ) {
+          return { ok: false, error: 'This conversation is changing sessions. Try again when it finishes.' }
+        }
+        const model = state.model
+        const modelMatches = !options.model || options.model === model?.id ||
+          (model && options.model === `${model.provider}/${model.id}`)
+        const thinkingMatches = !options.thinkingLevel || model?.reasoning === false ||
+          options.thinkingLevel === state.thinkingLevel
+        if (!modelMatches || !thinkingMatches) {
+          if (state.isStreaming || state.isCompacting || !this.isRuntimeIdle(id, existing)) {
+            return { ok: false, error: 'This conversation already has an active run.' }
+          }
+          // Startup flags apply the task's choices without rewriting Pi defaults.
+          await this.stop(id)
+          return this.ensure(options, scheduledRunIsCurrent)
+        }
+      }
       if (activity) {
         if (activity.role === 'side' && options.parentSessionKey) {
           this.linkSideToParent(id, options.parentSessionKey)
@@ -447,6 +478,9 @@ export class SessionSupervisor extends EventEmitter {
         if (startingActivity) startingActivity.prewarmOnly = false
       }
       const res = await pending
+      if (res.ok && scheduledRunIsCurrent && (options.model || options.thinkingLevel)) {
+        return this.ensure(options, scheduledRunIsCurrent)
+      }
       const settledId = this.canonical(id)
       const settledRuntime = this.runtimes.get(settledId)
       const settledActivity = settledRuntime && this.activity.get(settledRuntime)
@@ -481,7 +515,7 @@ export class SessionSupervisor extends EventEmitter {
     payload: Record<string, unknown> = {},
     timeoutMs = 30_000,
     trace?: RpcTraceHint,
-    preflight?: () => void
+    preflight?: RequestPreflight
   ): Promise<T> {
     return this.dispatchRequest(key, command, payload, timeoutMs, trace, preflight)
   }
@@ -492,7 +526,7 @@ export class SessionSupervisor extends EventEmitter {
     payload: Record<string, unknown>,
     timeoutMs: number,
     trace?: RpcTraceHint,
-    preflight?: () => void,
+    preflight?: RequestPreflight,
     fromQueue = false
   ): Promise<T> {
     const id = this.canonical(key)
@@ -549,7 +583,7 @@ export class SessionSupervisor extends EventEmitter {
     try {
       const sessionFile = command === 'prompt' ? runtime.currentStatus.sessionFile : undefined
       if (sessionFile) await this.acquireSessionFileLock(sessionFile, id)
-      preflight?.()
+      preflight?.(this.ownerOf(runtime) ?? id, activity.running || activity.writes > (writing ? 1 : 0))
     } catch (error) {
       if (changesSession) activity.changingSession = false
       if (writing) {

@@ -11,7 +11,6 @@ import { test } from 'node:test'
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { registerIpc } from '../src/main/ipc'
 import type { IpcContext } from '../src/main/ipc'
-import { piVersion } from '../src/main/pi/cli'
 import { SessionSupervisor } from '../src/main/pi/supervisor'
 import { properLockfile } from '../src/main/proper-lockfile'
 import { SettingsStore } from '../src/main/settings'
@@ -817,22 +816,23 @@ test('removing a project leaves cleanup in the background and rejects pending sh
   }
 })
 
-test('a packaged build cannot install the Pi CLI into its app directory', async () => {
+test('a custom Pi path is left to the reader: the app never replaces it', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'pi-custom-cli-'))
+  const custom = path.join(directory, 'pi.js')
+  writeFileSync(custom, "console.log('1.0.0')\n")
   const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
   const handleDescriptor = Object.getOwnPropertyDescriptor(ipcMain, 'handle')
-  const packagedDescriptor = Object.getOwnPropertyDescriptor(app, 'isPackaged')
   Object.defineProperty(ipcMain, 'handle', {
     configurable: true,
     value: (channel: string, listener: unknown) => {
       handlers.set(channel, listener as (event: unknown, ...args: unknown[]) => unknown)
     }
   })
-  Object.defineProperty(app, 'isPackaged', { configurable: true, value: true })
 
   try {
     registerIpc({
       supervisor: {},
-      settings: { get: () => ({ workspaces: [] }) },
+      settings: { get: () => ({ workspaces: [], piPath: custom }) },
       getWindow: () => null,
       terminals: { create: () => ({}) },
       memory: { promptFor: () => '' }
@@ -842,13 +842,12 @@ test('a packaged build cannot install the Pi CLI into its app directory', async 
     assert.ok(upgrade, 'app:upgradePiCli handler was registered')
     assert.deepEqual(await upgrade({}), {
       success: false,
-      error: 'The bundled Pi CLI is updated with Pi Desktop releases.'
+      error: 'The selected Pi CLI is managed outside this app.'
     })
   } finally {
     if (handleDescriptor) Object.defineProperty(ipcMain, 'handle', handleDescriptor)
     else delete (ipcMain as unknown as { handle?: unknown }).handle
-    if (packagedDescriptor) Object.defineProperty(app, 'isPackaged', packagedDescriptor)
-    else delete (app as unknown as { isPackaged?: unknown }).isPackaged
+    rmSync(directory, { recursive: true, force: true })
   }
 })
 
@@ -941,46 +940,6 @@ test('a Pi CLI upgrade reports completion only after the requested version runs'
     rmSync(root, { recursive: true, force: true })
   }
 })
-
-test('a packaged build answers for the bundled CLI without asking npm', async () => {
-  const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
-  const handleDescriptor = Object.getOwnPropertyDescriptor(ipcMain, 'handle')
-  const packagedDescriptor = Object.getOwnPropertyDescriptor(app, 'isPackaged')
-  const pathEnv = process.env.PATH
-  Object.defineProperty(ipcMain, 'handle', {
-    configurable: true,
-    value: (channel: string, listener: unknown) => {
-      handlers.set(channel, listener as (event: unknown, ...args: unknown[]) => unknown)
-    }
-  })
-  Object.defineProperty(app, 'isPackaged', { configurable: true, value: true })
-
-  try {
-    // The CLI that ships with the app is released with it, so there is nothing
-    // to look up. npm is off the path: a registry request would come back as a
-    // failed reading instead of the version the app already carries.
-    process.env.PATH = ''
-    const expected = (await piVersion()) || '1.4.0'
-    registerIpc({
-      supervisor: {},
-      settings: { get: () => ({ workspaces: [] }) },
-      getWindow: () => null,
-      terminals: { create: () => ({}) },
-      memory: { promptFor: () => '' }
-    } as unknown as IpcContext)
-
-    const check = handlers.get('app:checkPiCliUpdate')
-    assert.ok(check, 'app:checkPiCliUpdate handler was registered')
-    assert.deepEqual(await check({}), { current: expected, hasUpdate: false })
-  } finally {
-    process.env.PATH = pathEnv
-    if (handleDescriptor) Object.defineProperty(ipcMain, 'handle', handleDescriptor)
-    else delete (ipcMain as unknown as { handle?: unknown }).handle
-    if (packagedDescriptor) Object.defineProperty(app, 'isPackaged', packagedDescriptor)
-    else delete (app as unknown as { isPackaged?: unknown }).isPackaged
-  }
-})
-
 
 test('runtime ensure fast path skips file validation and memory prompt when isReadyMatch is true', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'pi-runtime-fastpath-'))

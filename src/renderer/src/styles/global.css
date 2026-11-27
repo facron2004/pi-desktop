@@ -3186,6 +3186,28 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   font-style: italic;
 }
 
+/* An answer typed in the reader's own words: the record's own line, because no
+   row above marks it. */
+.tool__question-custom {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  line-height: var(--leading-small);
+  overflow-wrap: anywhere;
+}
+
+.tool__question-custom-label {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-size: var(--text-2xs);
+}
+
 .tool__pre {
   margin: 0;
   padding: var(--sp-4) var(--sp-4);
@@ -7739,7 +7761,7 @@ animation: fade var(--dur-fast) var(--ease);
 .modal__options {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
+  gap: 2px;
   padding: var(--sp-1) var(--sp-4) var(--sp-5);
   max-height: 320px;
   overflow-y: auto;
@@ -7751,25 +7773,71 @@ animation: fade var(--dur-fast) var(--ease);
   outline-offset: -2px;
 }
 
+/* The answer line follows the list, so the list gives up its bottom inset —
+   otherwise the two read as unrelated blocks. */
+.modal__options:has(+ .modal__answer) {
+  padding-bottom: var(--sp-1);
+}
+
+/* Answering in one's own words is a row of the same shape as the choices, with
+   a field where the label would be. It sits outside the listbox: a text field
+   is not an option. */
+.modal__answer {
+  margin: 0 var(--sp-4) var(--sp-1);
+  cursor: text;
+}
+
+/* The field is the point of this row, so the row wears the picked look while
+   the reader is in it — the same cue a chosen option gives. */
+.modal__answer:focus-within {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.modal__answer-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-body);
+  font-weight: 400;
+  line-height: var(--leading-body);
+}
+
+.modal__answer-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+/* One choice is one 40px row: the leading number chip, then the option's own
+   text. The row is the target, so the whole line answers to the pointer. */
 .modal__option {
   display: flex;
   align-items: center;
   gap: var(--sp-3);
-  padding: var(--sp-3) var(--sp-4);
+  min-height: 40px;
+  padding: var(--sp-2) var(--sp-4) var(--sp-2) var(--sp-2);
   border-radius: var(--r-md);
   border: 1px solid transparent;
   background: transparent;
   color: var(--text);
-  font-size: var(--text-xs);
+  font-size: var(--text-body);
+  font-weight: 500;
+  line-height: var(--leading-body);
   text-align: left;
   overflow-wrap: anywhere;
-transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
 }
 
 .modal__option:hover {
   background: var(--bg-hover);
 }
 
+/* The picked row says so with the fill and the hairline, so the number chip can
+   stay a number: the list reads as choices before one of them is taken. */
 .modal__option[data-active='true'] {
   background: var(--bg-active);
   border-color: var(--border-strong);
@@ -7777,12 +7845,25 @@ transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast)
 
 .modal__option-mark {
   flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
   display: grid;
   place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-sm);
+  background: var(--bg-hover);
+  color: var(--text-tertiary);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.modal__option[data-active='true'] .modal__option-mark {
+  background: var(--accent-soft);
   color: var(--accent);
+}
+
+.modal__option-label {
+  min-width: 0;
 }
 
 .modal__input {
@@ -7815,6 +7896,164 @@ transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast)
   flex: 1;
   font-size: var(--text-2xs);
   color: var(--text-faint);
+}
+
+/* ------------------------------------------------------------------ *
+ * The question dock
+ * ------------------------------------------------------------------ */
+
+/* A blocking question belongs to the conversation on screen and is answered
+   from the box underneath it, so it rests on that box instead of covering the
+   window: same column, same width, no scrim. The transcript the question is
+   about stays readable while it waits, and the reader answers where they were
+   already typing. `ExtensionDialog` portals the card in here; everything the
+   protocol blocks the app with (approvals, plan reviews, text fields) keeps the
+   centered modal.
+
+   Its anatomy follows DSH's ask card rather than a dialog's: the input's own
+   surface and radius one elevation step up, a compact title row with its own
+   close control, numbered option rows, and the actions in a quiet footer. A
+   dialog's banner, icon tile and section rules are what made the first version
+   read as a settings sheet on top of the box. */
+.composer-ask {
+  display: block;
+  margin: 0 0 var(--sp-2);
+}
+
+/* The slot is empty at rest, and an empty row would hold the box off the floor. */
+.composer-ask:empty {
+  display: none;
+}
+
+/* `:root` outranks the shared sheet rule in `ui-polish.css` without raising the
+   weight for every other dialog. The card is narrower than the box it rests on
+   and centred on it: a question is a paragraph of choices, not a second column
+   of text, and the inset makes that read at a glance. */
+:root .composer-ask .modal {
+  width: 100%;
+  max-width: min(100%, 560px);
+  margin-inline: auto;
+  /* Never taller than most of the window: what the answer is about is above it. */
+  max-height: min(60vh, 520px);
+  border: 1px solid var(--border);
+  border-radius: var(--composer-radius);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-md);
+}
+
+/* The input box it rests on uses the chrome surface in the light theme. */
+:root[data-theme='light'] .composer-ask .modal {
+  background: var(--surface-chrome);
+}
+
+/* A card resting on the box is not a dialog: no banner rule, no tinted footer. */
+:root .composer-ask .modal__head,
+:root .composer-ask .modal__foot {
+  background: transparent;
+  border-color: transparent;
+}
+
+/* Title row: a compact inset like the box's own text, actions in the corner. */
+:root .composer-ask .modal__head--prompt {
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-3) 0 var(--sp-5);
+}
+
+/* A side chat's question still says where it came from, but as an eyebrow above
+   the title rather than the dialog's context strip. */
+:root .composer-ask .modal__context {
+  min-height: 0;
+  padding: var(--sp-4) var(--sp-3) 0 var(--sp-5);
+  border-bottom: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: var(--text-2xs);
+}
+
+:root .composer-ask .modal__context + .modal__head--prompt {
+  padding-top: var(--sp-2);
+}
+
+/* The icon tile belongs to a dialog's banner; a question is its own icon. */
+:root .composer-ask .modal__icon {
+  display: none;
+}
+
+:root .composer-ask .modal__headings {
+  flex: 1 1 auto;
+  /* A pathologically long question must not swallow the choices: the title
+     block scrolls instead, the way the option list does. */
+  max-height: min(30vh, 200px);
+  overflow-y: auto;
+}
+
+/* 16/25 — the question is the card's subject, not a dialog's headline. */
+:root .composer-ask .modal__title {
+  font-size: var(--text-large);
+  line-height: var(--leading-large);
+  font-weight: 500;
+  letter-spacing: normal;
+}
+
+:root .composer-ask .modal__message {
+  margin-top: var(--sp-1);
+  font-size: var(--text-small);
+  line-height: var(--leading-small);
+}
+
+/* The 24px close control sits on the head's first line, beside the title. */
+:root .composer-ask .modal__close {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-top: -2px;
+  border-radius: var(--r-full);
+  color: var(--text-tertiary);
+}
+
+:root .composer-ask .modal__close:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+:root .composer-ask .modal__close:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* The options are the part that grows, so a short window scrolls them instead of
+   pushing Cancel and Send out of the card. */
+:root .composer-ask .modal__options {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: none;
+  margin: var(--sp-1) 0 0;
+  padding: var(--sp-1) var(--sp-3);
+}
+
+:root .composer-ask .modal__answer {
+  margin: 0 var(--sp-3) var(--sp-1);
+}
+
+/* The list is one Tab stop and the arrows walk its rows, so the ring belongs to
+   the row the keyboard is on. A box around the whole list drew a second, heavier
+   frame inside the card and read as a layout bug. */
+:root .composer-ask .modal__options:focus-visible {
+  outline: none;
+}
+
+:root .composer-ask .modal__options:focus-visible .modal__option[data-active='true'] {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+/* Footer: the note on the left, the two answers on the right, with the card's
+   own insets rather than a dialog footer's. */
+:root .composer-ask .modal__foot {
+  padding: var(--sp-2) var(--sp-3) var(--sp-3) var(--sp-4);
 }
 
 /* ------------------------------------------------------------------ *

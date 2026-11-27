@@ -1,9 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { appendSessionName, openSessionFile, readSessionMessages } from '../src/main/sessions'
+import { SessionSupervisor } from '../src/main/pi/supervisor'
 import { needsSessionHydration, scopeEvent } from '../src/renderer/src/lib/session-scope'
 
 test('a bare event belongs to the view, a scoped event keeps its owner', () => {
@@ -61,6 +62,52 @@ test('cold history is the active branch and a rename appends session_info', asyn
     assert.equal(await appendSessionName(file, '   '), false)
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a cold rename refuses a session replaced while reading its last entry', async (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-cold-rename-replaced-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const file = path.join(dir, 'chat.jsonl')
+  const moved = path.join(dir, 'moved.jsonl')
+  const original = '{"type":"session","id":"original","version":3}\n'
+  const replacement = '{"type":"session","id":"replaced","version":3}\n'
+  writeFileSync(file, original)
+  const opened = await openSessionFile(file, dir, true)
+  assert.ok(opened)
+  const supervisor = new SessionSupervisor(() => assert.fail('cold rename started Pi'))
+  const renamed: unknown[] = []
+  supervisor.on('rename', (event) => renamed.push(event))
+  const read = opened.handle.read.bind(opened.handle)
+  let replaced = false
+  t.mock.method(opened.handle, 'read', async (buffer: Buffer, offset: number, length: number, position: number) => {
+    const result = await read(buffer, offset, length, position)
+    if (!replaced) {
+      renameSync(file, moved)
+      writeFileSync(file, replacement)
+      replaced = true
+    }
+    return result
+  })
+
+  try {
+    assert.equal(await supervisor.rename(opened.target, 'Wrong chat', opened.handle), false)
+    assert.equal(replaced, true)
+    assert.equal(readFileSync(moved, 'utf8'), original)
+    assert.equal(readFileSync(file, 'utf8'), replacement)
+    assert.deepEqual(renamed, [])
+  } finally {
+    await opened.handle.close()
+  }
+
+  const retry = await openSessionFile(file, dir, true)
+  assert.ok(retry)
+  try {
+    assert.equal(await supervisor.rename(retry.target, 'Current chat', retry.handle), true)
+    assert.match(readFileSync(file, 'utf8'), /"name":"Current chat"/)
+    assert.equal(readFileSync(moved, 'utf8'), original)
+  } finally {
+    await retry.handle.close()
   }
 })
 

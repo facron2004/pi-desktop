@@ -420,6 +420,37 @@ test('a manual check says "you are current" once, and an update only lights the 
   }
 })
 
+test('a manual check that finds the app current names the built-in CLI update', async () => {
+  const previousWindow = globalThis.window
+  const result = {
+    app: { current: '0.11.13', hasUpdate: false },
+    piCli: { current: '1.6.0', latest: '1.6.1', hasUpdate: true }
+  }
+  const bridge = { app: { checkUpdate: async () => result } }
+  Object.assign(globalThis, { window: Object.assign(new EventTarget(), { pi: bridge }) })
+  try {
+    dismissAppUpdateResult()
+    await checkForAppUpdates()
+    // "Up to date" is only half the answer: the agent is old, and the About
+    // page is where it is upgraded. The notice must say so.
+    assert.deepEqual(appUpdateResultNotice(), {
+      kind: 'current',
+      current: '0.11.13',
+      piCli: { current: '1.6.0', latest: '1.6.1' }
+    })
+    // A CLI check that failed, or found nothing, leaves no version to name.
+    bridge.app.checkUpdate = async () => ({
+      app: { current: '0.11.13', hasUpdate: false },
+      piCli: { current: '1.6.0', hasUpdate: false, error: 'offline' }
+    })
+    await checkForAppUpdates()
+    assert.deepEqual(appUpdateResultNotice(), { kind: 'current', current: '0.11.13' })
+  } finally {
+    dismissAppUpdateResult()
+    Object.assign(globalThis, { window: previousWindow })
+  }
+})
+
 test('a manual check shares one request, publishes the reading and stays retryable', async () => {
   const previousWindow = globalThis.window
   const target = new EventTarget()

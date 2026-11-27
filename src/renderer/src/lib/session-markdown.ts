@@ -16,6 +16,7 @@ export interface SessionMarkdownMeta {
   project?: string
   /** When the file was written, for the reader who opens it later. */
   exportedAt?: number
+  historyTruncated?: boolean
 }
 
 /** One line, whatever the session name carried. */
@@ -41,7 +42,12 @@ export function sessionMarkdown(items: ThreadItem[], meta: SessionMarkdownMeta =
     const date = new Date(meta.exportedAt)
     if (Number.isFinite(date.getTime())) facts.push(`- Exported: ${date.toISOString()}`)
   }
-  const head = `# ${heading(meta.title)}${facts.length ? `\n\n${facts.join('\n')}` : ''}`
+  const sections = [`# ${heading(meta.title)}`]
+  if (facts.length) sections.push(facts.join('\n'))
+  if (meta.historyTruncated) {
+    sections.push('> This export includes the loaded conversation history. Earlier messages may be missing.')
+  }
   const body = transcriptOf(items).trim()
-  return body ? `${head}\n\n${body}\n` : `${head}\n`
+  if (body) sections.push(body)
+  return `${sections.join('\n\n')}\n`
 }

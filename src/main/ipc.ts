@@ -10,7 +10,7 @@ import {
 } from '@shared/types'
 import { decodeBoundedTextBuffer } from './text-decode'
 import { randomUUID } from 'node:crypto'
-import { constants, mkdirSync, type Dirent } from 'node:fs'
+import { constants, existsSync, mkdirSync, type Dirent } from 'node:fs'
 import { lstat, mkdtemp, open, opendir, realpath, rename, rmdir, stat, unlink, writeFile, type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import type {
@@ -78,11 +78,23 @@ import {
 } from './app-update-installer'
 import { clearUpdateState, readUpdateStateForVersion, writeUpdateState } from './update-state'
 import { beginBundledPiCliMaintenance, checkAuth, killProcessTree, piVersion, runPiCli } from './pi/cli'
-import { resolvePiLaunch } from './pi/locate'
+import { forgetPiLaunchCache, resolvePiLaunch } from './pi/locate'
 import {
   CLI_PACKAGE_NAME,
-  fetchLatestCliVersionFromRegistry
+  fetchLatestCliVersionFromRegistry,
+  readBundledCliStatus
 } from './pi/cli-version'
+import {
+  activatePiCliOverlay,
+  clearUnavailablePiCliOverlay,
+  isPiCliOverlayVersion,
+  piCliOverlayEntry,
+  piCliOverlaySite,
+  piCliVersionAtEntry,
+  prunePiCliOverlaySites,
+  readPiCliOverlay,
+  removePiCliOverlaySite
+} from './pi/cli-overlay'
 import { spawn } from './pi/spawn'
 import { discoverSkillCommands, invalidateSkillCommandsCache } from './pi/command-catalog'
 import { getModelThinkingLevels } from './pi/model-catalog'
@@ -951,9 +963,11 @@ async function fetchLatestPiCliVersion(): Promise<string> {
 /**
  * The bundled CLI's reading on its own.
  *
- * A packaged app carries one CLI, released with the app, so it answers
- * `hasUpdate: false` without asking npm anything. Only a development checkout
- * can replace the CLI, and there the CLI *is* the agent under development.
+ * Every build asks the registry: an installed app carries one CLI in
+ * `app.asar.unpacked`, but the app may have installed a newer copy for itself
+ * in its data folder (see `pi/cli-overlay.ts`), and that copy is still the
+ * agent this app drives. Only a CLI the reader pointed the app at is out of
+ * scope — replacing that one would overwrite something the app does not own.
  *
  * This is deliberately separate from `app:checkUpdate`: the app release is
  * fetched from GitHub and is the reader's choice (`automaticUpdates`), while
@@ -962,19 +976,7 @@ async function fetchLatestPiCliVersion(): Promise<string> {
  */
 async function checkPiCliVersion(piPath: string | undefined): Promise<VersionItemStatus> {
   const current = (await piVersion(piPath)) || '1.4.0'
-  if (app.isPackaged || resolvePiLaunch(piPath).source !== 'bundled') {
-    return { current, hasUpdate: false }
-  }
-  try {
-    const latest = await fetchLatestPiCliVersion()
-    return { current, latest, hasUpdate: isNewerVersion(latest, current) }
-  } catch (err: unknown) {
-    return {
-      current,
-      hasUpdate: false,
-      error: err instanceof Error ? err.message : 'Failed to check Pi CLI updates'
-    }
-  }
+  return readBundledCliStatus(current, resolvePiLaunch(piPath).source, fetchLatestPiCliVersion)
 }
 
 interface NpmCommandOutput {
@@ -1093,14 +1095,119 @@ async function runNpmInstall(
     // undone by the next `npm install` in this checkout, because package.json
     // and the lockfile would still pin the old version. The manifest is what
     // this app depends on, so it moves with the install.
+    //
+    // A first install in a packaged app has no warm cache and has to download
+    // the package's whole dependency tree; the 3 minutes measured on a cold
+    // registry is exactly the old 180 s budget, which would have cut the one
+    // install the reader asked for.
+    // Pin the local prefix because npm searches parent folders for a project
+    // when the version's installation directory is empty.
     await runNpmCommand(
-      ['install', '--package-lock=true', '--loglevel=http', pkg],
+      ['install', `--prefix=${cwd}`, '--global=false', '--package-lock=true', '--loglevel=http', pkg],
       cwd,
-      180_000,
+      600_000,
       onOutput
     )
   } finally {
     clearInterval(timer)
+  }
+}
+
+/**
+ * Install a newer bundled CLI into the app's data folder.
+ *
+ * A packaged app must not install into its own files: npm reifies the project
+ * it is given, so pointed at `app.asar.unpacked` it would remove every package
+ * that project does not declare — including the `node-pty` native binary and
+ * the qjs/jiti copies the app itself loads. The overlay is an isolated npm
+ * project, and the app's record of which CLI to launch is switched only after
+ * that exact file runs and prints the requested version.
+ *
+ * npm is the slow part and runs before the agent is taken offline: the running
+ * conversations keep the CLI that is already installed. Only the record write
+ * needs maintenance, because that is the moment a new process would start on a
+ * different copy. A previous attempt that installed the tree and then found
+ * active work is reused instead of downloading the same version again.
+ */
+async function installBundledPiCliOverlay(
+  version: string,
+  sendProgress: (progress: PiCliUpgradeProgress) => void,
+  supervisor: IpcContext['supervisor']
+): Promise<UpgradeResult> {
+  if (!isPiCliOverlayVersion(version)) {
+    throw new Error('The Pi CLI update is not a valid version.')
+  }
+  const site = piCliOverlaySite(version)
+  const entry = piCliOverlayEntry(site)
+  const active = readPiCliOverlay()?.version === version
+  const verified = path.join(site, '.verified')
+  const reusable = active || (existsSync(verified) && existsSync(entry) && piCliVersionAtEntry(entry) === version)
+  if (!reusable) clearUnavailablePiCliOverlay(version)
+  try {
+    if (!reusable) {
+      // npm can leave a matching manifest and entry behind before it finishes.
+      // Invalidate any previous verification before changing the tree.
+      try {
+        await unlink(verified)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+      removePiCliOverlaySite(version)
+      mkdirSync(site, { recursive: true })
+      sendProgress({ stage: 'preparing', percent: 0 })
+      try {
+        await runNpmInstall(site, `${PI_CLI_PACKAGE_NAME}@${version}`, sendProgress)
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err)
+        if (/ENOENT/.test(message) && /\bnpm\b/i.test(message)) {
+          throw new Error('Updating the built-in Pi CLI needs npm. Install Node.js, then try again.')
+        }
+        throw err
+      }
+      if (!existsSync(entry) || piCliVersionAtEntry(entry) !== version) {
+        throw new Error('The bundled Pi CLI could not be found after installation.')
+      }
+    }
+
+    sendProgress({ stage: 'installing', percent: 99 })
+    const probe = await runPiCli(['--version'], {
+      cwd: app.getPath('userData'),
+      customPiPath: entry,
+      allowDuringMaintenance: true
+    })
+    const probed = probe.stdout.trim()
+    if (probe.code !== 0 || !probed) {
+      throw new Error('The bundled Pi CLI could not start after installation.')
+    }
+    if (probed !== version) {
+      throw new Error(`Expected Pi CLI ${version} after installation, but found ${probed}.`)
+    }
+    if (!active) await writeFile(verified, '')
+  } catch (error) {
+    if (!active) {
+      await unlink(verified).catch(() => {})
+      removePiCliOverlaySite(version)
+    }
+    throw error
+  }
+
+  const finishMaintenance = await beginBundledPiCliMaintenance()
+  let prepared = false
+  try {
+    prepared = await supervisor.prepareForCliUpgrade()
+    if (!prepared) {
+      return { success: false, error: 'Finish or stop active Pi work before upgrading the CLI.' }
+    }
+    activatePiCliOverlay(version)
+    forgetPiLaunchCache()
+    // The record now names this version; every older overlay is unreachable
+    // and each one is a full npm tree.
+    prunePiCliOverlaySites(version)
+    sendProgress({ stage: 'installing', percent: 100 })
+    return { success: true, version }
+  } finally {
+    if (prepared) supervisor.finishCliUpgrade()
+    finishMaintenance()
   }
 }
 
@@ -1367,10 +1474,12 @@ export function registerIpc(context: IpcContext): void {
     const currentAppVersion = app.getVersion()
     // The CLI half is the same reading the dedicated channel reports; asking
     // for it here keeps one check able to answer both, for the About page's
-    // manual entry points.
-    const piCliStatus = await checkPiCliVersion(piPath)
-
-    const appStatus = await checkAppVersion(currentAppVersion)
+    // manual entry points. The two run together: neither answer depends on the
+    // other, and a slow registry lookup must not hold the app release back.
+    const [piCliStatus, appStatus] = await Promise.all([
+      checkPiCliVersion(piPath),
+      checkAppVersion(currentAppVersion)
+    ])
 
     // A check that reached the network leaves a reading on disk, so a restart
     // on an offline machine still shows the release it found yesterday. A
@@ -1567,11 +1676,19 @@ export function registerIpc(context: IpcContext): void {
         if (resolvePiLaunch(piPath).source !== 'bundled') {
           return { success: false, error: 'The selected Pi CLI is managed outside this app.' }
         }
+        const latestPiCliVersion = await fetchLatestPiCliVersion()
+        const sendProgress = (progress: PiCliUpgradeProgress): void => {
+          sendToWindow(BrowserWindow.fromWebContents(event.sender), 'app:piCliUpgradeProgress', progress)
+        }
+        // A packaged app cannot reify the directory it shipped: npm removes
+        // every package the given project does not declare, and the app's
+        // unpacked tree also holds packages the app itself loads. The newer
+        // CLI therefore lives in the app's data folder and is launched from
+        // there; the installer's files are never written to.
         if (app.isPackaged) {
-          return { success: false, error: 'The bundled Pi CLI is updated with Pi Desktop releases.' }
+          return await installBundledPiCliOverlay(latestPiCliVersion, sendProgress, supervisor)
         }
         const cwd = app.getAppPath()
-        const latestPiCliVersion = await fetchLatestPiCliVersion()
         const finishCliMaintenance = await beginBundledPiCliMaintenance()
         let supervisorPrepared = false
         try {
@@ -1580,9 +1697,6 @@ export function registerIpc(context: IpcContext): void {
             return { success: false, error: 'Finish or stop active Pi work before upgrading the CLI.' }
           }
           supervisorPrepared = true
-          const sendProgress = (progress: PiCliUpgradeProgress): void => {
-            sendToWindow(BrowserWindow.fromWebContents(event.sender), 'app:piCliUpgradeProgress', progress)
-          }
           await runNpmInstall(cwd, `${PI_CLI_PACKAGE_NAME}@${latestPiCliVersion}`, sendProgress)
           if (resolvePiLaunch(piPath).source !== 'bundled') {
             throw new Error('The bundled Pi CLI could not be found after installation.')
@@ -1595,6 +1709,7 @@ export function registerIpc(context: IpcContext): void {
           if (updatedVersion !== latestPiCliVersion) {
             throw new Error(`Expected Pi CLI ${latestPiCliVersion} after installation, but found ${updatedVersion}.`)
           }
+          forgetPiLaunchCache()
           sendProgress({ stage: 'installing', percent: 100 })
           return { success: true, version: updatedVersion }
         } finally {
@@ -1887,7 +2002,11 @@ export function registerIpc(context: IpcContext): void {
       const directory = path.dirname(target)
       const temporary = path.join(directory, `.${path.basename(target)}.${randomUUID()}.tmp`)
       try {
+        const originalVersion = await exportDestinationVersion(target)
         await writeFile(temporary, markdown, { encoding: 'utf8', mode: 0o666 })
+        if (await exportDestinationVersion(target) !== originalVersion) {
+          throw new Error('The export destination changed while Pi was exporting. Choose the destination again.')
+        }
         await rename(temporary, target)
       } finally {
         await unlink(temporary).catch(() => {})

@@ -646,10 +646,10 @@ export default function (pi) {
 
   pi.registerTool({
     name: questionTool, label: 'Ask the user',
-    description: 'Ask for a decision that is needed to continue. Show one question with 2 to 5 distinct choices and wait for the user to select one.',
+    description: 'Ask for a decision that is needed to continue. Show one question with 2 to 5 distinct choices and wait for the user to select one; the user may also answer in their own words instead.',
     promptSnippet: 'Ask the user to decide between concrete options in a dialog',
     promptGuidelines: [
-      'Use ' + questionTool + ' on its own when a material ambiguity remains after checking the available context. Write in the user’s language and give choices that describe distinct outcomes. Use the selected answer to proceed. Plan and operation approvals have their own controls.'
+      'Use ' + questionTool + ' on its own when a material ambiguity remains after checking the available context. Write in the user’s language and give choices that describe distinct outcomes. The user may pick a choice or reply in their own words — both are the answer, so use it to proceed. Plan and operation approvals have their own controls.'
     ],
     parameters: Type.Object({
       question: Type.String({ minLength: 1, maxLength: 400 }),
@@ -669,8 +669,16 @@ export default function (pi) {
         return { content: [{ type: 'text', text: 'Ask this question and list its options in the visible reply, then wait for the user.' }], details: unanswered, isError: true };
       }
       const answer = signal?.aborted ? undefined : await ctx.ui.select(question, options, { signal });
-      if (!signal?.aborted && options.includes(answer)) {
-        return { content: [{ type: 'text', text: 'The user selected: ' + answer }], details: { question, options, answer } };
+      const picked = typeof answer === 'string' ? answer.trim() : '';
+      // The choices are a convenience, not the only door: the card carries a line
+      // for answering in the reader's own words, and the select's value is
+      // whatever they submitted. A reply that is not one of the labels is still an
+      // answer — dropping it would silently ignore what the user typed.
+      if (!signal?.aborted && picked) {
+        if (options.includes(picked)) {
+          return { content: [{ type: 'text', text: 'The user selected: ' + picked }], details: { question, options, answer: picked } };
+        }
+        return { content: [{ type: 'text', text: 'The user answered: ' + picked }], details: { question, options, answer: picked, custom: true } };
       }
       if (!signal?.aborted) {
         questionDismissed = true;

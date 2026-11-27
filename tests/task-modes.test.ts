@@ -230,8 +230,27 @@ test('the user question is available in every desktop task mode and returns the 
   assert.equal(f.mode(), 'plan')
 })
 
-test('a user question holds the other tool calls and duplicate questions in its batch', async () => {
+test('a user question takes an answer written in the reader’s own words', async () => {
+  // The card offers the choices and a line to answer in one's own words; both
+  // arrive as the select's value. A reply outside the offered labels is still an
+  // answer — the model has to receive it, not a "no option was selected".
   const f = fixture()
+  f.emit('session_start')
+  const question = 'Which scope should the plan cover?'
+  const options = ['Current module', 'Whole workspace']
+  f.select('  Just the auth module, skip the fixtures  ')
+  const result = await f.askUser(question, options)
+  assert.deepEqual(result.details, {
+    question,
+    options,
+    answer: 'Just the auth module, skip the fixtures',
+    custom: true
+  })
+  assert.match(result.content[0].text, /The user answered: Just the auth module, skip the fixtures/)
+  assert.equal(result.terminate, undefined)
+})
+
+test('a user question holds the other tool calls and duplicate questions in its batch', async () => {  const f = fixture()
   f.emit('session_start')
   f.emit('message_end', { message: { role: 'assistant', content: [
     { type: 'toolCall', id: 'sibling-write', name: 'write' },

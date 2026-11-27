@@ -36,6 +36,9 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      - name: 规范检查
+        run: npm run lint
+
       - name: 类型检查
         run: npm run typecheck
 

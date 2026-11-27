@@ -537,7 +537,7 @@ export interface ScheduledTask extends ScheduledTaskInput {
   lastSessionFile?: string
   /**
    * The conversation a `reuse` task continues. Written by the service after a
-   * run writes its session, and cleared when the task goes back to `new`.
+   * run writes its session. Cleared when the task changes projects or goes back to `new`.
    */
   reuseSessionFile?: string
 }
@@ -1113,7 +1113,7 @@ export interface DownloadedAppUpdate {
   bytes?: number
 }
 
-/** Progress of the development Pi CLI upgrade while npm is running. */
+/** Progress of the bundled Pi CLI upgrade while npm is running. */
 export interface PiCliUpgradeProgress {
   stage: 'preparing' | 'downloading' | 'installing'
   /** Monotonic percentage for the bar; capped below 100 until npm exits. */
@@ -1410,7 +1410,7 @@ export interface PiDesktopBridge {
     /** Download (unless already downloaded) a verified app release and restart through the Windows installer. */
     installAppUpdate(version: string): Promise<UpgradeResult>
     onAppUpdateProgress(handler: (progress: AppUpdateProgress) => void): () => void
-    /** Upgrade the development Pi CLI; packaged builds use the bundled version. */
+    /** Upgrade the bundled Pi CLI: in place in a checkout, into the app's data folder in an installed build. */
     upgradePiCli(): Promise<UpgradeResult>
     /** Progress of the running Pi CLI upgrade. */
     onPiCliUpgradeProgress(handler: (progress: PiCliUpgradeProgress) => void): () => void

@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type {
   ScheduledTask,
@@ -14,8 +14,10 @@ import type {
 } from '@shared/types'
 import type { SettingsStore } from './settings'
 import type { SessionSupervisor } from './pi/supervisor'
+import { canonicalPath } from './pi/session-file'
 import { lastRunAssistantMessage } from './pi/run-result'
 import { properLockfile } from './proper-lockfile'
+import { getSessionMeta, resolveSessionRoots } from './sessions'
 
 interface ScheduledTaskServiceOptions {
   userData: string
@@ -26,9 +28,12 @@ interface ScheduledTaskServiceOptions {
 
 interface ActiveRun {
   taskId: string
-  draftKey: string
+  workspaceId: string
+  ownerId: string
   lastRunAt: number
   sessionFile?: string
+  /** A resumed conversation belongs to its existing turn until our prompt is sent. */
+  waitingToResume?: boolean
   modelError?: string
   /** The task continues one conversation, so its file is worth remembering. */
   reuse: boolean
@@ -38,6 +43,7 @@ interface ActiveRun {
 
 interface PendingRunResult {
   lastRunAt: number
+  workspaceId: string
   lastStatus: ScheduledTaskStatus
   lastError?: string
   lastSessionFile?: string
@@ -302,7 +308,7 @@ function validateInput(
   return { title, prompt, workspaceId, schedule: { kind: 'daily', time: schedule.time }, ...choice }
 }
 
-/** Persistent local-time scheduler. A task starts a fresh Pi session per run. */
+/** Persistent local-time scheduler. */
 export class ScheduledTaskService extends EventEmitter {
   private readonly file: string
   private fileFingerprint: string | undefined
@@ -383,9 +389,9 @@ export class ScheduledTaskService extends EventEmitter {
             // An omitted conversation choice means "a new one per run", so it
             // has to clear the mode the task carried before.
             sessionMode: normalized.sessionMode,
-            // Going back to a fresh conversation per run also forgets the one
-            // the task used to continue.
-            reuseSessionFile: normalized.sessionMode === 'reuse' ? task.reuseSessionFile : undefined,
+            reuseSessionFile: normalized.sessionMode === 'reuse' && normalized.workspaceId === current.workspaceId
+              ? task.reuseSessionFile
+              : undefined,
             nextRunAt
           }
         : task)
@@ -438,10 +444,15 @@ export class ScheduledTaskService extends EventEmitter {
   async stopRun(id: string): Promise<boolean> {
     const active = this.activeTasks.get(id)
     if (!active) return false
-    await this.supervisor.stop(active.sessionFile ?? active.draftKey)
+    if (active.waitingToResume) {
+      // The dispatch check will discard the queued prompt once the folder opens.
+      this.finish(active, 'aborted')
+      return true
+    }
+    await this.supervisor.stop(active.ownerId)
     // The settle event normally finishes the task; this covers the case where
     // there is nothing left to settle.
-    if (this.activeTasks.get(id) === active && !this.supervisor.sessionInfo(active.sessionFile ?? active.draftKey)?.running) {
+    if (this.activeTasks.get(id) === active && !this.supervisor.sessionInfo(active.ownerId)?.running) {
       this.finish(active, 'aborted')
     }
     return true
@@ -498,7 +509,7 @@ export class ScheduledTaskService extends EventEmitter {
     const { ownerId, event } = payload
     if (event.type !== 'agent_end' && event.type !== 'agent_settled') return
     const active = this.activeRuns.get(ownerId)
-    if (!active) return
+    if (!active || active.waitingToResume) return
     if (event.type === 'agent_end') {
       // Pi can still retry. Retain the latest attempt's result until settlement.
       const assistant = lastRunAssistantMessage(event.messages)
@@ -521,9 +532,14 @@ export class ScheduledTaskService extends EventEmitter {
   private readonly onRuntimeRekey = (change: RuntimeRekey): void => {
     const active = this.activeRuns.get(change.from)
     if (!active) return
-    this.activeRuns.delete(change.from)
     active.sessionFile = change.to
-    this.activeRuns.set(change.to, active)
+    this.trackRunOwner(active, change.to)
+  }
+
+  private trackRunOwner(active: ActiveRun, ownerId: string): void {
+    this.activeRuns.delete(active.ownerId)
+    active.ownerId = ownerId
+    this.activeRuns.set(ownerId, active)
   }
 
   private readonly onRuntimeStatus = (payload: { ownerId: string; status: RuntimeStatus }): void => {
@@ -595,16 +611,16 @@ export class ScheduledTaskService extends EventEmitter {
     const next = tasks.map((task) => {
       const result = this.pendingRunResults.get(task.id)
       if (!result || task.lastStatus !== 'running' || task.lastRunAt !== result.lastRunAt) return task
+      const reuseSessionFile = task.workspaceId === result.workspaceId ? result.reuseSessionFile : undefined
       changed = true
       return {
         ...task,
         lastStatus: result.lastStatus,
         lastError: result.lastError,
         lastSessionFile: result.lastSessionFile ?? task.lastSessionFile,
-        // Only a `reuse` task keeps the conversation; switching back to a new
-        // conversation per run must not resurrect the old one.
+        // A run can finish after the task's project or conversation mode changes.
         reuseSessionFile: task.sessionMode === 'reuse'
-          ? result.reuseSessionFile ?? task.reuseSessionFile
+          ? reuseSessionFile ?? task.reuseSessionFile
           : undefined
       }
     })
@@ -1004,9 +1020,10 @@ export class ScheduledTaskService extends EventEmitter {
     const runOwner: TaskRunOwner = { token: randomUUID(), ownerPid: process.pid, lastRunAt: now }
     const taskRunLockFile = this.taskRunLockFile(task.id)
     const taskRunOwnerFile = this.taskRunOwnerFile(task.id)
+    let leaseRun: ActiveRun | undefined
     let stoppingForLeaseLoss = false
     const onCompromised = (): void => {
-      if (stoppingForLeaseLoss || this.activeTasks.get(task.id)?.draftKey !== sessionKey) return
+      if (stoppingForLeaseLoss || !leaseRun || this.activeTasks.get(task.id) !== leaseRun) return
       stoppingForLeaseLoss = true
       void this.stopRun(task.id).catch((error) => {
         stoppingForLeaseLoss = false
@@ -1039,10 +1056,6 @@ export class ScheduledTaskService extends EventEmitter {
     this.waitingForRunSlot = false
 
     let currentTask: ScheduledTask | undefined
-    // A `reuse` run continues the conversation the previous one wrote. The
-    // record is cleared before the new run starts, so it is read here first.
-    let resumeSessionFile: string | undefined
-    let reuseConversation = false
     try {
       this.withDataLock(() => {
         const current = this.readForMutation()
@@ -1059,11 +1072,6 @@ export class ScheduledTaskService extends EventEmitter {
           return
         }
         const startTask = currentTask
-        reuseConversation = startTask.sessionMode === 'reuse'
-        const recorded = startTask.reuseSessionFile
-        // A conversation the reader deleted is not resumed: the next run starts
-        // a new one and records it instead.
-        resumeSessionFile = reuseConversation && recorded && existsSync(recorded) ? recorded : undefined
         const next = current.map((entry) => entry.id === startTask.id
           ? {
               ...entry,
@@ -1104,12 +1112,14 @@ export class ScheduledTaskService extends EventEmitter {
 
     const active: ActiveRun = {
       taskId: currentTask.id,
-      draftKey: sessionKey,
+      workspaceId: currentTask.workspaceId,
+      ownerId: sessionKey,
       lastRunAt: now,
-      reuse: reuseConversation,
+      reuse: currentTask.sessionMode === 'reuse',
       releaseRunLock,
       releaseRunSlot
     }
+    leaseRun = active
     this.activeTasks.set(currentTask.id, active)
     this.activeRuns.set(sessionKey, active)
     this.publish()
@@ -1121,6 +1131,17 @@ export class ScheduledTaskService extends EventEmitter {
     }
 
     try {
+      let resumeSessionFile: string | undefined
+      const recorded = active.reuse ? currentTask.reuseSessionFile : undefined
+      if (recorded) {
+        const session = await getSessionMeta(recorded, resolveSessionRoots(settings.externalChatFolder))
+        if (this.activeTasks.get(active.taskId) !== active) return
+        if (typeof session?.cwd === 'string' && path.isAbsolute(session.cwd) &&
+          canonicalPath(session.cwd) === canonicalPath(workspace.path)) {
+          resumeSessionFile = recorded
+          active.waitingToResume = true
+        }
+      }
       // Both choices are process arguments. A run may be launching while a
       // newer app preference is saved, so its snapshot must stay local to it.
       const model = currentTask.model ?? settings.model
@@ -1134,34 +1155,42 @@ export class ScheduledTaskService extends EventEmitter {
         thinkingLevel,
         customInstructions: this.customInstructions(workspace.path),
         trace: { sourceAction: 'scheduled-task', uiSessionId: sessionKey }
-      })
+      }, resumeSessionFile ? () => !this.disposed && this.activeTasks.get(active.taskId) === active : undefined)
       if (!ensured.ok) throw new Error(ensured.error ?? 'Pi did not start.')
       if (this.activeTasks.get(active.taskId) !== active) {
-        void this.supervisor.stop(active.sessionFile ?? sessionKey).catch(() => {})
+        if (!resumeSessionFile) void this.supervisor.stop(active.ownerId).catch(() => {})
         return
       }
-      const piPid = this.supervisor.sessionInfo(sessionKey)?.pid
-      if (piPid !== undefined) {
+      const recordPiProcess = (ownerId: string): void => {
+        const piPid = this.supervisor.sessionInfo(ownerId)?.pid
+        if (piPid === undefined) return
         try {
           const owner = { ...runOwner, piPid }
           this.writeRunLockOwner(taskRunOwnerFile, owner)
           this.writeRunLockOwner(runSlot.ownerFile, owner)
         } catch (error) {
+          throw new Error('Could not record the Pi process for this scheduled task.', { cause: error })
+        }
+      }
+      if (!resumeSessionFile) {
+        try {
+          recordPiProcess(sessionKey)
+        } catch (error) {
           await this.supervisor.stop(sessionKey).catch(() => {})
           this.finish(active, 'error', 'Could not record the Pi process for this scheduled task.')
           throw error
         }
-      }
-      try {
-        await this.supervisor.request(sessionKey, 'set_session_name', { name: currentTask.title }, 30_000, {
-          sourceAction: 'scheduled-task-title',
-          uiSessionId: sessionKey
-        })
-      } catch {
-        // The prompt is more important than the optional conversation title.
+        try {
+          await this.supervisor.request(sessionKey, 'set_session_name', { name: currentTask.title }, 30_000, {
+            sourceAction: 'scheduled-task-title',
+            uiSessionId: sessionKey
+          })
+        } catch {
+          // The prompt is more important than the optional conversation title.
+        }
       }
       if (this.activeTasks.get(active.taskId) !== active) {
-        void this.supervisor.stop(active.sessionFile ?? sessionKey).catch(() => {})
+        if (!resumeSessionFile) void this.supervisor.stop(active.ownerId).catch(() => {})
         return
       }
       const result = await this.supervisor.request<{ disposition?: string; cancelled?: boolean }>(
@@ -1169,7 +1198,19 @@ export class ScheduledTaskService extends EventEmitter {
         'prompt',
         { message: currentTask.prompt },
         900_000,
-        { sourceAction: manual ? 'scheduled-task-manual' : 'scheduled-task', uiSessionId: sessionKey }
+        { sourceAction: manual ? 'scheduled-task-manual' : 'scheduled-task', uiSessionId: sessionKey },
+        resumeSessionFile ? (ownerId, busy) => {
+          if (this.disposed || this.activeTasks.get(active.taskId) !== active) throw new Error('Scheduled task was stopped.')
+          const owner = this.activeRuns.get(ownerId)
+          if (busy || (owner && owner !== active)) {
+            throw new Error('This conversation already has an active run.')
+          }
+          // A warm process can resolve the draft to its owner without emitting a rekey.
+          recordPiProcess(ownerId)
+          active.sessionFile ??= resumeSessionFile
+          this.trackRunOwner(active, ownerId)
+          active.waitingToResume = false
+        } : undefined
       )
       if (result?.disposition === 'handled') {
         this.finish(active, result.cancelled === true ? 'aborted' : 'completed')
@@ -1178,8 +1219,10 @@ export class ScheduledTaskService extends EventEmitter {
       // A timed-out RPC response does not prove that Pi stopped executing the
       // prompt. Keep the run reserved until its settle event arrives so a
       // retry cannot overlap the still-running agent.
-      if (this.activeTasks.get(active.taskId) === active) {
-        if (!this.supervisor.sessionInfo(active.sessionFile ?? active.draftKey)?.running) {
+      const stillActive = this.activeTasks.get(active.taskId) === active
+      if (active.waitingToResume && !stillActive) return
+      if (stillActive) {
+        if (active.waitingToResume || !this.supervisor.sessionInfo(active.ownerId)?.running) {
           this.finish(active, 'error', error instanceof Error ? error.message : String(error))
         }
         if (!manual) console.error('[pi-desktop] scheduled task failed:', error)
@@ -1199,11 +1242,12 @@ export class ScheduledTaskService extends EventEmitter {
     // An RPC response can arrive after this run settled and the task started again.
     if (this.activeTasks.get(taskId) !== active) return
     this.activeTasks.delete(taskId)
-    this.activeRuns.delete(sessionFile ?? active.draftKey)
+    this.activeRuns.delete(active.ownerId)
     // Keep the task lease until its outcome is durable. Peers otherwise read
     // the old running state and recover it as an interrupted run.
     this.pendingRunResults.set(taskId, {
       lastRunAt: active.lastRunAt,
+      workspaceId: active.workspaceId,
       lastStatus: status,
       lastError: limitScheduledTaskError(error),
       lastSessionFile: sessionFile,

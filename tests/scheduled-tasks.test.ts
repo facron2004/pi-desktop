@@ -1549,11 +1549,12 @@ test('a scheduled task uses its startup choices without overwriting newer Pi def
       savedThinkingLevel = 'high'
       writeFileSync(agentSettings, JSON.stringify(newerDefaults))
     }
-    return new PiRuntime({ getSessionDir: () => sessions })
+    return new PiRuntime({ getSessionDir: () => sessions, getSessionRoots: () => [sessions] })
   })
   const settings = {
     get: () => ({
       workspaces: [{ id: 'project', path: userData }],
+      externalChatFolder: sessions,
       model: savedModel,
       thinkingLevel: savedThinkingLevel
     })
@@ -1570,7 +1571,7 @@ test('a scheduled task uses its startup choices without overwriting newer Pi def
       { title: 'In flight', choice: {}, expectedModel: 'initial', expectedThinking: 'medium' },
       { title: 'Latest defaults', choice: {}, expectedModel: 'newer', expectedThinking: 'high' },
       {
-        title: 'Pinned', choice: { model: 'fixture/pinned', thinkingLevel: 'low' },
+        title: 'Pinned', choice: { model: 'fixture/pinned', thinkingLevel: 'low', sessionMode: 'reuse' as const },
         expectedModel: 'pinned', expectedThinking: 'low'
       }
     ]) {
@@ -1584,7 +1585,7 @@ test('a scheduled task uses its startup choices without overwriting newer Pi def
       assert.equal(task.model, choice.model)
       assert.equal(task.thinkingLevel, choice.thinkingLevel)
 
-      const settled = Promise.withResolvers<ScheduledTask>()
+      let settled = Promise.withResolvers<ScheduledTask>()
       const changed = (tasks: ScheduledTask[]) => {
         const result = tasks.find((entry) => entry.id === task.id)
         if (result?.lastStatus && result.lastStatus !== 'running') settled.resolve(result)
@@ -1601,6 +1602,35 @@ test('a scheduled task uses its startup choices without overwriting newer Pi def
         assert.equal(state.thinkingLevel, expectedThinking)
         const { defaultProvider, defaultModel, defaultThinkingLevel } = JSON.parse(readFileSync(agentSettings, 'utf8'))
         assert.deepEqual({ defaultProvider, defaultModel, defaultThinkingLevel }, newerDefaults)
+        if (choice.sessionMode === 'reuse') {
+          const pid = supervisor.sessionInfo(result.lastSessionFile)?.pid
+          assert.ok(pid)
+          const previousCalls = requests.length
+          settled = Promise.withResolvers<ScheduledTask>()
+          await service.runNow(task.id)
+          const resumed = await settled.promise
+          assert.equal(resumed.lastStatus, 'completed', resumed.lastError)
+          assert.equal(resumed.lastSessionFile, result.lastSessionFile)
+          assert.equal(supervisor.sessionInfo(result.lastSessionFile)?.pid, pid)
+          assert.deepEqual(requests.slice(previousCalls), [expectedModel])
+
+          for (const edit of [
+            { model: 'fixture/pinned', thinkingLevel: 'medium', expectedModel: 'pinned', expectedThinking: 'medium' },
+            { model: undefined, thinkingLevel: undefined, expectedModel: 'newer', expectedThinking: 'high' }
+          ]) {
+            service.update(task.id, { ...task, model: edit.model, thinkingLevel: edit.thinkingLevel })
+            settled = Promise.withResolvers<ScheduledTask>()
+            await service.runNow(task.id)
+            const edited = await settled.promise
+            assert.equal(edited.lastStatus, 'completed', edited.lastError)
+            assert.equal(edited.lastSessionFile, result.lastSessionFile)
+            assert.equal(requests.at(-1), edit.expectedModel)
+            const editedState = await supervisor.request<PiState>(result.lastSessionFile, 'get_state')
+            assert.equal(editedState.model?.id, edit.expectedModel)
+            assert.equal(editedState.thinkingLevel, edit.expectedThinking)
+            assert.partialDeepStrictEqual(JSON.parse(readFileSync(agentSettings, 'utf8')), newerDefaults)
+          }
+        }
       } finally {
         service.off('changed', changed)
       }

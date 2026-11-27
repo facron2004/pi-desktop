@@ -1,10 +1,15 @@
 import { useRef, useState } from 'react'
-import { Folder, Plus, Trash2, X } from 'lucide-react'
+import { Folder, FolderPlus, X } from 'lucide-react'
 import type { Project } from '../lib/projects'
 import type { Workspace } from '@shared/types'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { useT } from '../lib/i18n'
 import { basename, samePath } from '../lib/path'
+import {
+  addProjectFolder,
+  promoteProjectFolder,
+  removeProjectFolder
+} from '../lib/project-folders'
 import { useAppStore } from '../store/useAppStore'
 import '../styles/project-edit.css'
 
@@ -46,12 +51,13 @@ export function EditProjectDialog({
     const selected = await window.pi.dialog.pickDirectory(defaultPath)
     if (!selected) return
 
-    if (folders.some((f) => samePath(f, selected))) {
+    const next = addProjectFolder(folders, selected)
+    if (!next) {
       showToast(t('Folder is already in this project'))
       return
     }
 
-    setFolders((prev) => [...prev, selected])
+    setFolders(next)
 
     if (!name.trim()) {
       setName(basename(selected))
@@ -59,14 +65,11 @@ export function EditProjectDialog({
   }
 
   const handleRemoveFolder = (targetFolder: string) => {
-    setFolders((prev) => prev.filter((f) => !samePath(f, targetFolder)))
+    setFolders((prev) => removeProjectFolder(prev, targetFolder))
   }
 
   const handleSetPrimary = (targetFolder: string) => {
-    setFolders((prev) => {
-      const remaining = prev.filter((f) => !samePath(f, targetFolder))
-      return [targetFolder, ...remaining]
-    })
+    setFolders((prev) => promoteProjectFolder(prev, targetFolder))
   }
 
   const handleSave = async () => {
@@ -177,76 +180,65 @@ export function EditProjectDialog({
 
           {/* Folders management field */}
           <div className="project-edit__field">
-            <div className="project-edit__field-head">
-              <label className="project-edit__label">
-                <span>{t('Project folders')}</span>
-                <span className="project-edit__count">({folders.length})</span>
-              </label>
-            </div>
+            <span id="project-edit-folders-label" className="project-edit__label">
+              {t('Project folders')}
+            </span>
 
-            {folders.length === 0 ? (
-              <div
-                className="project-edit__empty"
-                role="button"
-                tabIndex={0}
-                onClick={() => void handleAddFolder()}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault()
-                    void handleAddFolder()
-                  }
-                }}
-              >
-                <Plus size={14} />
-                <span>{t('Click to add project folder')}</span>
-              </div>
-            ) : (
-              <div className="project-edit__folder-list">
-                {folders.map((folderPath, index) => {
-                  const isPrimary = index === 0
-                  return (
-                    <div className="project-edit__folder-item" key={folderPath}>
-                      <div className="project-edit__folder-info" title={folderPath}>
-                        <Folder size={15} className="project-edit__folder-icon" />
-                        <span className="project-edit__folder-name">
-                          {basename(folderPath)}
-                        </span>
-                        <span className="project-edit__folder-path">
-                          {folderPath}
-                        </span>
-                        {isPrimary ? (
-                          <span className="project-edit__primary-chip">
-                            {t('Primary')}
-                          </span>
-                        ) : null}
-                      </div>
-
-                      <div className="project-edit__folder-actions">
-                        {!isPrimary ? (
-                          <button
-                            type="button"
-                            className="project-edit__action-btn"
-                            title={t('Set as primary')}
-                            onClick={() => handleSetPrimary(folderPath)}
-                          >
-                            {t('Set as primary')}
-                          </button>
-                        ) : null}
-                        <button
-                          type="button"
-                          className="project-edit__delete-btn"
-                          title={t('Remove folder')}
-                          aria-label={t('Remove folder')}
-                          onClick={() => handleRemoveFolder(folderPath)}
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      </div>
+            <div
+              className="project-edit__folder-list"
+              role="group"
+              aria-labelledby="project-edit-folders-label"
+            >
+              {folders.map((folderPath, index) => {
+                const isPrimary = index === 0
+                return (
+                  <div className="project-edit__folder-item" key={folderPath}>
+                    <div className="project-edit__folder-info" title={folderPath}>
+                      <Folder size={15} className="project-edit__folder-icon" />
+                      <span className="project-edit__folder-name">
+                        {basename(folderPath)}
+                      </span>
                     </div>
-                  )
-                })}
-              </div>
-            )}
+
+                    {isPrimary ? (
+                      <span className="project-edit__primary-chip">
+                        {t('Primary')}
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="project-edit__primary-btn"
+                        title={t('Set as primary')}
+                        onClick={() => handleSetPrimary(folderPath)}
+                      >
+                        {t('Set as primary')}
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      className="project-edit__remove-btn"
+                      title={t('Remove folder')}
+                      aria-label={`${t('Remove folder')}: ${folderPath}`}
+                      onClick={() => handleRemoveFolder(folderPath)}
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                )
+              })}
+
+              {/* This row is always here: the first folder used to replace the
+                  empty state with a list that had no add control at all. */}
+              <button
+                type="button"
+                className="project-edit__add-row"
+                onClick={() => void handleAddFolder()}
+              >
+                <FolderPlus size={15} />
+                <span>{t('Add folder')}</span>
+              </button>
+            </div>
           </div>
         </div>
 

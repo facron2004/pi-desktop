@@ -96,7 +96,6 @@
 :root .branch-menu__empty,
 :root .font-menu__empty,
 :root .commit__empty,
-:root .project-edit__empty,
 :root .mention__empty {
   color: var(--text-tertiary);
   font-size: var(--text-body);

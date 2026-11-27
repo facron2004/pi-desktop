@@ -351,7 +351,7 @@ test('aggregated usage includes sessions larger than the cache budget', async ()
   }
 })
 
-test('session hydration and rename stay on the verified handle after path replacement', async () => {
+test('session hydration keeps its verified snapshot while rename refuses a replaced path', async () => {
   const parent = mkdtempSync(path.join(tmpdir(), 'pi-session-stable-handle-'))
   const root = path.join(parent, 'sessions')
   const workspace = path.join(root, '--C--project--')
@@ -396,9 +396,9 @@ test('session hydration and rename stay on the verified handle after path replac
     try {
       const messages = await readSessionMessages(opened.target, opened.handle)
       assert.equal(messages[0]?.content, 'alpha prompt')
-      assert.equal(await appendSessionName(opened.target, 'Original chat', opened.handle), true)
-      assert.match(readFileSync(moved, 'utf8'), /"name":"Original chat"/)
-      assert.doesNotMatch(readFileSync(file, 'utf8'), /"name":"Original chat"/)
+      assert.equal(await appendSessionName(opened.target, 'Original chat', opened.handle), false)
+      assert.equal(readFileSync(moved, 'utf8'), makeSession('alpha prompt', 2))
+      assert.equal(readFileSync(file, 'utf8'), makeSession('bravo prompt', 4))
     } finally {
       await opened.handle.close()
     }
