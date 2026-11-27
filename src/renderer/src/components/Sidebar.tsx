@@ -1401,24 +1401,25 @@ export const Sidebar = memo(function Sidebar({
           }
         >
           <div className="sidebar__section-head" data-fold={sidebarGroupBy === 'flat' ? 'true' : undefined}>
-            <span className="sidebar__section-title">
-              {t(sidebarGroupBy === 'flat' ? 'Chats' : 'Projects')}
-            </span>
-            {/* Only a head that labels conversations folds: the project rows are
-                the tree itself, and folding them away would hide the list the
-                reader came for. The caret sits at the right end of the head. */}
             {sidebarGroupBy === 'flat' ? (
               <button
                 type="button"
-                className="sidebar__section-toggle"
+                className="sidebar__section-fold"
                 aria-expanded={chatsListExpanded}
                 aria-label={t(chatsListExpanded ? 'Collapse conversations' : 'Expand conversations')}
                 title={t(chatsListExpanded ? 'Collapse' : 'Expand')}
                 onClick={() => toggleSidebarSection('chats')}
               >
+                <span className="sidebar__section-title">{t('Chats')}</span>
                 <ChevronRight size={12} aria-hidden="true" className="sidebar__section-caret" />
               </button>
-            ) : null}
+            ) : (
+              <span className="sidebar__section-title">{t('Projects')}</span>
+            )}
+            {/* Only a head that labels conversations folds: the project rows are
+                the tree itself, and folding them away would hide the list the
+                reader came for. The caret rides with the label, so the fold
+                control is the name and its arrow — not a bar across the head. */}
             <div className="sidebar__section-actions no-drag">
               <Popover
                 placement="bottom"
@@ -2018,15 +2019,15 @@ export const Sidebar = memo(function Sidebar({
             data-collapsed={chatsExpanded ? undefined : 'true'}
           >
             <div className="sidebar__section-head" data-fold="true">
-              <span className="sidebar__section-title">{t('Chats')}</span>
               <button
                 type="button"
-                className="sidebar__section-toggle"
+                className="sidebar__section-fold"
                 aria-expanded={chatsExpanded}
                 aria-label={t(chatsExpanded ? 'Collapse conversations' : 'Expand conversations')}
                 title={t(chatsExpanded ? 'Collapse' : 'Expand')}
                 onClick={() => toggleSidebarSection('chats-without-project')}
               >
+                <span className="sidebar__section-title">{t('Chats')}</span>
                 <ChevronRight size={12} aria-hidden="true" className="sidebar__section-caret" />
               </button>
             </div>

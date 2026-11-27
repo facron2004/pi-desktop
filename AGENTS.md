@@ -569,18 +569,23 @@ because the column above holds current work; in `Archived only` mode every row
 is archived, so the group headings speak for themselves. Tree grouping needs
 none of this: its project rows already say where a conversation came from.
 
-**Only a conversation list folds, and its caret sits at the right.** The heads
+**Only a conversation list folds, and its label is the trigger.** The heads
 that label conversations —「对话」over the single list, and「对话」over the chats
-with no project — carry one caret at the right end of the head; the list hides
-under it while the head stays on screen, because the caret is the only way back.
-The「项目 / Projects」head does **not** fold: the project rows are the tree itself,
+with no project — are one inline control: the name and its caret sit together at
+the left, and the whole control is the button. It paints no surface of its own,
+at rest or while pressed; only the caret turns to say whether the list is open,
+and the label stays on screen so the folded list can be opened again. The
+「项目 / Projects」head does **not** fold: the project rows are the tree itself,
 and folding them away hides the list the reader opened the sidebar for. The
-label stays plain text, so a click on the name cannot fold anything; the
-hover-revealed view menu steps left of the caret instead of under it. Open points
-down, folded points right. The state is a view preference (`lib/sidebar-fold.ts`,
-localStorage) keyed per list (`chats`, `chats-without-project`), so folding one
-list never folds another. A filter in the sidebar's field opens a folded list,
-because a match hidden inside it is the one thing a search must not do.
+hover-revealed view menu keeps the right end of the head, apart from the fold
+control. Open points down, folded points right. The state is a view preference
+(`lib/sidebar-fold.ts`, localStorage) keyed per list (`chats`,
+`chats-without-project`), so folding one list never folds another. A filter in
+the sidebar's field opens a folded list, because a match hidden inside it is the
+one thing a search must not do. `tests/sidebar-fold-head.test.ts` holds the
+markup and the no-surface rules; `output/audit/check-chats-fold.mjs` measured the
+rendered control (label plus caret is 40px wide inside a 213px head, 2px apart,
+transparent at rest, hover and press).
 
 ### The name in the sidebar head
 
