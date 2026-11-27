@@ -240,6 +240,12 @@ export function BrowserView({ request }: { request?: BrowserRequest | null } = {
           </button>
         </div>
       ) : null}
+      {!loaded && !failure ? (
+        <div className="browser-pane__hint" role="status">
+          <Globe size={18} />
+          <span>{t('Type an address above to open a page.')}</span>
+        </div>
+      ) : null}
     </div>
   )
 }

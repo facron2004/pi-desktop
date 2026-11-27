@@ -241,6 +241,28 @@ note lists both beside a `Try again` that reloads the view, and a rejected
 reads `UNSAFE_PORT http://127.0.0.1:1/` and the retry fires a second failed
 load.
 
+**An empty browser says what the bar is for.** The view starts at `about:blank`
+with an address bar and nothing else, which read as a page that had failed
+silently. A status hint (`browser-pane__hint`, `pointer-events: none` so it
+cannot swallow a click meant for the page) says *Type an address above to open a
+page.*, and it goes away the moment a page loads — or a failure takes its place.
+Measured with `output/audit/check-browser-hint.mjs` against a page served on a
+local port: `hintShownAtStart: true`, that text, `hintGoneAfterLoad: true` with
+`loadedUrl` equal to the served page, and after a refused port
+`failureNoteShown: true` with `hintAfterFailure: false`.
+`tests/diff-fold.test.ts` holds the markup and the `!loaded && !failure` guard.
+
+**The stylesheet a surface needs is part of its audit.** The accessibility probe
+now walks the Browser and Images pages too (both read zero on every check:
+unnamed controls, unlabeled fields, broken ARIA references, duplicate ids,
+missing alt, low contrast, listbox/combobox semantics, focus inside
+`aria-hidden`), and it asks a canary of each page: `.browser-bar` and
+`.image-viewer__stage` must compute `display: flex`. A page can be present,
+labelled, keyboard-complete and still run completely unstyled — that is exactly
+how those two ran — and no ARIA check would notice. The sweep for orphaned
+stylesheets has no other hit: `startup.css` and `tokens.css` look unimported but
+are linked from `index.html` for the screen that paints before React.
+
 A row in the stream is a link, not a card, so it carries no surface of its
 own: the pointer must not paint a gray band across the column. The hover
 surface belongs to a card. The lock is

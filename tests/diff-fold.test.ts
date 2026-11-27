@@ -146,6 +146,10 @@ test('DiffView/ReviewView gap toggling, BrowserView listener re-attach, ToolPane
   assert.match(browserView, /browser-pane__note-url/)
   assert.match(browserView, /Try again/)
   assert.match(browserView, /setFailure\(\(current\) => current \?\?/)
+  // An empty view says what the address bar is for, and stops once a page loads.
+  assert.match(browserView, /browser-pane__hint/)
+  assert.match(browserView, /!loaded && !failure/)
+  assert.match(browserView, /Type an address above to open a page\./)
 
   // A hunk's floating actions belong to the hunk being hovered or to their own
   // keyboard focus; a line link receiving focus must not flash them over the

@@ -535,6 +535,7 @@ const zhCN: Record<string, string> = {
   'Application interface language': '界面语言',
   Reload: '重新加载',
   'Search or enter an address': '搜索或输入网址',
+  'Type an address above to open a page.': '在上方输入网址以打开网页。',
   'Could not pick directory': '无法选择目录',
   'Pictures in this project': '项目中的图片',
   'Close tab': '关闭标签页',
