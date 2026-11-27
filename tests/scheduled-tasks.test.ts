@@ -2338,3 +2338,16 @@ test('stopping a scheduled task while ensure() is booting stops the newly starte
     rmSync(userData, { recursive: true, force: true })
   }
 })
+
+test('a dirty task form asks before the pane moves on', () => {
+  const source = readFileSync(path.resolve(process.cwd(), 'src/renderer/src/components/ScheduledTasksDialog.tsx'), 'utf8')
+  // The row, the New task button and the close button all refuse to replace a
+  // half-written form; the answer is an inline notice, because a desk page
+  // never opens a modal.
+  assert.match(source, /if \(dirty\) \{\s*setBlockedSwitch\(\{ kind: 'task', task \}\)/)
+  assert.match(source, /if \(dirty\) \{\s*setBlockedSwitch\(\{ kind: 'new' \}\)/)
+  assert.match(source, /if \(dirty\) \{\s*setBlockedSwitch\(\{ kind: 'close' \}\)/)
+  assert.match(source, /className="scheduled-detail__unsaved"/)
+  assert.match(source, /onClick=\{requestCloseDetail\}/)
+  assert.match(source, /if \(blockedSwitch\) runBlockedSwitch\(\)/)
+})

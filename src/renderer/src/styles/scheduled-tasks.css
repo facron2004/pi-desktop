@@ -396,6 +396,39 @@
   scrollbar-gutter: stable;
 }
 
+/* A dirty form blocks a row switch until the reader answers, inline. */
+.scheduled-detail__unsaved {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--amber);
+  border-radius: var(--r-md);
+  background: var(--amber-soft);
+  color: var(--text-primary);
+  font-size: var(--text-body);
+}
+
+.scheduled-detail__unsaved-title {
+  color: var(--amber);
+  font-weight: 500;
+}
+
+.scheduled-detail__unsaved p {
+  flex: 1 1 220px;
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.scheduled-detail__unsaved-actions {
+  display: flex;
+  gap: var(--sp-1);
+  margin-left: auto;
+}
+
 .scheduled-detail__title {
   margin: 0 0 4px;
   padding: 2px 0;

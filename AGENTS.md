@@ -736,6 +736,18 @@ button, so Enter and Space keep their native activation.
 on the next frame, after the detail pane mounts, so the next keystrokes name the
 task instead of activating the button that opened the form again.
 
+**A half-written task is not thrown away by a click.** The pane is a
+master-detail: clicking another row, *New task* or the close button used to
+replace the form on the spot, and a typed prompt — a multi-line one — went with
+it. All three now check `dirty` first and park the switch in `blockedSwitch`;
+the pane keeps the text and shows an inline `Unsaved changes` bar (*Keep
+editing* / *Discard changes*), and the switch runs only after the reader answers
+or a save leaves the form clean. The bar is inline because a desk page never
+opens a modal. Measured with `output/audit/check-scheduled-unsaved.mjs`: *New
+task* while dirty is blocked and *Keep editing* keeps the title, the close
+button shows the same bar with the draft intact, and *Discard changes* closes
+the pane. `tests/scheduled-tasks.test.ts` pins the three guards.
+
 **A running task must be stoppable from that pane.** The run owns a Pi process
 under a draft session key, and the pane disables pause, more and delete while it
 goes — so without a stop action a hung run (a prompt response that timed out

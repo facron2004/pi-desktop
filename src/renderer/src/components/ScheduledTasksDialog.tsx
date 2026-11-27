@@ -194,6 +194,9 @@ export function ScheduledTasksDialog() {
   const [manualOpen, setManualOpen] = useState(false)
   const [detailTab, setDetailTab] = useState<DetailTab>('rule')
   const [draft, setDraft] = useState<TaskForm | null>(null)
+  const [blockedSwitch, setBlockedSwitch] = useState<
+    { kind: 'task'; task: ScheduledTask } | { kind: 'new' } | { kind: 'close' } | null
+  >(null)
   const [draftBase, setDraftBase] = useState('')
   const titleRef = useRef<HTMLInputElement>(null)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('active')
@@ -288,8 +291,12 @@ export function ScheduledTasksDialog() {
     setDraftBase(key)
   }, [selectedTask, manualOpen, dirty, draftBase])
 
-  const openTask = (task: ScheduledTask) => {
-    if (!manualOpen && selectedTaskId === task.id) return
+  /**
+   * Move the pane without asking. The guarded entry points below are what the
+   * rows, the New task button and the close button call; this is the body they
+   * run once the draft is safe (never dirty, or just discarded).
+   */
+  const showTask = (task: ScheduledTask) => {
     const base = editForm(task)
     setSelectedTaskId(task.id)
     setManualOpen(false)
@@ -300,7 +307,7 @@ export function ScheduledTasksDialog() {
     setError('')
   }
 
-  const openNewTask = () => {
+  const showNewTask = () => {
     const base = newForm(workspaces, settings.activeWorkspaceId)
     setSelectedTaskId(null)
     setManualOpen(true)
@@ -314,6 +321,37 @@ export function ScheduledTasksDialog() {
     requestAnimationFrame(() => titleRef.current?.focus())
   }
 
+  /**
+   * A dirty form is the reader's work. Clicking another row, New task or the
+   * close button used to replace it on the spot and lose a typed prompt; the
+   * switch waits here until the reader keeps editing or discards it. The
+   * confirmation is inline because a desk page never opens a modal.
+   */
+  const openTask = (task: ScheduledTask) => {
+    if (!manualOpen && selectedTaskId === task.id) return
+    if (dirty) {
+      setBlockedSwitch({ kind: 'task', task })
+      return
+    }
+    showTask(task)
+  }
+
+  const openNewTask = () => {
+    if (dirty) {
+      setBlockedSwitch({ kind: 'new' })
+      return
+    }
+    showNewTask()
+  }
+
+  const requestCloseDetail = () => {
+    if (dirty) {
+      setBlockedSwitch({ kind: 'close' })
+      return
+    }
+    closeDetail()
+  }
+
   const closeDetail = () => {
     setSelectedTaskId(null)
     setManualOpen(false)
@@ -321,6 +359,23 @@ export function ScheduledTasksDialog() {
     setDraftBase('')
     setConfirmingDelete(false)
     setError('')
+    setBlockedSwitch(null)
+  }
+
+  /** Carry out the switch that was waiting on a dirty draft; it replaces the draft. */
+  const runBlockedSwitch = () => {
+    const target = blockedSwitch
+    setBlockedSwitch(null)
+    if (!target) return
+    if (target.kind === 'task') {
+      showTask(target.task)
+      return
+    }
+    if (target.kind === 'new') {
+      showNewTask()
+      return
+    }
+    closeDetail()
   }
 
   const save = async (event?: FormEvent) => {
@@ -363,6 +418,9 @@ export function ScheduledTasksDialog() {
       } else {
         closeDetail()
       }
+      // A switch that was waiting on this draft can happen now: the form is
+      // clean, so the guard in the row handlers would let it through.
+      if (blockedSwitch) runBlockedSwitch()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
@@ -783,7 +841,7 @@ export function ScheduledTasksDialog() {
                 aria-label={t('Close details')}
                 title={t('Close details')}
                 disabled={saving}
-                onClick={closeDetail}
+                onClick={requestCloseDetail}
               >
                 <X size={16} />
               </button>
@@ -791,6 +849,24 @@ export function ScheduledTasksDialog() {
           </div>
 
           <div className="scheduled-detail__scroll">
+            {blockedSwitch ? (
+              <div className="scheduled-detail__unsaved" role="alert">
+                <span className="scheduled-detail__unsaved-title">{t('Unsaved changes')}</span>
+                <p>{t('Save or discard your changes before switching.')}</p>
+                <div className="scheduled-detail__unsaved-actions">
+                  <button
+                    type="button"
+                    className="btn btn--sm btn--ghost"
+                    onClick={() => setBlockedSwitch(null)}
+                  >
+                    {t('Keep editing')}
+                  </button>
+                  <button type="button" className="btn btn--sm" onClick={runBlockedSwitch}>
+                    {t('Discard changes')}
+                  </button>
+                </div>
+              </div>
+            ) : null}
             {detailTab === 'records' && selectedTask ? (
               <div className="scheduled-detail__records">
                 {selectedTask.lastRunAt ? (
