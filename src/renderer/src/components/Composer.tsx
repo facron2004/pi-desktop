@@ -298,7 +298,6 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
   )
   const fontScale = useAppStore((state) => state.settings.fontScale ?? 1)
   const sendShortcut = useAppStore((state) => state.settings.sendShortcut ?? 'enter')
-  const defaultFollowUpMode = useAppStore((state) => state.settings.followUpMode ?? 'steer')
   const plainTextEditor = useAppStore((state) => state.settings.plainTextEditor === true)
   const pasteMentions = useAppStore((state) => state.settings.pasteMentions === true)
   const hasDialogue = slice.hasDialogue
@@ -525,9 +524,12 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
     })
   }, [])
 
-  // Delivery is a preference, not a per-message control in the composer:
-  // configure it in Settings so this bar stays to send/stop and the model.
-  const kind: QueueKind = defaultFollowUpMode === 'queue' ? 'followUp' : 'steer'
+  // A prompt typed while the run is live is about the turn already on screen,
+  // so it steers that turn: Pi reads it at its next step and the answer the
+  // reader is watching is the answer that changes. There is no delivery choice
+  // and no "for the next turn" queue — Enter always joins the running turn,
+  // which is what an interjection means.
+  const kind: QueueKind = 'steer'
 
   const [slash, setSlash] = useState<SlashMatch | null>(null)
   const [loadingSkillCommands, setLoadingSkillCommands] = useState(false)

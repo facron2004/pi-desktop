@@ -31,7 +31,6 @@ export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
   { page: 'general', label: 'Plain text editor', keywords: ['plain text', 'markdown', 'editor', '纯文本', '编辑器'] },
   { page: 'general', label: 'Show context window usage', keywords: ['context', 'usage', 'ring', '上下文', '用量'] },
   { page: 'general', label: 'Send shortcut', keywords: ['enter', 'ctrl enter', 'send', '发送', '回车'] },
-  { page: 'general', label: 'Follow-up handling method', keywords: ['queue', 'steer', 'follow up', '排队', '追加'] },
   { page: 'general', label: 'Integrated terminal shell', keywords: ['terminal', 'shell', 'powershell', 'bash', '终端', '外壳'] },
   { page: 'general', label: 'Agent environment', keywords: ['windows', 'native', 'environment', '环境', '原生'] },
   // Agent and conversation

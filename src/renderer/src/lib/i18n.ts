@@ -199,9 +199,6 @@ const zhCN: Record<string, string> = {
   'Choose whether pressing Enter sends or inserts a new line': '选择按 Enter 发送还是提示词换行',
   'Press Enter': '按 Enter 键',
   'Press Ctrl+Enter': '按 Ctrl+Enter',
-  'Follow-up handling method': '跟进处理方式',
-  'Queue follow-up messages while the agent is running, or steer subsequent actions.':
-    '在智能体运行时将后续消息加入队列，或引导后续操作。',
   Change: '更改',
   'System default': '系统默认',
   Appearance: '外观',

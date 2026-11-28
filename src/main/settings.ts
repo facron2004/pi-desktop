@@ -342,6 +342,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   plainTextEditor: false,
   showContextUsage: true,
   sendShortcut: 'enter',
+  // Kept only so an older settings file still parses; nothing reads it since
+  // the composer began steering every prompt into the run already on screen.
   followUpMode: 'steer',
   computerUse: false,
   // Folding is what a settled turn already does today (ProcessTrail keeps the

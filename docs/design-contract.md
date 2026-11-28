@@ -90,7 +90,7 @@ controls.css      primitives: .btn .btn--primary .icon-btn .pill .ghost-btn .inp
 | 组件 | 必须覆盖的状态 |
 |---|---|
 | 工具行 `.tool` | idle / hover / focus-visible / expanded / streaming(running) / approval / success / error / aborted / proposed / disabled |
-| Composer | idle / focus-within / draft / streaming(steer\|queue) / aborting / error / disabled(no workspace) / shell |
+| Composer | idle / focus-within / draft / streaming(steer) / aborting / error / disabled(no workspace) / shell |
 | 会话行 `.session-item` | idle / hover / focus / active / running / renaming / menu-open |
 | 项目行 `.project` | collapsed / expanded / hover / pending(switch 排队) / remove-reveal |
 | 运行状态 `.run-status` | thinking / tool_running / waiting_approval / queued / transport-lost / settled(ok\|aborted) |

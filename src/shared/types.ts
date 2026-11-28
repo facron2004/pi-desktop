@@ -978,7 +978,11 @@ export interface AppSettings {
    * built-in chord.
    */
   shortcutBindings?: Record<string, string[] | string[][]>
-  /** Follow-up handling method: 'queue' or 'steer'. */
+  /**
+   * Legacy delivery preference, kept so an older settings file still parses.
+   * The composer no longer reads it: a prompt typed while a run is live always
+   * steers that run, so there is no queue-for-the-next-turn choice to make.
+   */
   followUpMode?: 'queue' | 'steer'
   /**
    * Let the agent see and operate this Windows desktop.

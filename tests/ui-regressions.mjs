@@ -1786,11 +1786,18 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     streamItems[0],
     { ...streamItems[3], blocks: [
       { type: 'thinking', text: 'Thinking even without tools' },
-      ...streamItems[3].blocks
+      { type: 'text', text: 'STREAM_THINKING_ONLY the answer stays' }
     ] }
   ])
-  // A finished response folds its process here too; the run summary is the door.
-  await until(() => document.querySelector('.run-outcome[data-foldable="true"]'), 'Thinking-only turn has no process fold')
+  // Wait for this turn's own reply. The previous conversation already has a
+  // foldable summary, so a bare ".run-outcome" check can pass against it and
+  // then read that conversation's open process.
+  await until(
+    () => streamBody()?.textContent.includes('STREAM_THINKING_ONLY')
+      ? document.querySelector('.run-outcome[data-foldable="true"]')
+      : null,
+    'Thinking-only turn has no process fold'
+  )
   check(!streamBody().querySelector('.thinking__head'), 'A finished response left its thinking disclosure on screen')
   document.querySelector('.run-outcome').click()
   await until(() => streamBody().querySelector('.thinking__head[aria-expanded="false"]'),
@@ -2795,6 +2802,7 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
       contextUsage: { tokens: 18400, contextWindow: 200000, percent: 9 }
     },
     run: { phase: 'idle', turns: 1, settled: true, outcome: 'completed' },
+    isStreaming: false,
     settings: { ...state.settings, showContextUsage: true }
   }))
   const usageBar = await until(() => document.querySelector('.usage-bar'), 'The usage line did not render')
@@ -2818,6 +2826,28 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     'The context ring is not centred with its percentage label'
   )
   passed.push('the usage line shares one height and centre on the composer axis')
+
+  // The line is a report on a turn, not a live readout: while a run is going —
+  // including when the reader has interjected into it — no figure is printed.
+  // The ring is a live gauge rather than a report, so it keeps drawing.
+  store.setState({ isStreaming: true, run: { phase: 'working', turns: 1, settled: false } })
+  await pause(80)
+  const liveBar = document.querySelector('.usage-bar')
+  check(Boolean(liveBar), 'The usage line vanished entirely while a run was live')
+  check(
+    liveBar.querySelectorAll('.usage-bar__control').length === 0,
+    'A live run still printed the turn, speed, token or cache figures'
+  )
+  check(
+    Boolean(liveBar.querySelector('.context-ring__svg')),
+    'The context ring went away with the live-run readings'
+  )
+  store.setState({ isStreaming: false, run: { phase: 'idle', turns: 1, settled: true, outcome: 'completed' } })
+  await until(
+    () => document.querySelectorAll('.usage-bar__control').length === 2,
+    'The readings did not come back when the run settled'
+  )
+  passed.push('the usage readings wait for the run to settle, and the context ring does not')
 
   // Queued prompts are not a read-only list: while the run keeps going, the
   // reader can take them back to the editor or discard them. A queue that can
@@ -3871,30 +3901,93 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     paletteInput.setSelectionRange(value.length, value.length)
     paletteInput.dispatchEvent(new Event('input', { bubbles: true }))
   }
-  paletteInput.focus()
-  typeIntoBox('/')
-  const palette = await until(() => document.querySelector('.palette'), 'The command palette did not open')
-  const paletteOptions = () => [...palette.querySelectorAll('[role="option"]')]
-  const activePalette = () => palette.querySelector('[role="option"][data-active="true"]')
   const pressInBox = (key) =>
     paletteInput.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
-  check(paletteOptions().length > 4, 'The palette has too few commands to walk')
-  pressInBox('End')
-  await until(() => activePalette() === paletteOptions().at(-1), 'End did not reach the last command')
-  check(
-    document.activeElement === paletteInput,
-    'Walking the palette took the focus out of the input box'
-  )
-  pressInBox('Home')
-  await until(() => activePalette() === paletteOptions()[0], 'Home did not return to the first command')
-  pressInBox('PageDown')
-  await until(() => activePalette() !== paletteOptions()[0], 'PageDown did not move down a page')
-  pressInBox('PageUp')
-  await until(() => activePalette() === paletteOptions()[0], 'PageUp did not come back a page')
-  pressInBox('ArrowUp')
-  await until(() => activePalette() === paletteOptions().at(-1), 'ArrowUp did not wrap to the last command')
-  pressInBox('Escape')
-  await until(() => !document.querySelector('.palette'), 'Escape did not close the palette')
+  // The composer closes its palette whenever the conversation key changes under
+  // it — a draft becomes a session file the moment Pi writes one, and that rekey
+  // arrives on its own schedule. Typing the slash just before it lands made the
+  // palette vanish between the open and the End key, which read as "End did not
+  // reach the last command". Wait for the key to stay put, and walk the palette
+  // again from the top if it moves anyway.
+  const conversationKey = () => {
+    const state = store.getState()
+    return state.activeSessionFile ?? state.draftId ?? ''
+  }
+  const keyIsSteady = async (steps = 16) => {
+    let current = conversationKey()
+    for (let step = 0; step < steps; step += 1) {
+      await pause(200)
+      const next = conversationKey()
+      if (next === current) return true
+      current = next
+    }
+    return false
+  }
+  const paletteState = () => {
+    const open = document.querySelector('.palette')
+    const rows = open ? [...open.querySelectorAll('[role="option"]')] : []
+    const active = open?.querySelector('[role="option"][data-active="true"]') ?? null
+    return {
+      open: Boolean(open),
+      rows: rows.length,
+      activeIndex: rows.indexOf(active),
+      key: conversationKey(),
+      value: paletteInput.value
+    }
+  }
+  const walkPalette = async () => {
+    typeIntoBox('')
+    await pause(30)
+    paletteInput.focus()
+    typeIntoBox('/')
+    const palette = await until(() => document.querySelector('.palette'), 'The command palette did not open')
+    const paletteOptions = () => [...palette.querySelectorAll('[role="option"]')]
+    const activePalette = () => palette.querySelector('[role="option"][data-active="true"]')
+    const stillOpen = () => Boolean(document.querySelector('.palette')) && palette.isConnected
+    check(paletteOptions().length > 4, 'The palette has too few commands to walk')
+    pressInBox('End')
+    await until(
+      () => stillOpen() && activePalette() === paletteOptions().at(-1),
+      `End did not reach the last command ${JSON.stringify(paletteState())}`
+    )
+    check(
+      document.activeElement === paletteInput,
+      'Walking the palette took the focus out of the input box'
+    )
+    pressInBox('Home')
+    await until(
+      () => stillOpen() && activePalette() === paletteOptions()[0],
+      `Home did not return to the first command ${JSON.stringify(paletteState())}`
+    )
+    pressInBox('PageDown')
+    await until(
+      () => stillOpen() && activePalette() !== paletteOptions()[0],
+      `PageDown did not move down a page ${JSON.stringify(paletteState())}`
+    )
+    pressInBox('PageUp')
+    await until(
+      () => stillOpen() && activePalette() === paletteOptions()[0],
+      `PageUp did not come back a page ${JSON.stringify(paletteState())}`
+    )
+    pressInBox('ArrowUp')
+    await until(
+      () => stillOpen() && activePalette() === paletteOptions().at(-1),
+      `ArrowUp did not wrap to the last command ${JSON.stringify(paletteState())}`
+    )
+    pressInBox('Escape')
+    await until(() => !document.querySelector('.palette'), 'Escape did not close the palette')
+  }
+  await keyIsSteady()
+  let paletteWalked = false
+  for (let attempt = 1; attempt <= 3 && !paletteWalked; attempt += 1) {
+    try {
+      await walkPalette()
+      paletteWalked = true
+    } catch (error) {
+      if (attempt === 3) throw error
+      await keyIsSteady()
+    }
+  }
 
   // The rows are not Tab stops: the box is the combobox and names the active
   // row with `aria-activedescendant`. Shift+Tab leaves the box instead of
@@ -4205,7 +4298,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 86 : 80)
+  assert.equal(passed.length, process.platform === 'win32' ? 87 : 81)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1, custom: 2 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

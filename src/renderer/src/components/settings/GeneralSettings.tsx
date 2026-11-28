@@ -356,34 +356,6 @@ export function GeneralSettings(_props: GeneralSettingsProps = {}) {
             ]}
           />
         </div>
-
-        {/* 跟进处理方式 */}
-        <div className="settings-item-row">
-          <div className="settings-item-row__info">
-            <span className="settings-item-row__title">{t('Follow-up handling method')}</span>
-            <span className="settings-item-row__desc">
-              {t('Queue follow-up messages while the agent is running, or steer subsequent actions.')}
-            </span>
-          </div>
-          <div className="segmented">
-            <button
-              type="button"
-              data-active={(settings.followUpMode ?? 'steer') === 'queue'}
-              aria-pressed={(settings.followUpMode ?? 'steer') === 'queue'}
-              onClick={() => void updateSettings({ followUpMode: 'queue' })}
-            >
-              {t('Queue')}
-            </button>
-            <button
-              type="button"
-              data-active={(settings.followUpMode ?? 'steer') === 'steer'}
-              aria-pressed={(settings.followUpMode ?? 'steer') === 'steer'}
-              onClick={() => void updateSettings({ followUpMode: 'steer' })}
-            >
-              {t('Steer')}
-            </button>
-          </div>
-        </div>
       </SettingsGroup>
 
     </div>

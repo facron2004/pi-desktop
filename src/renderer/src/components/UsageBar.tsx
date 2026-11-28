@@ -1,11 +1,12 @@
 import { Database, Gauge } from 'lucide-react'
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useMemo, useRef } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { useSessionViewSlice } from '../lib/conversation-scope'
 import { sessionMetrics } from '../lib/session-metrics'
 import { formatTokens } from '../lib/format'
 import { useT } from '../lib/i18n'
-import { monotonicNow, readSessionTiming } from '../lib/session-timing'
+import { readSessionTiming } from '../lib/session-timing'
+import { usageReadingsVisible } from '../lib/usage-line'
 import { ContextRing } from './ContextRing'
 import { Popover } from './Popover'
 import { GenerationPanel, UsagePanel } from './UsagePanel'
@@ -17,6 +18,10 @@ import '../styles/usage-bar.css'
  *
  * Session statistics and usage are separate controls because they describe
  * different scopes. Their order follows the status line in the reference UI.
+ *
+ * It is a report, not a live readout: while a run is open — a prompt the reader
+ * interjected is still part of that run — only the context ring stays, and the
+ * readings appear when the turn settles (`lib/usage-line.ts`).
  *
  * Every value is derived by `lib/session-metrics.ts`; nothing here is stored.
  */
@@ -49,41 +54,37 @@ export const UsageBar = memo(function UsageBar({
   const run = slice.run
   const sessionKey = explicitSessionKey ?? slice.sessionKey
   const t = useT()
-  const [, setTimingTick] = useState(0)
-
-  // Keep the live model-time reading moving only while this answer is really
-  // open. A stale start left on a settled/idle run must not turn into hours of
-  // "model time" on a reopened conversation.
-  const liveModelClock = run.modelTurnStartedAt !== undefined && !run.settled && run.phase !== 'idle'
-  useEffect(() => {
-    if (!liveModelClock) return
-    const timer = window.setInterval(() => setTimingTick((tick) => tick + 1), 1000)
-    return () => window.clearInterval(timer)
-  }, [liveModelClock, run.modelTurnStartedAt])
 
   const metrics = useMemo(
-    () => sessionMetrics(
-      itemsRef.current,
-      stats,
-      { ...run, modelTurnStartedAt: undefined },
-      readSessionTiming(sessionKey),
-      { historyTruncated }
-    ),
+    () =>
+      sessionMetrics(
+        itemsRef.current,
+        stats,
+        // A start left on a settled or idle run must not be read as live model
+        // time: the line only prints finished runs, so it prints their clocks.
+        { ...run, modelTurnStartedAt: undefined },
+        readSessionTiming(sessionKey),
+        { historyTruncated }
+      ),
     [itemCount, lastCompletedAssistant, stats, run.phase, run.settled, run.turns, run.durationMs, sessionKey, historyTruncated]
   )
-  const liveModelTimeMs = !liveModelClock
-    ? 0
-    : Math.max(0, monotonicNow() - run.modelTurnStartedAt!)
-  const displayMetrics = liveModelTimeMs > 0
-    ? { ...metrics, modelTimeMs: (metrics.modelTimeMs ?? 0) + liveModelTimeMs }
-    : metrics
   const hasRun =
     hasAssistant || (stats?.tokens.total ?? 0) > 0
   if (!hasRun) return null
+  // A run that is still going has no report to print: the numbers would tick
+  // under a turn that is not finished. The ring is not a report — it is the
+  // live reading of how full the window is — so it stays on its own line.
+  if (!usageReadingsVisible(run, slice.isStreaming)) {
+    return (
+      <div className="usage-bar" role="group" aria-label={t('Usage')}>
+        <ContextRing sessionKey={sessionKey} />
+      </div>
+    )
+  }
   const countLabel =
     t('turns') === '轮'
-      ? `${displayMetrics.turnCount}轮 ${displayMetrics.stepCount}步`
-      : `${displayMetrics.turnCount} ${displayMetrics.turnCount === 1 ? t('turn') : t('turns')} · ${displayMetrics.stepCount} ${t('steps')}`
+      ? `${metrics.turnCount}轮 ${metrics.stepCount}步`
+      : `${metrics.turnCount} ${metrics.turnCount === 1 ? t('turn') : t('turns')} · ${metrics.stepCount} ${t('steps')}`
 
   return (
     <div className="usage-bar" role="group" aria-label={t('Usage')}>
@@ -108,9 +109,9 @@ export const UsageBar = memo(function UsageBar({
             </span>
             <span aria-hidden="true">·</span>
             <span title={t('Output tokens per second')}>
-              {displayMetrics.tps !== null ? (
+              {metrics.tps !== null ? (
                 <>
-                  <strong>{displayMetrics.tps.toLocaleString()}</strong> {t('tok/s')}
+                  <strong>{metrics.tps.toLocaleString()}</strong> {t('tok/s')}
                 </>
               ) : (
                 <strong>—</strong>
@@ -119,7 +120,7 @@ export const UsageBar = memo(function UsageBar({
           </button>
         )}
       >
-        {() => <GenerationPanel metrics={displayMetrics} />}
+        {() => <GenerationPanel metrics={metrics} />}
       </Popover>
 
       <Popover
@@ -140,18 +141,18 @@ export const UsageBar = memo(function UsageBar({
             <span className="usage-bar__item" title={t('Tokens used in this conversation')}>
               <Database className="usage-bar__icon" size={12} aria-hidden="true" />
               <span className="usage-bar__label">{t('Tokens')}</span>
-              <strong>{formatTokens(displayMetrics.totalTokens)}</strong>
+              <strong>{formatTokens(metrics.totalTokens)}</strong>
             </span>
             <span className="usage-bar__item" title={t('Cache hit rate')}>
               <span className="usage-bar__label">{t('Cache hit rate')}</span>
               <strong>
-                {displayMetrics.cacheHitPercent !== null ? `${displayMetrics.cacheHitPercent}%` : '—'}
+                {metrics.cacheHitPercent !== null ? `${metrics.cacheHitPercent}%` : '—'}
               </strong>
             </span>
           </button>
         )}
       >
-        {() => <UsagePanel metrics={displayMetrics} />}
+        {() => <UsagePanel metrics={metrics} />}
       </Popover>
 
       {/* The ring owns the window reading, including its percentage label. */}

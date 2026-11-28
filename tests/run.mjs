@@ -99,6 +99,7 @@ const suites = [
   'rpc-client.test.ts',
   'extension-dialog-protocol.test.ts',
   'ask-dock.test.ts',
+  'usage-line.test.ts',
   'stream-events.test.ts',
   'hydration-merge.test.ts',
   'streaming-markdown.test.ts',

@@ -866,11 +866,21 @@ covering tool panel owns the keyboard, so a New chat command cannot pull focus
 out of a layer that is waiting on an answer.
 
 The round button stops an active run while the composer is empty or a submission
-is awaiting confirmation. Otherwise it sends the current draft (steer or queue),
-and `session-bar__stop` remains available under the box. Both stop controls call
+is awaiting confirmation. Otherwise it sends the current draft, and
+`session-bar__stop` remains available under the box. Both stop controls call
 `stop()`. A submitted draft stays visible and on disk until acceptance.
 Acceptance clears the draft that was submitted if it still matches the editor,
 so an edit made while waiting survives.
+
+**An interjection steers the turn already on screen.** A prompt sent while the
+run is live is not a message for the next turn: the reader is looking at the
+answer it is about, so the composer always sends it as a `steer`
+(`const kind: QueueKind = 'steer'`), and Pi reads it at its next step. The
+"Follow-up handling method" choice in Settings is gone with the queue path —
+turning Enter into "hold this for later" is exactly what the reader does not
+mean when they type into a working conversation — and `Settings.followUpMode`
+survives only so an older settings file still parses. `tests/usage-line.test.ts`
+holds the composer to the one kind and refuses the retired setting.
 
 **Escape is the stop key, and only a key nobody took stops anything.** `Composer`
 stops the run from a window-level Escape whose `defaultPrevented` is false.
@@ -1228,20 +1238,27 @@ surface and radius (the raised surface, `--surface-chrome` in the light theme,
 `--composer-radius` 20px, `--shadow-md` one elevation step above the box, no
 banner rule and no tinted footer) and keeps the question's anatomy: a 16px/500
 title row with a 24px close control in the corner, numbered 40px option rows
-(the chip is the option's number, so the list reads as choices before one is
-picked; the picked row answers with `--bg-active` plus a hairline and an accent
-number), a scrolling list capped at `min(60vh, 520px)`, and a quiet footer
+(the chip is the option's number, a circle, so the list reads as choices before
+one is picked; on the docked card the picked row is an 8% accent wash and the
+chip fills with the accent, the same decision as Send — a `--bg-active` slab
+read as a grey bar), a card capped at `min(64vh, 560px)`, and a quiet footer
 carrying the timeout note and Cancel/Send. It is a **sheet, not a column**: the
 card is `max-width: min(100%, 560px)` and `margin-inline: auto`, so it sits
 centred on the box it rests on instead of stretching to the composer's width.
-A very long question scrolls inside its own title block
-(`max-height: min(30vh, 200px)`) rather than swallowing the choices. Those
-overrides live in one block under "The question dock" in `global.css`; the
-numbered rows are the shared `.modal__option` rules, so a modal question from
-another conversation reads the same way. The list stays one Tab stop, so its
-focus ring is drawn on the row the keyboard is on rather than around the whole
-list — a box around the list drew a second frame inside the card and read as a
-layout bug.
+A question longer than 80 characters is body copy (`font-weight: 400`), not a
+bold headline. The card scrolls as **one** piece — a thin bar on the card's own
+edge, the footer stuck to the bottom — and only once the question and its
+choices together pass the cap. Capping the title block at `min(30vh, 200px)`
+put a scrollbar inside a paragraph that still fitted, inset beside the close
+control, and that bar read as a broken frame. The scroll-to-latest control
+lifts 52px while the card is open: left on the thread's floor, its running
+ellipsis sat on the card's top edge. Those overrides live in one block under
+"The question dock" in `global.css`; the numbered rows start from the shared
+`.modal__option` rules, so a modal question from another conversation still
+reads as a list of choices, and the docked card only retints the picked row.
+The list stays one Tab stop, so its focus ring is drawn on the row the keyboard
+is on rather than around the whole list — a box around the list drew a second
+frame inside the card and read as a layout bug.
 
 **The choices are a convenience, not the only door.** Below the list the card
 carries a row of the same shape whose label is a field
@@ -1351,6 +1368,21 @@ cache hit rate, uncached input, cache read, cache write and output. Two
 questions, two cards; a reading printed in both would be two things to keep in
 sync.
 
+**The readings are a report on a finished turn, never a live readout.** While a
+run is open — streaming, `queued` before Pi's first event, `aborting` after a
+stop, and equally a run the reader has just steered a prompt into — the numbers
+would tick under a turn nobody can compare them with yet, and an interjection
+must not turn the line into a figure for a half-finished turn. `lib/usage-line.ts`
+decides: `usageReadingsVisible(run, isStreaming)` is false for every open run,
+and `UsageBar` then draws only the ring. The ring is not one of those readings —
+it is the live gauge of how full the window the next prompt has to fit in is —
+so it stays while the run goes, and the line keeps its 18px height in both
+states so the composer never jumps when the readings appear. The line's own live
+model clock went with the readings: a number that is not printed cannot tick.
+`tests/usage-line.test.ts` pins the predicate and the guard;
+`tests/ui-regressions.mjs` drives the real app from a settled turn to a live one
+and back, and requires the figures to leave and the ring to stay.
+
 The ring is `ContextRing`: the arc plus its percentage, one colour, following
 the `showContextUsage` setting. It opens `ContextPanel`, which asks Pi for
 `get_session_stats` once on open (`readSessionStats`). Both components read
@@ -1367,8 +1399,9 @@ transcript as a fallback; the hit rate counts cache reads against every prompt
 token — fresh input, cache reads and cache writes. A run start drops the old
 snapshot so the transcript can drive the line, and every finished answer or
 tool result re-reads Pi's statistics (throttled per conversation by
-`refreshLiveStats`) — the readings must move during a long tool-heavy turn,
-not jump only at `agent_settled`. Pi reports no generation
+`refreshLiveStats`) — the line is not printed during a run, so this is what
+makes the figure current the moment it appears after a long tool-heavy turn,
+instead of jumping only at `agent_settled`. Pi reports no generation
 timing, so `run` mints `firstTokenAt` on the first nonempty content delta of
 each model request and starts each answer's generation window at its first
 block of any kind — text, thinking or a tool call — summing the window into
