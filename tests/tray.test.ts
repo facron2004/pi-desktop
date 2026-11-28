@@ -124,6 +124,19 @@ test('the tray card is the window: no padding and no shadow', () => {
   assert.match(card, /border-radius: 10px/, 'the radius shapes the card')
 })
 
+test('the tray rows use real icons, not text glyphs', () => {
+  // `▣` read as a checkbox, not as "show the window"; both rows now use the
+  // same 14px stroke icons as the rest of the app.
+  const source = readFileSync(
+    path.join(process.cwd(), 'src/renderer/src/components/TrayPopup.tsx'),
+    'utf8'
+  )
+  assert.match(source, /import \{[^}]*AppWindow[^}]*\} from 'lucide-react'/)
+  assert.match(source, /<AppWindow\b/)
+  assert.match(source, /<Power\b/)
+  assert.doesNotMatch(source, /[▣⏻]/, 'a text glyph is still used for a tray action')
+})
+
 test('a quit destroys the icon and stops anything from rebuilding it', () => {
   syncTray(options())
   noteQuitting()

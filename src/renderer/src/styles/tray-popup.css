@@ -63,11 +63,18 @@ body.tray-body {
 }
 
 .tray__glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 16px;
   flex: 0 0 16px;
   text-align: center;
   color: var(--text-secondary);
   font-size: 13px;
+}
+
+.tray__glyph svg {
+  display: block;
 }
 
 .tray__dot {

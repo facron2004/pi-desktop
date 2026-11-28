@@ -1,3 +1,4 @@
+import { AppWindow, Power } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { TrayPopupState } from '@shared/types'
 
@@ -54,7 +55,9 @@ export function TrayPopup() {
     <div className="tray" ref={rootRef}>
       <div className="tray__card">
         <button type="button" className="tray__row tray__row--action" onClick={() => window.pi.trayPopup.showWindow()}>
-          <span className="tray__glyph" aria-hidden="true">▣</span>
+          <span className="tray__glyph" aria-hidden="true">
+            <AppWindow size={14} strokeWidth={1.6} />
+          </span>
           <span>{state.labels.show}</span>
         </button>
 
@@ -101,7 +104,9 @@ export function TrayPopup() {
 
         <div className="tray__divider" />
         <button type="button" className="tray__row tray__row--action tray__row--quit" onClick={() => window.pi.trayPopup.quit()}>
-          <span className="tray__glyph" aria-hidden="true">⏻</span>
+          <span className="tray__glyph" aria-hidden="true">
+            <Power size={14} strokeWidth={1.6} />
+          </span>
           <span>{state.labels.quit}</span>
         </button>
       </div>
