@@ -1,4 +1,4 @@
-import { memo, useEffect, useId, useMemo, useState } from 'react'
+import { memo, useId, useMemo, useState } from 'react'
 import {
   Check,
   ChevronRight,
@@ -18,6 +18,7 @@ import { ImageButton } from './Lightbox'
 import { useT } from '../lib/i18n'
 import { stripImageAnnotations } from '../lib/message-text'
 import { readProcessOpen, writeProcessOpen } from '../lib/view-state'
+import { useConversationValue } from '../hooks/useConversationValue'
 import { useThreadEnv } from './conversation/ThreadEnvContext'
 import { SideChatRefChip } from './side-chat/SideChatRefChip'
 
@@ -167,11 +168,10 @@ export const ThinkingBlock = memo(
     const { threadKey } = useThreadEnv()
     const disclosureKey = `thinking-${turnId}`
     const bodyId = useId()
-    const [open, setOpen] = useState(() => readProcessOpen(threadKey, disclosureKey) === true)
-
-    useEffect(() => {
-      setOpen(readProcessOpen(threadKey, disclosureKey) === true)
-    }, [threadKey, disclosureKey])
+    const [open, setOpen] = useConversationValue(
+      `${threadKey}\0${disclosureKey}`,
+      () => readProcessOpen(threadKey, disclosureKey) === true
+    )
 
     const toggle = () => {
       const next = !open

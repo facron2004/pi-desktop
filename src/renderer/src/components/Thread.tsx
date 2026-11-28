@@ -17,6 +17,7 @@ import { scrollBehavior } from '../lib/motion'
 import { applyScroll, readScrollMemory, rememberScrollMemory, rememberScrollPosition, scrollKeyOf, scrollTopForTurnTop } from '../lib/scroll-memory'
 import { readSessionTiming, roundTimingDuration, userTimingDuration } from '../lib/session-timing'
 import { readHistoryFirstVisibleTurn, readProcessOpen, writeHistoryFirstVisibleTurn, writeProcessOpen } from '../lib/view-state'
+import { useConversationValue } from '../hooks/useConversationValue'
 import { matchesAnyShortcut } from '../lib/shortcuts'
 import { SearchContext, useSearchQuery } from '../lib/search-context'
 import { dispatchOpenSideChat, JUMP_MAIN_TURN_EVENT, readJumpMainTurnId } from '../lib/side-chat-context'
@@ -1520,10 +1521,10 @@ const ThreadTurnView = memo(function ThreadTurnView({
   const liveTail = isLastTurn && !run.settled
   const { autoFoldProcess, askSideChat, surface } = useThreadEnv()
   const processId = `turn-${turn.id}`
-  const [manualProcessOpen, setManualProcessOpen] = useState(() => readProcessOpen(threadKey, processId))
-  useEffect(() => {
-    setManualProcessOpen(readProcessOpen(threadKey, processId))
-  }, [threadKey, processId])
+  const [manualProcessOpen, setManualProcessOpen] = useConversationValue(
+    `${threadKey}\0${processId}`,
+    () => readProcessOpen(threadKey, processId)
+  )
   const query = useSearchQuery().trim().toLowerCase()
   const searchMatch = Boolean(query) && findMatches(searchableChunks([turn]), query, 1).length > 0
   const failed = outcome?.outcome === 'failed'

@@ -683,6 +683,14 @@ select {
   color: var(--text-primary);
 }
 
+/* The live mark. Presentation attributes that name a custom property do not
+   follow a theme change on every Chromium the app ships with; a stylesheet
+   fill does. The startup screen keeps its own attributes because its theme
+   is set before the first paint and it never switches afterwards. */
+.pi-logo__blue { fill: var(--brand-mark-blue); }
+.pi-logo__coral { fill: var(--brand-mark-coral); }
+.pi-logo__yellow { fill: var(--brand-mark-yellow); }
+
 .drag-region {
   -webkit-app-region: drag;
 }

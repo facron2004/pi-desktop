@@ -18,22 +18,23 @@ export function PiLogo({
     >
       {/* The mark is centred in a square canvas, matching the app icon. */}
       <g transform="translate(0 24)">
-        {/* Blue body: top bar, both stems and both feet. */}
-        <rect x="55" y="0" width="831" height="161" fill="var(--brand-mark-blue)" />
-        <rect x="137" y="161" width="206" height="677" fill="var(--brand-mark-blue)" />
-        <rect x="55" y="725" width="288" height="113" fill="var(--brand-mark-blue)" />
-        <rect x="543" y="161" width="207" height="677" fill="var(--brand-mark-blue)" />
-        <rect x="543" y="725" width="288" height="113" fill="var(--brand-mark-blue)" />
+        {/* Fills are classes, not presentation attributes. An attribute of
+            fill="var(--brand-mark-blue)" is resolved once on some Chromium
+            builds and then ignores a theme change, so the light mark stays
+            the dark blue. */}
+        <rect className="pi-logo__blue" x="55" y="0" width="831" height="161" />
+        <rect className="pi-logo__blue" x="137" y="161" width="206" height="677" />
+        <rect className="pi-logo__blue" x="55" y="725" width="288" height="113" />
+        <rect className="pi-logo__blue" x="543" y="161" width="207" height="677" />
+        <rect className="pi-logo__blue" x="543" y="725" width="288" height="113" />
 
-        {/* Coral corner and the upper half of the right leg. */}
-        <rect x="0" y="0" width="169" height="105" fill="var(--brand-mark-coral)" />
-        <rect x="0" y="105" width="55" height="56" fill="var(--brand-mark-coral)" />
-        <rect x="543" y="161" width="207" height="185" fill="var(--brand-mark-coral)" />
-        <rect x="543" y="346" width="108" height="125" fill="var(--brand-mark-coral)" />
+        <rect className="pi-logo__coral" x="0" y="0" width="169" height="105" />
+        <rect className="pi-logo__coral" x="0" y="105" width="55" height="56" />
+        <rect className="pi-logo__coral" x="543" y="161" width="207" height="185" />
+        <rect className="pi-logo__coral" x="543" y="346" width="108" height="125" />
 
-        {/* Golden accents on the top bar and the left stem. */}
-        <rect x="636" y="0" width="135" height="87" fill="var(--brand-mark-yellow)" />
-        <rect x="137" y="289" width="80" height="162" fill="var(--brand-mark-yellow)" />
+        <rect className="pi-logo__yellow" x="636" y="0" width="135" height="87" />
+        <rect className="pi-logo__yellow" x="137" y="289" width="80" height="162" />
       </g>
     </svg>
   )

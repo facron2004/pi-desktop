@@ -28,6 +28,7 @@ import { formatDiff } from '../lib/diff-text'
 import { basename, relativePath } from '../lib/path'
 import { subagentCalls, type SubagentTreeTask } from '../lib/subagents'
 import { readToolFull, readToolOpen, writeToolFull, writeToolOpen } from '../lib/view-state'
+import { useConversationValue } from '../hooks/useConversationValue'
 import { CopyButton } from './conversation/CopyButton'
 import { ImageButton, inlineOfDataUrl } from './Lightbox'
 import { ToolResultPanel } from './conversation/ToolResultPanel'
@@ -82,12 +83,10 @@ export const ToolCard = memo(function ToolCard({
   hidePrompt?: boolean
 }) {
   const { threadKey, insertIntoComposer, workspacePath, language, askSideChat } = useThreadEnv()
-  const [manualOpen, setManualOpen] = useState<boolean | undefined>(() =>
-    readToolOpen(threadKey, item.id)
+  const [manualOpen, setManualOpen] = useConversationValue(
+    `${threadKey}\0${item.id}`,
+    () => readToolOpen(threadKey, item.id)
   )
-  useEffect(() => {
-    setManualOpen(readToolOpen(threadKey, item.id))
-  }, [threadKey, item.id])
   const setOpen = (open: boolean | undefined) => {
     setManualOpen(open)
     writeToolOpen(threadKey, item.id, open)
@@ -101,10 +100,10 @@ export const ToolCard = memo(function ToolCard({
       writeToolOpen(threadKey, item.id, !open)
     } else setOpen(!open)
   }
-  const [full, setFullState] = useState(() => readToolFull(threadKey, item.id))
-  useEffect(() => {
-    setFullState(readToolFull(threadKey, item.id))
-  }, [threadKey, item.id])
+  const [full, setFullState] = useConversationValue(
+    `${threadKey}\0${item.id}\0full`,
+    () => readToolFull(threadKey, item.id)
+  )
   const setFull = (value: boolean) => {
     setFullState(value)
     writeToolFull(threadKey, item.id, value)

@@ -1,9 +1,10 @@
-import { memo, useEffect, useState, type ReactNode } from 'react'
+import { memo, type ReactNode } from 'react'
 import { ChevronRight, CircleAlert, FileText, ListChecks, Pencil, Search, SquareTerminal } from 'lucide-react'
 import type { ToolItem } from '../lib/thread'
 import { describeTool } from '../lib/tools'
 import { useSearchQuery } from '../lib/search-context'
 import { readProcessOpen, writeProcessOpen } from '../lib/view-state'
+import { useConversationValue } from '../hooks/useConversationValue'
 import { activityHeadline } from './ToolGroup'
 import { useT } from '../lib/i18n'
 import { useThreadEnv } from './conversation/ThreadEnvContext'
@@ -31,12 +32,10 @@ export const ProcessTrail = memo(function ProcessTrail({
   const query = useSearchQuery().trim().toLowerCase()
   const activity = activityHeadline(tools, t)
   const processId = tools[0]?.id ?? ''
-  const [manualOpen, setManualOpen] = useState<boolean | undefined>(() =>
-    readProcessOpen(threadKey, processId)
+  const [manualOpen, setManualOpen] = useConversationValue(
+    `${threadKey}\0${processId}`,
+    () => readProcessOpen(threadKey, processId)
   )
-  useEffect(() => {
-    setManualOpen(readProcessOpen(threadKey, processId))
-  }, [threadKey, processId])
 
   const busy = live && activity.busy
   // A completed group can fold as soon as its calls finish, even if the
