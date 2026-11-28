@@ -1,5 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import { app, Tray } from 'electron'
 import {
   claimSingleInstance,
@@ -101,6 +103,25 @@ test('the icon click follows the options of the latest settings write', () => {
   lastTray()?.emit('click')
   lastTray()?.emit('double-click')
   assert.deepEqual(shown, ['second', 'second'], 'the click must not keep a stale window target')
+})
+
+test('the tray card is the window: no padding and no shadow', () => {
+  // The popup is a transparent frameless window exactly the size of the card.
+  // Any padding or shadow paints outside the card and reads as a frosted rim
+  // over the desktop, which is the bug the docs say must never come back.
+  const css = readFileSync(
+    path.join(process.cwd(), 'src/renderer/src/styles/tray-popup.css'),
+    'utf8'
+  )
+  const block = (pattern: RegExp) => pattern.exec(css)?.[1] ?? ''
+  const tray = block(/\.tray \{([\s\S]*?)\}/)
+  const card = block(/\.tray__card \{([\s\S]*?)\}/)
+  assert.match(tray, /padding:\s*0(?:px)?;/, 'outer padding leaves a rim for a halo')
+  assert.match(tray, /background:\s*transparent;/, 'the window itself has no surface')
+  assert.doesNotMatch(card, /box-shadow/, 'the card paints a shadow the window cannot contain')
+  assert.doesNotMatch(css, /backdrop-filter/, 'a transparent window cannot blur the desktop')
+  assert.match(card, /border: 1px solid/, 'the border shapes the card')
+  assert.match(card, /border-radius: 10px/, 'the radius shapes the card')
 })
 
 test('a quit destroys the icon and stops anything from rebuilding it', () => {

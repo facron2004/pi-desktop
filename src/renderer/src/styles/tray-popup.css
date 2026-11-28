@@ -10,7 +10,11 @@ body.tray-body {
 }
 
 .tray {
-  padding: 6px;
+  /* The card is the window: no outer padding, so nothing has room to paint a
+     halo over the desktop. The window is transparent and the OS draws no
+     shadow; the 1px border and radius below are what shape the card. */
+  padding: 0;
+  background: transparent;
   font-family: var(--font-ui, system-ui, -apple-system, "Segoe UI", sans-serif);
   color: var(--text-primary);
   user-select: none;
@@ -21,7 +25,6 @@ body.tray-body {
   background: var(--surface-overlay, #23262d);
   border: 1px solid var(--border-default, #3a3f4a);
   border-radius: 10px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
   padding: 5px;
   overflow: hidden;
 }
