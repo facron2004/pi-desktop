@@ -393,13 +393,32 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   )
   passed.push('the platform emoji font registers for project icons and text')
 
-  const logoBlue = document.querySelector('.pi-logo rect')
-  check(logoBlue, 'The Pi mark is missing from the sidebar')
+  // The mark follows a live theme switch: its fills are stylesheet classes
+  // rather than presentation attributes, because an attribute naming a custom
+  // property is resolved once on some Chromium builds and then ignores the
+  // change. Read the sidebar copy — the one readers see — and keep asserting
+  // the attribute while polling, because the app writes `data-theme` from the
+  // stored settings on its own schedule and a startup burst can put it back
+  // under the test between two reads.
+  const markRects = () => {
+    const inSidebar = [...document.querySelectorAll('.sidebar .pi-logo rect')]
+    return inSidebar.length > 0 ? inSidebar : [...document.querySelectorAll('.pi-logo rect')]
+  }
+  check(markRects().length > 0, 'The Pi mark is missing from the sidebar')
+  const blueFill = () => getComputedStyle(markRects()[0]).fill
   const originalTheme = document.documentElement.dataset.theme
-  document.documentElement.dataset.theme = 'dark'
-  const darkLogoBlue = getComputedStyle(logoBlue).fill
-  document.documentElement.dataset.theme = 'light'
-  const lightLogoBlue = getComputedStyle(logoBlue).fill
+  const themedBlue = (theme) =>
+    until(
+      () => {
+        document.documentElement.dataset.theme = theme
+        const fill = blueFill()
+        return fill === (theme === 'dark' ? 'rgb(63, 111, 224)' : 'rgb(0, 32, 144)') ? fill : null
+      },
+      `The Pi mark did not use the ${theme} theme's blue: ` +
+        `fill=${blueFill()} theme=${document.documentElement.dataset.theme} original=${originalTheme}`
+    )
+  const darkLogoBlue = await themedBlue('dark')
+  const lightLogoBlue = await themedBlue('light')
   if (originalTheme) document.documentElement.dataset.theme = originalTheme
   else delete document.documentElement.dataset.theme
   check(
