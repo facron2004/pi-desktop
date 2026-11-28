@@ -2535,6 +2535,13 @@ transition: background var(--dur-fast) var(--ease);
   pointer-events: none;
 }
 
+/* A docked question occupies this band's seat. Left on the thread's floor, the
+   running ellipsis sat on the card's top edge and read as part of the card. */
+.main__body:has(> .composer-wrap .composer-ask:not(:empty)) > .thread-frame .scroll-jumps,
+.side-chat:has(> .composer-wrap .composer-ask:not(:empty)) > .thread-frame .scroll-jumps {
+  bottom: calc(var(--sp-4) + 52px);
+}
+
 /* The band is as wide as the column, so only the buttons may take a click. */
 .scroll-jump {
   pointer-events: auto;
@@ -7917,7 +7924,8 @@ animation: fade var(--dur-fast) var(--ease);
    read as a settings sheet on top of the box. */
 .composer-ask {
   display: block;
-  margin: 0 0 var(--sp-2);
+  /* A little air above the card, so it does not sit against the last line. */
+  margin: var(--sp-3) 0 var(--sp-2);
 }
 
 /* The slot is empty at rest, and an empty row would hold the box off the floor. */
@@ -7933,12 +7941,34 @@ animation: fade var(--dur-fast) var(--ease);
   width: 100%;
   max-width: min(100%, 560px);
   margin-inline: auto;
-  /* Never taller than most of the window: what the answer is about is above it. */
-  max-height: min(60vh, 520px);
+  /* Never taller than most of the window: what the answer is about is above it.
+     Past this, the card itself scrolls — one thin bar at the card's edge, not
+     a second scrollbar inside the question. */
+  max-height: min(64vh, 560px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
   border: 1px solid var(--border);
   border-radius: var(--composer-radius);
   background: var(--surface-raised);
   box-shadow: var(--shadow-md);
+}
+
+:root .composer-ask .modal::-webkit-scrollbar {
+  width: 8px;
+}
+
+:root .composer-ask .modal::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+:root .composer-ask .modal::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 2px solid transparent;
+  border-radius: var(--r-full);
+  background-clip: padding-box;
 }
 
 /* The input box it rests on uses the chrome surface in the light theme. */
@@ -7982,24 +8012,38 @@ animation: fade var(--dur-fast) var(--ease);
 
 :root .composer-ask .modal__headings {
   flex: 1 1 auto;
-  /* A pathologically long question must not swallow the choices: the title
-     block scrolls instead, the way the option list does. */
-  max-height: min(30vh, 200px);
-  overflow-y: auto;
+  /* The card scrolls as one piece. A cap here used to put a scrollbar inside
+     the question, inset beside the close control, and cut a paragraph that
+     still fitted the card. */
+  max-height: none;
+  overflow: visible;
 }
 
-/* 16/25 — the question is the card's subject, not a dialog's headline. */
+/* 16/25 — the question is the card's subject, not a dialog's headline.
+   A paragraph drops the headline weight so it reads as the question. */
 :root .composer-ask .modal__title {
   font-size: var(--text-large);
-  line-height: var(--leading-large);
+  line-height: 1.65;
   font-weight: 500;
   letter-spacing: normal;
+}
+
+:root .composer-ask .modal__title[data-long='true'] {
+  font-weight: 400;
+  color: var(--text);
 }
 
 :root .composer-ask .modal__message {
   margin-top: var(--sp-1);
   font-size: var(--text-small);
   line-height: var(--leading-small);
+}
+
+/* A long note used to scroll inside itself. The card is the scroll. */
+:root .composer-ask .modal__message[data-long='true'] {
+  max-height: none;
+  overflow: visible;
+  padding-right: 0;
 }
 
 /* The 24px close control sits on the head's first line, beside the title. */
@@ -8024,18 +8068,36 @@ animation: fade var(--dur-fast) var(--ease);
   outline-offset: 1px;
 }
 
-/* The options are the part that grows, so a short window scrolls them instead of
-   pushing Cancel and Send out of the card. */
+/* Choices stay in the card's one scroll. Their own scroller was a second bar. */
 :root .composer-ask .modal__options {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   min-height: 0;
   max-height: none;
-  margin: var(--sp-1) 0 0;
+  overflow: visible;
+  gap: var(--sp-1);
+  margin: var(--sp-2) 0 0;
   padding: var(--sp-1) var(--sp-3);
 }
 
 :root .composer-ask .modal__answer {
+  flex: 0 0 auto;
   margin: 0 var(--sp-3) var(--sp-1);
+}
+
+/* The number is a round chip. The picked row is an accent wash, and its chip
+   fills with the accent — the same decision as Send, not a grey slab. */
+:root .composer-ask .modal__option-mark {
+  border-radius: var(--r-full);
+}
+
+:root .composer-ask .modal__option[data-active='true'] {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+:root .composer-ask .modal__option[data-active='true'] .modal__option-mark {
+  background: var(--accent);
+  color: var(--accent-contrast);
 }
 
 /* The list is one Tab stop and the arrows walk its rows, so the ring belongs to
@@ -8051,9 +8113,19 @@ animation: fade var(--dur-fast) var(--ease);
 }
 
 /* Footer: the note on the left, the two answers on the right, with the card's
-   own insets rather than a dialog footer's. */
+   own insets rather than a dialog footer's. It sticks so a long question
+   cannot scroll Cancel and Send out of the card. The fill matches the card,
+   or the rows would show through it. */
 :root .composer-ask .modal__foot {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
   padding: var(--sp-2) var(--sp-3) var(--sp-3) var(--sp-4);
+  background: var(--surface-raised);
+}
+
+:root[data-theme='light'] .composer-ask .modal__foot {
+  background: var(--surface-chrome);
 }
 
 /* ------------------------------------------------------------------ *

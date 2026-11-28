@@ -440,7 +440,15 @@ export function ExtensionDialog({ dockBlocked = false }: ExtensionDialogProps) {
           )}
         </span>
         <div className="modal__headings">
-          <h2 id="extension-dialog-title" className="modal__title">{title}</h2>
+          {/* A short title stays a headline. A question long enough to be a
+              paragraph is body copy: the dialog weight made a wall of bold. */}
+          <h2
+            id="extension-dialog-title"
+            className="modal__title"
+            data-long={title.length > 80 ? 'true' : undefined}
+          >
+            {title}
+          </h2>
           {planReview ? (
             <p id="extension-dialog-plan-note" className="modal__message">
               {t('Approval restores the working tools for this conversation.')}

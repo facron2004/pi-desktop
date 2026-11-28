@@ -145,6 +145,27 @@ test('the dock rests on the composer and never dims the window', () => {
   assert.match(css, /:root \.composer-ask \.modal \{[^}]*background: var\(--surface-raised\)/, 'the card dropped the input surface')
   assert.match(css, /:root \.composer-ask \.modal \{[^}]*border-radius: var\(--composer-radius\)/, 'the card dropped the input radius')
   assert.match(css, /:root \.composer-ask \.modal__icon \{\s*display: none;/, "a dialog's icon tile is still drawn on the card")
+  // A paragraph that still fits the card must not grow a scrollbar of its own.
+  assert.doesNotMatch(
+    css,
+    /:root \.composer-ask \.modal__headings \{[^}]*max-height:\s*min\(30vh,\s*200px\)/,
+    'the question still scrolls inside a 200px title block'
+  )
+  assert.match(
+    css,
+    /:root \.composer-ask \.modal__title\[data-long='true'\] \{[^}]*font-weight:\s*400/,
+    'a long question is still set as a bold headline'
+  )
+  assert.match(
+    css,
+    /:root \.composer-ask \.modal__option\[data-active='true'\] \.modal__option-mark \{[^}]*color:\s*var\(--accent-contrast\)/,
+    'the picked number chip is not filled with the accent'
+  )
+  assert.match(
+    css,
+    /\.scroll-jumps \{\s*bottom:\s*calc\(var\(--sp-4\) \+ 52px\)/,
+    'the scroll jump still sits on the question card'
+  )
   // The dock is inside the page: no full-window layer, no scrim, no blur.
   const dock = css.slice(css.indexOf('* The question dock'), css.indexOf('* Switch'))
   assert.doesNotMatch(dock, /backdrop-filter|filter: blur|position: fixed|inset: 0|--scrim/)
